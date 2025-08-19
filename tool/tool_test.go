@@ -11,6 +11,7 @@ package tool
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -44,4 +45,8 @@ func (d *testStreamableTool) Declaration() *Declaration {
 			Description: "Input for the test streamable tool.",
 		},
 	}
+}
+
+func TestHello(t *testing.T) {
+	fmt.Println(Hello())
 }
