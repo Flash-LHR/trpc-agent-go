@@ -77,3 +77,7 @@ type Schema struct {
 	// Enum contains the list of allowed values for the parameter
 	Enum []any `json:"enum,omitempty"`
 }
+
+func Hello() string {
+	return "Hello, world!"
+}
