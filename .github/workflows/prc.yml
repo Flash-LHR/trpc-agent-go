@@ -4,7 +4,7 @@ on:
   push:
   workflow_dispatch:
 permissions:
-  contents: write     # Deploy pages need write permission.
+  contents: read
   pull-requests: read # Use with `only-new-issues` option.
 jobs:
   build:
@@ -60,7 +60,10 @@ jobs:
     - uses: joelanford/go-apidiff@main 
   deploy:
     name: deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
     - uses: actions/checkout@v3
     - name: Set up Python
