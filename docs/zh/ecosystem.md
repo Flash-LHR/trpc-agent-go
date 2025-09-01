@@ -1,5 +1,7 @@
 # tRPC-Agent-Go 生态建设指南
 
+asdasdasd
+
 本文档分析 tRPC-Agent-Go 框架中需要生态建设的模块，说明需要实现的接口，并提供贡献指导。
 
 注意：所有共建组件都直接贡献到 GitHub 开源仓库的对应目录下，比如 `model/somemodel`、`tool/sometool`、`agent/someagent` 等。
