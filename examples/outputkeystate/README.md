@@ -132,6 +132,6 @@ When using this pattern in production:
 
 ## Related Examples
 
-- [Basic Chain Agent](../chainagent/): Simple agent chaining
-- [Tool Integration](../tools/): Various tool usage patterns
-- [Session Management](../session/): Session state management examples 
+- [Basic Chain Agent](../multiagent/chain/): Simple agent chaining
+- [Tool Integration](../multitools/): Various tool usage patterns
+- [Session Management](../runner/): Session state management examples 

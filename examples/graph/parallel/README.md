@@ -260,7 +260,6 @@ When modifying this example:
 ## Related Examples
 
 - [Basic Graph Example](../basic/) - Simple linear workflow
-- [Document Processing](../main.go) - Complex conditional routing
 - [Tool Integration](../basic/) - Tool usage in graphs
 
 ## License
