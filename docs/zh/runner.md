@@ -461,3 +461,19 @@ func checkRunner(r runner.Runner, ctx context.Context) error {
 ## 📝 总结
 
 Runner 组件是 tRPC-Agent-Go 框架的核心，提供了完整的对话管理和 Agent 编排能力。通过合理使用会话管理、工具集成和事件处理，可以构建强大的智能对话应用。
+
+# 外网测试
+
+relative path: [agent](./agent.md) [agent](agent.md) [agent](../examples/../docs/agent.md)
+
+引用外网 docs：[agent](https://github.com/trpc-group/trpc-agent-go/blob/main/docs/zh/agent.md)
+
+
+img: ![test](../assets/img/timing_diagram.png)
+
+examples: [e0](../../examples/a2aagent/main.go)
+examples: [e1](../../examples/a2aagent/)
+examples: [e1](../../examples/a2aagent)
+examples: [e3](https://github.com/flash-lhr/trpc-agent-go/blob/main/agent/callbacks.go)
+examples: [e4](https://github.com/flash-lhr/trpc-agent-go/blob/main/agent/)
+examples: [e4](https://github.com/flash-lhr/trpc-agent-go/blob/main/agent)
