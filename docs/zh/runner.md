@@ -466,7 +466,7 @@ Runner 组件是 tRPC-Agent-Go 框架的核心，提供了完整的对话管理�
 
 relative path: [agent](./agent.md) [agent](agent.md) [agent](../examples/../docs/agent.md)
 
-引用外网 docs：[agent](https://github.com/trpc-group/trpc-agent-go/blob/main/docs/zh/agent.md)
+引用外网 docs：[agent](https://github.com/flash-lhr/trpc-agent-go/blob/main/docs/zh/agent.md)
 
 
 img: ![test](../assets/img/timing_diagram.png)
@@ -474,6 +474,8 @@ img: ![test](../assets/img/timing_diagram.png)
 examples: [e0](../../examples/a2aagent/main.go)
 examples: [e1](../../examples/a2aagent/)
 examples: [e1](../../examples/a2aagent)
-examples: [e3](https://github.com/flash-lhr/trpc-agent-go/blob/main/agent/callbacks.go)
-examples: [e4](https://github.com/flash-lhr/trpc-agent-go/blob/main/agent/)
-examples: [e4](https://github.com/flash-lhr/trpc-agent-go/blob/main/agent)
+
+
+code: [e3](https://github.com/flash-lhr/trpc-agent-go/blob/main/agent/callbacks.go)
+code: [e4](https://github.com/flash-lhr/trpc-agent-go/blob/main/agent/)
+code: [e4](https://github.com/flash-lhr/trpc-agent-go/blob/main/agent)
