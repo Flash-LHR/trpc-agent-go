@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -82,6 +83,9 @@ type mockAgent struct {
 }
 
 func (a *mockAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
+	if observer := itelemetry.SpanObserverFromContext(ctx); observer != nil {
+		observer(ctx)
+	}
 	a.runCalls++
 	a.lastInvocation = invocation
 	ch := make(chan *event.Event, 2)

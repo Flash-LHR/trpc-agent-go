@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/artifact"
@@ -25,6 +26,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
+	atrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 )
 
 // Author types for events.
@@ -139,6 +141,15 @@ func (r *runner) Run(
 		agent.WithInvocationEventFilterKey(r.appName),
 	)
 
+	var agentSpanName string
+	if r.agent != nil {
+		agentSpanName = r.agent.Info().Name
+	}
+	if agentSpanName == "" {
+		agentSpanName = r.appName
+	}
+	ctx, rootSpan := atrace.Tracer.Start(ctx, agentSpanName)
+
 	// If caller provided a history via RunOptions and the session is empty,
 	// persist that history into the session exactly once, so subsequent turns
 	// and tool calls build on the same canonical transcript.
@@ -182,12 +193,13 @@ func (r *runner) Run(
 	// Run the agent and get the event channel.
 	agentEventCh, err := r.agent.Run(ctx, invocation)
 	if err != nil {
+		rootSpan.End()
 		invocation.CleanupNotice(ctx)
 		return nil, err
 	}
 
 	// Process the agent events and emit them to the output channel.
-	return r.processAgentEvents(ctx, sess, invocation, agentEventCh), nil
+	return r.processAgentEvents(ctx, sess, invocation, agentEventCh, rootSpan), nil
 }
 
 // getOrCreateSession returns an existing session or creates a new one.
@@ -210,6 +222,7 @@ func (r *runner) processAgentEvents(
 	sess *session.Session,
 	invocation *agent.Invocation,
 	agentEventCh <-chan *event.Event,
+	rootSpan oteltrace.Span,
 ) chan *event.Event {
 	processedEventCh := make(chan *event.Event, cap(agentEventCh))
 	// Start a goroutine to process and append events to session.
@@ -220,6 +233,7 @@ func (r *runner) processAgentEvents(
 			}
 			close(processedEventCh)
 			invocation.CleanupNotice(ctx)
+			rootSpan.End()
 		}()
 
 		for agentEvent := range agentEventCh {

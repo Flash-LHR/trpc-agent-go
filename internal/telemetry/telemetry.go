@@ -36,6 +36,12 @@ const (
 
 	SpanNameCallLLM           = "call_llm"
 	SpanNamePrefixExecuteTool = "execute_tool"
+	SpanNameAGUI              = "agui"
+	SpanNameAGUIRun           = "agui_run"
+	SpanNameAGUIText          = "agui_text"
+	SpanNameAGUITool          = "agui_tool"
+	SpanNameAGUIToolCall      = "agui_tool_call"
+	SpanNameAGUIToolResponse  = "agui_tool_response"
 
 	OperationExecuteTool = "execute_tool"
 	OperationCallLLM     = "call_llm"
@@ -102,6 +108,18 @@ var (
 	KeyGenAIToolCallResult    = "gen_ai.tool.call.result"
 
 	KeyGenAIRequestEncodingFormats = "gen_ai.request.encoding_formats"
+
+	// AGUI-specific attributes.
+	KeyAGUIThreadID        = "trpc.go.agent.agui.thread_id"
+	KeyAGUIRunID           = "trpc.go.agent.agui.run_id"
+	KeyAGUIMessageID       = "trpc.go.agent.agui.message_id"
+	KeyAGUIEventType       = "trpc.go.agent.agui.event_type"
+	KeyAGUIToolCallID      = "trpc.go.agent.agui.tool.call_id"
+	KeyAGUIToolName        = "trpc.go.agent.agui.tool.name"
+	KeyAGUIToolCallInput   = "trpc.go.agent.agui.tool.arguments"
+	KeyAGUIToolCallOutput  = "trpc.go.agent.agui.tool.result"
+	KeyAGUIToolMessageID   = "trpc.go.agent.agui.tool.message_id"
+	KeyAGUIToolCallMessage = "trpc.go.agent.agui.tool.call_message_id"
 
 	// https://github.com/open-telemetry/semantic-conventions/blob/main/docs/general/recording-errors.md#recording-errors-on-spans
 	KeyErrorType          = "error.type"

@@ -15,14 +15,20 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	aguievents "github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	agentevent "trpc.group/trpc-go/trpc-agent-go/event"
+	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/server/agui/adapter"
 	"trpc.group/trpc-go/trpc-agent-go/server/agui/translator"
 	aguitranslator "trpc.group/trpc-go/trpc-agent-go/server/agui/translator"
+	atrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 )
 
 func TestNew(t *testing.T) {
@@ -224,6 +230,98 @@ func TestRunNormal(t *testing.T) {
 	assert.Equal(t, 1, underlying.calls)
 }
 
+func TestRunTelemetrySpans(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := trace.NewTracerProvider(trace.WithSpanProcessor(recorder))
+	oldTracer := atrace.Tracer
+	oldProvider := atrace.TracerProvider
+	atrace.TracerProvider = tp
+	atrace.Tracer = tp.Tracer(itelemetry.InstrumentName)
+	t.Cleanup(func() {
+		atrace.TracerProvider = oldProvider
+		atrace.Tracer = oldTracer
+	})
+	t.Cleanup(func() {
+		require.NoError(t, tp.Shutdown(context.Background()))
+	})
+
+	fakeTrans := &fakeTranslator{events: [][]aguievents.Event{
+		{aguievents.NewTextMessageStartEvent("msg-1")},
+		{aguievents.NewTextMessageContentEvent("msg-1", "hi")},
+		{aguievents.NewTextMessageEndEvent("msg-1")},
+		{aguievents.NewToolCallStartEvent("tool-1", "lookup")},
+		{aguievents.NewToolCallArgsEvent("tool-1", "{\"q\":\"foo\"}")},
+		{aguievents.NewToolCallEndEvent("tool-1")},
+		{aguievents.NewToolCallResultEvent("msg-1", "tool-1", "done")},
+		{aguievents.NewRunFinishedEvent("thread", "run")},
+	}}
+
+	underlying := &fakeRunner{}
+	underlying.run = func(ctx context.Context, userID, sessionID string, message model.Message, _ ...agent.RunOption) (<-chan *agentevent.Event, error) {
+		ch := make(chan *agentevent.Event, len(fakeTrans.events))
+		for range fakeTrans.events {
+			ch <- &agentevent.Event{}
+		}
+		close(ch)
+		return ch, nil
+	}
+
+	r := &runner{
+		runner:            underlying,
+		translatorFactory: func(*adapter.RunAgentInput) aguitranslator.Translator { return fakeTrans },
+		userIDResolver: func(context.Context, *adapter.RunAgentInput) (string, error) {
+			return "user-telemetry", nil
+		},
+	}
+
+	input := &adapter.RunAgentInput{
+		ThreadID: "thread",
+		RunID:    "run",
+		Messages: []model.Message{{Role: model.RoleUser, Content: "hi"}},
+	}
+
+	eventsCh, err := r.Run(context.Background(), input)
+	require.NoError(t, err)
+	collectEvents(t, eventsCh)
+
+	spans := recorder.Ended()
+	nameSet := make(map[string]struct{})
+	for _, span := range spans {
+		nameSet[span.Name()] = struct{}{}
+	}
+
+	for _, name := range []string{
+		itelemetry.SpanNameAGUI,
+		itelemetry.SpanNameAGUIRun,
+		itelemetry.SpanNameAGUIText,
+		itelemetry.SpanNameAGUITool,
+		itelemetry.SpanNameAGUIToolCall,
+		itelemetry.SpanNameAGUIToolResponse,
+	} {
+		if _, ok := nameSet[name]; !ok {
+			t.Fatalf("expected span %s not found", name)
+		}
+	}
+
+	var runSpan trace.ReadOnlySpan
+	for _, span := range spans {
+		if span.Name() == itelemetry.SpanNameAGUIRun {
+			runSpan = span
+			break
+		}
+	}
+	require.NotNil(t, runSpan)
+
+	attrs := make(map[string]string)
+	for _, kv := range runSpan.Attributes() {
+		attrs[string(kv.Key)] = kv.Value.AsString()
+	}
+	require.Equal(t, "hi", attrs[itelemetry.KeyRunnerInput])
+	require.Equal(t, "hi", attrs[itelemetry.KeyRunnerOutput])
+	require.Equal(t, "thread", attrs[itelemetry.KeyRunnerSessionID])
+	require.Equal(t, "run", attrs[itelemetry.KeyInvocationID])
+}
+
 type fakeTranslator struct {
 	events [][]aguievents.Event
 	err    error
@@ -248,6 +346,14 @@ type fakeRunner struct {
 
 func (f *fakeRunner) Run(ctx context.Context, userID, sessionID string, message model.Message, opts ...agent.RunOption) (<-chan *agentevent.Event, error) {
 	f.calls++
+	if observer := itelemetry.SpanObserverFromContext(ctx); observer != nil {
+		rootCtx, rootSpan := atrace.Tracer.Start(ctx, "fake_agent_root")
+		observer(rootCtx)
+		_, span := atrace.Tracer.Start(rootCtx, "fake_invoke_agent")
+		span.End()
+		rootSpan.End()
+		ctx = rootCtx
+	}
 	if f.run != nil {
 		return f.run(ctx, userID, sessionID, message, opts...)
 	}
