@@ -16,6 +16,7 @@ import (
 	"math"
 	"net/http"
 
+	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -24,6 +25,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/server/agui"
 	"trpc.group/trpc-go/trpc-agent-go/server/agui/adapter"
 	aguirunner "trpc.group/trpc-go/trpc-agent-go/server/agui/runner"
+	"trpc.group/trpc-go/trpc-agent-go/server/agui/translator"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
@@ -63,6 +65,8 @@ func main() {
 		llmagent.WithInstruction("You are a helpful assistant."),
 	)
 	// New Session Service.
+	// sessionService, err := redis.NewService(redis.WithRedisClientURL("redis://localhost:6379"))
+	// sessionService, err := postgres.NewService(postgres.WithHost("localhost"), postgres.WithPort(5432), postgres.WithUser("postgres"), postgres.WithPassword("postgres"), postgres.WithDatabase("agui"))
 	sessionService := inmemory.NewSessionService()
 	// New Runner.
 	runner := runner.NewRunner(appName, agent, runner.WithSessionService(sessionService))
@@ -76,7 +80,12 @@ func main() {
 		agui.WithMessagesSnapshotEnabled(true),
 		agui.WithAppName(appName),
 		agui.WithSessionService(sessionService),
-		agui.WithAGUIRunnerOptions(aguirunner.WithUserIDResolver(userIDResolver)),
+		agui.WithAGUIRunnerOptions(aguirunner.WithUserIDResolver(userIDResolver), aguirunner.WithTranslateCallbacks(translator.NewCallbacks().RegisterAfterTranslate(
+			func(ctx context.Context, event events.Event) (events.Event, error) {
+				customEvent := events.NewCustomEvent("my-custtom", events.WithValue(event))
+				return customEvent, nil
+			},
+		))),
 	)
 	if err != nil {
 		log.Fatalf("failed to create AG-UI server: %v", err)

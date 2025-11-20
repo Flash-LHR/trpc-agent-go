@@ -34,6 +34,7 @@ type textPhase int
 const (
 	textReceiving textPhase = iota
 	textEnded
+	textChunk
 )
 
 // textState is the state of the text message.
@@ -108,6 +109,8 @@ func (r *reducer) reduce(trackEvent session.TrackEvent) error {
 		return r.handleTextContent(e)
 	case *aguievents.TextMessageEndEvent:
 		return r.handleTextEnd(e)
+	case *aguievents.TextMessageChunkEvent:
+		return r.handleTextChunk(e)
 	case *aguievents.ToolCallStartEvent:
 		return r.handleToolStart(e)
 	case *aguievents.ToolCallArgsEvent:
@@ -117,7 +120,7 @@ func (r *reducer) reduce(trackEvent session.TrackEvent) error {
 	case *aguievents.ToolCallResultEvent:
 		return r.handleToolResult(e)
 	default:
-		return nil
+		return r.handleActivity(e)
 	}
 }
 
@@ -181,6 +184,52 @@ func (r *reducer) handleTextEnd(e *aguievents.TextMessageEndEvent) error {
 	state.phase = textEnded
 	text := strings.Clone(state.content.String())
 	r.messages[state.index].Content = &text
+	return nil
+}
+
+func (r *reducer) handleTextChunk(e *aguievents.TextMessageChunkEvent) error {
+	if e.MessageID == nil || *e.MessageID == "" {
+		return fmt.Errorf("text message start missing id")
+	}
+	if e.Delta == nil {
+		return nil
+	}
+	if state, exists := r.texts[*e.MessageID]; exists {
+		if state.phase != textChunk {
+			return fmt.Errorf("text message chunk invalid phase: %s", *e.MessageID)
+		}
+		state.content.WriteString(*e.Delta)
+		content := strings.Clone(state.content.String())
+		r.messages[state.index].Content = &content
+		return nil
+	}
+	role := string(model.RoleAssistant)
+	if e.Role != nil && *e.Role != "" {
+		role = string(*e.Role)
+	}
+	name := ""
+	switch role {
+	case string(model.RoleUser):
+		name = r.userID
+	case string(model.RoleAssistant):
+		name = r.appName
+	default:
+		return fmt.Errorf("unsupported role: %s", role)
+	}
+	content := strings.Clone(*e.Delta)
+	r.messages = append(r.messages, &aguievents.Message{
+		ID:      *e.MessageID,
+		Role:    role,
+		Name:    &name,
+		Content: &content,
+	})
+	r.texts[*e.MessageID] = &textState{
+		role:  role,
+		name:  name,
+		phase: textChunk,
+		index: len(r.messages) - 1,
+	}
+	r.texts[*e.MessageID].content.WriteString(*e.Delta)
 	return nil
 }
 
@@ -284,10 +333,86 @@ func (r *reducer) handleToolResult(e *aguievents.ToolCallResultEvent) error {
 	return nil
 }
 
+// handleActivity handles the activity event.
+func (r *reducer) handleActivity(e aguievents.Event) error {
+	activity := &aguievents.Message{Role: "activity"}
+	switch e := e.(type) {
+	case *aguievents.StepStartedEvent:
+		activity.ID = e.ID()
+		activity.ActivityType = string(e.Type())
+		activity.ActivityContent = map[string]any{
+			"stepName": e.StepName,
+		}
+	case *aguievents.StepFinishedEvent:
+		activity.ID = e.ID()
+		activity.ActivityType = string(e.Type())
+		activity.ActivityContent = map[string]any{
+			"stepName": e.StepName,
+		}
+	case *aguievents.StateSnapshotEvent:
+		activity.ID = e.ID()
+		activity.ActivityType = string(e.Type())
+		activity.ActivityContent = map[string]any{
+			"snapshot": e.Snapshot,
+		}
+	case *aguievents.StateDeltaEvent:
+		activity.ID = e.ID()
+		activity.ActivityType = string(e.Type())
+		activity.ActivityContent = map[string]any{
+			"delta": e.Delta,
+		}
+	case *aguievents.MessagesSnapshotEvent:
+		activity.ID = e.ID()
+		activity.ActivityType = string(e.Type())
+		activity.ActivityContent = map[string]any{
+			"messages": e.Messages,
+		}
+	case *aguievents.ActivitySnapshotEvent:
+		activity.ID = e.ID()
+		activity.ActivityType = string(e.Type())
+		activity.ActivityContent = map[string]any{
+			"messageId":    e.MessageID,
+			"activityType": e.ActivityType,
+			"content":      e.Content,
+			"replace":      e.Replace,
+		}
+	case *aguievents.ActivityDeltaEvent:
+		activity.ID = e.ID()
+		activity.ActivityType = string(e.Type())
+		activity.ActivityContent = map[string]any{
+			"messageId":    e.MessageID,
+			"activityType": e.ActivityType,
+			"patch":        e.Patch,
+		}
+	case *aguievents.CustomEvent:
+		activity.ID = e.ID()
+		activity.ActivityType = string(e.Type())
+		activity.ActivityContent = map[string]any{
+			"name":  e.Name,
+			"value": e.Value,
+		}
+	case *aguievents.RawEvent:
+		activity.ID = e.ID()
+		activity.ActivityType = string(e.Type())
+		activity.ActivityContent = map[string]any{
+			"source": e.Source,
+			"event":  e.Event,
+		}
+	default:
+		activity.ID = e.GetBaseEvent().ID()
+		activity.ActivityType = string(e.Type())
+		activity.ActivityContent = map[string]any{
+			"content": e,
+		}
+	}
+	r.messages = append(r.messages, activity)
+	return nil
+}
+
 // finalize finalizes the message snapshots.
 func (r *reducer) finalize() error {
 	for id, state := range r.texts {
-		if state.phase != textEnded {
+		if state.phase != textEnded && state.phase != textChunk {
 			return fmt.Errorf("text message %s not closed", id)
 		}
 	}

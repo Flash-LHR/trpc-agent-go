@@ -1,0 +1,3 @@
+2025-11-20T15:59:58+08:00	[34mINFO[0m	server/main.go:85	AG-UI: serving agent "agui-agent" on http://127.0.0.1:8080/agui
+2025-11-20T15:59:58+08:00	[34mINFO[0m	server/main.go:86	AG-UI: messages snapshot available at http://127.0.0.1:8080/history
+signal: interrupt
