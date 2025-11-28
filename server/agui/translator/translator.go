@@ -32,17 +32,21 @@ type Translator interface {
 // New creates a new event translator.
 func New(threadID, runID string) Translator {
 	return &translator{
-		threadID: threadID,
-		runID:    runID,
+		threadID:                threadID,
+		runID:                   runID,
+		handledModelInvocations: make(map[string]struct{}),
+		emittedToolCalls:        make(map[string]struct{}),
 	}
 }
 
 // translator is the default implementation of the Translator.
 type translator struct {
-	threadID         string
-	runID            string
-	lastMessageID    string
-	receivingMessage bool
+	threadID                string
+	runID                   string
+	lastMessageID           string
+	receivingMessage        bool
+	handledModelInvocations map[string]struct{}
+	emittedToolCalls        map[string]struct{}
 }
 
 // Translate translates one trpc-agent-go event into zero or more AG-UI events.
@@ -59,7 +63,7 @@ func (t *translator) Translate(event *agentevent.Event) ([]aguievents.Event, err
 
 	rsp := event.Response
 	if rsp == nil {
-		if len(events) > 0 {
+		if len(events) > 0 || (event.StateDelta != nil && len(event.StateDelta) > 0) {
 			return events, nil
 		}
 		return nil, errors.New("event response is nil")
@@ -75,6 +79,9 @@ func (t *translator) Translate(event *agentevent.Event) ([]aguievents.Event, err
 			return nil, err
 		}
 		events = append(events, textMessageEvents...)
+		if len(textMessageEvents) > 0 {
+			t.markModelInvocationIDs(event.InvocationID, event.ParentInvocationID)
+		}
 	}
 	if rsp.IsToolCallResponse() {
 		toolCallEvents, err := t.toolCallEvent(rsp)
@@ -177,6 +184,7 @@ func (t *translator) toolCallEvent(rsp *model.Response) ([]aguievents.Event, err
 			}
 			// Tool call end should precede result to align with AG-UI protocol.
 			events = append(events, aguievents.NewToolCallEndEvent(toolCall.ID))
+			t.markToolCall(toolCall.ID)
 		}
 	}
 	t.lastMessageID = rsp.ID
@@ -224,6 +232,13 @@ func (t *translator) graphModelEvents(evt *agentevent.Event) []aguievents.Event 
 	if meta.Output == "" {
 		return nil
 	}
+	invocationID := meta.InvocationID
+	if invocationID == "" {
+		invocationID = evt.InvocationID
+	}
+	if t.hasModelInvocation(invocationID) || t.hasModelInvocation(evt.InvocationID) || t.hasModelInvocation(evt.ParentInvocationID) {
+		return nil
+	}
 	var events []aguievents.Event
 	if t.receivingMessage && t.lastMessageID != "" {
 		events = append(events, aguievents.NewTextMessageEndEvent(t.lastMessageID))
@@ -236,6 +251,7 @@ func (t *translator) graphModelEvents(evt *agentevent.Event) []aguievents.Event 
 		aguievents.NewTextMessageEndEvent(msgID),
 	)
 	t.lastMessageID = msgID
+	t.markModelInvocationIDs(invocationID, evt.InvocationID, evt.ParentInvocationID)
 	return events
 }
 
@@ -258,6 +274,9 @@ func (t *translator) graphToolEvents(evt *agentevent.Event) []aguievents.Event {
 
 	switch meta.Phase {
 	case graph.ToolExecutionPhaseStart:
+		if meta.ResponseID != "" || t.hasToolCall(meta.ToolID) {
+			return nil
+		}
 		var events []aguievents.Event
 		opts := []aguievents.ToolCallStartOption{aguievents.WithParentMessageID(meta.ResponseID)}
 		events = append(events, aguievents.NewToolCallStartEvent(meta.ToolID, meta.ToolName, opts...))
@@ -265,8 +284,47 @@ func (t *translator) graphToolEvents(evt *agentevent.Event) []aguievents.Event {
 			events = append(events, aguievents.NewToolCallArgsEvent(meta.ToolID, meta.Input))
 		}
 		events = append(events, aguievents.NewToolCallEndEvent(meta.ToolID))
+		t.markToolCall(meta.ToolID)
 		return events
 	default:
 		return nil
 	}
+}
+
+func (t *translator) hasModelInvocation(invocationID string) bool {
+	if invocationID == "" {
+		return false
+	}
+	_, ok := t.handledModelInvocations[invocationID]
+	return ok
+}
+
+func (t *translator) markModelInvocation(invocationID string) {
+	if invocationID == "" {
+		return
+	}
+	t.handledModelInvocations[invocationID] = struct{}{}
+}
+
+func (t *translator) markModelInvocationIDs(ids ...string) {
+	for _, id := range ids {
+		if id != "" {
+			t.handledModelInvocations[id] = struct{}{}
+		}
+	}
+}
+
+func (t *translator) hasToolCall(toolID string) bool {
+	if toolID == "" {
+		return false
+	}
+	_, ok := t.emittedToolCalls[toolID]
+	return ok
+}
+
+func (t *translator) markToolCall(toolID string) {
+	if toolID == "" {
+		return
+	}
+	t.emittedToolCalls[toolID] = struct{}{}
 }

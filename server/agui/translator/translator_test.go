@@ -260,6 +260,39 @@ func TestGraphModelMetadataProducesText(t *testing.T) {
 	assert.Equal(t, "hello from graph", content.Delta)
 }
 
+func TestGraphModelMetadataSkippedAfterStreaming(t *testing.T) {
+	tr := New("thread", "run")
+
+	chunk := &agentevent.Event{
+		InvocationID:       "inv-child",
+		ParentInvocationID: "inv-root",
+		Response: &model.Response{
+			ID:     "msg-1",
+			Object: model.ObjectTypeChatCompletionChunk,
+			Choices: []model.Choice{{
+				Delta: model.Message{Role: model.RoleAssistant, Content: "Hi"},
+			}},
+		},
+	}
+	evts, err := tr.Translate(chunk)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, evts)
+
+	meta := graph.ModelExecutionMetadata{InvocationID: "inv-root", Output: "final text"}
+	raw, err := json.Marshal(meta)
+	assert.NoError(t, err)
+	modelEvt := &agentevent.Event{
+		InvocationID:       "inv-root",
+		ParentInvocationID: "inv-child",
+		StateDelta: map[string][]byte{
+			graph.MetadataKeyModel: raw,
+		},
+	}
+	evts, err = tr.Translate(modelEvt)
+	assert.NoError(t, err)
+	assert.Empty(t, evts)
+}
+
 func TestGraphToolMetadataStartCompleteAndSkipDuplicateToolResponse(t *testing.T) {
 	tr, ok := New("thread", "run").(*translator)
 	assert.True(t, ok)
@@ -773,7 +806,7 @@ func TestTranslateSubagentGraph(t *testing.T) {
 		assert.NoError(t, err)
 		translated = append(translated, evs...)
 	}
-	assert.Len(t, translated, 15)
+	assert.Len(t, translated, 12)
 
 	start, ok := translated[0].(*aguievents.TextMessageStartEvent)
 	assert.True(t, ok)
@@ -825,29 +858,13 @@ func TestTranslateSubagentGraph(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, graphModelEvent.ID, modelEnd.MessageID)
 
-	callStart, ok = translated[10].(*aguievents.ToolCallStartEvent)
-	assert.True(t, ok)
-	assert.Equal(t, toolMeta.ToolID, callStart.ToolCallID)
-	assert.Equal(t, toolMeta.ToolName, callStart.ToolCallName)
-	assert.NotNil(t, callStart.ParentMessageID)
-	assert.Equal(t, toolMeta.ResponseID, *callStart.ParentMessageID)
-
-	callArgs, ok = translated[11].(*aguievents.ToolCallArgsEvent)
-	assert.True(t, ok)
-	assert.Equal(t, toolMeta.ToolID, callArgs.ToolCallID)
-	assert.Equal(t, toolMeta.Input, callArgs.Delta)
-
-	callEnd, ok = translated[12].(*aguievents.ToolCallEndEvent)
-	assert.True(t, ok)
-	assert.Equal(t, toolMeta.ToolID, callEnd.ToolCallID)
-
-	transfer, ok = translated[13].(*aguievents.ToolCallResultEvent)
+	transfer, ok = translated[10].(*aguievents.ToolCallResultEvent)
 	assert.True(t, ok)
 	assert.Equal(t, calcResult.ID, transfer.MessageID)
 	assert.Equal(t, toolMeta.ToolID, transfer.ToolCallID)
 	assert.Equal(t, calcResult.Choices[0].Message.Content, transfer.Content)
 
-	runFinished, ok := translated[14].(*aguievents.RunFinishedEvent)
+	runFinished, ok := translated[11].(*aguievents.RunFinishedEvent)
 	assert.True(t, ok)
 	assert.Equal(t, "thread", runFinished.ThreadID())
 	assert.Equal(t, "run", runFinished.RunID())
