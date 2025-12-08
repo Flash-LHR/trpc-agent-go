@@ -157,7 +157,7 @@ func (t *translator) textMessageEvent(rsp *model.Response) ([]aguievents.Event, 
 		if rsp.Choices[0].Delta.Content != "" {
 			events = append(events, aguievents.NewTextMessageContentEvent(rsp.ID, rsp.Choices[0].Delta.Content))
 		}
-		if rsp.Done {
+		if rsp.Done || rsp.Choices[0].FinishReason != nil && *rsp.Choices[0].FinishReason != "" {
 			t.receivingMessage = false
 			events = append(events, aguievents.NewTextMessageEndEvent(rsp.ID))
 		}
