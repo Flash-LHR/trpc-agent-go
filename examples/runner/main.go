@@ -14,10 +14,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -26,6 +28,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
@@ -83,9 +86,36 @@ func (c *multiTurnChat) run() error {
 	return c.startChat(ctx)
 }
 
+type loggingRoundTripper struct {
+	base http.RoundTripper
+}
+
+func (rt loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	var bodyCopy []byte
+	if req.Body != nil {
+		data, err := io.ReadAll(req.Body)
+		if err != nil {
+			log.Errorf("failed to read request body: %v", err)
+		} else {
+			bodyCopy = data
+			req.Body = io.NopCloser(bytes.NewReader(bodyCopy)) // 将请求体重新放回请求中
+		}
+	}
+
+	log.Infof("LLM HTTP request: method=%s url=%s headers=%v body=%s",
+		req.Method, req.URL.String(), req.Header, string(bodyCopy),
+	)
+
+	return rt.base.RoundTrip(req)
+}
+
 // setup builds the runner with a model, tools, and the in-memory session store.
 func (c *multiTurnChat) setup(_ context.Context) error {
-	modelInstance := openai.New(c.modelName, openai.WithVariant(openai.Variant(c.variant)))
+	modelInstance := openai.New(c.modelName, openai.WithVariant(openai.Variant(c.variant)),
+		openai.WithHTTPClientOptions(
+			openai.WithHTTPClientTransport(loggingRoundTripper{base: http.DefaultTransport}),
+		),
+	)
 
 	sessionService := sessioninmemory.NewSessionService()
 
