@@ -1,0 +1,78 @@
+id: RUN_STARTED_1766544052674
+data: {"type":"RUN_STARTED","timestamp":1766544052674,"threadId":"1","runId":"1"}
+
+id: TEXT_MESSAGE_START_1766544053781
+data: {"type":"TEXT_MESSAGE_START","timestamp":1766544053781,"messageId":"214e586c-9825-4122-8e0b-edc39267ace9","role":"assistant"}
+
+id: TEXT_MESSAGE_CONTENT_1766544053781
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544053781,"messageId":"214e586c-9825-4122-8e0b-edc39267ace9","delta":"我来"}
+
+id: TEXT_MESSAGE_CONTENT_1766544053978
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544053978,"messageId":"214e586c-9825-4122-8e0b-edc39267ace9","delta":"帮你"}
+
+id: TEXT_MESSAGE_CONTENT_1766544054043
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544054043,"messageId":"214e586c-9825-4122-8e0b-edc39267ace9","delta":"计算"}
+
+id: TEXT_MESSAGE_CONTENT_1766544054043
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544054043,"messageId":"214e586c-9825-4122-8e0b-edc39267ace9","delta":" "}
+
+id: TEXT_MESSAGE_CONTENT_1766544054109
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544054109,"messageId":"214e586c-9825-4122-8e0b-edc39267ace9","delta":"2"}
+
+id: TEXT_MESSAGE_CONTENT_1766544054109
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544054109,"messageId":"214e586c-9825-4122-8e0b-edc39267ace9","delta":" *"}
+
+id: TEXT_MESSAGE_CONTENT_1766544054173
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544054173,"messageId":"214e586c-9825-4122-8e0b-edc39267ace9","delta":" "}
+
+id: TEXT_MESSAGE_CONTENT_1766544054173
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544054173,"messageId":"214e586c-9825-4122-8e0b-edc39267ace9","delta":"22"}
+
+id: TEXT_MESSAGE_CONTENT_1766544054304
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544054304,"messageId":"214e586c-9825-4122-8e0b-edc39267ace9","delta":"。"}
+
+id: TEXT_MESSAGE_END_1766544056668
+data: {"type":"TEXT_MESSAGE_END","timestamp":1766544056668,"messageId":"214e586c-9825-4122-8e0b-edc39267ace9"}
+
+id: TOOL_CALL_START_1766544056669
+data: {"type":"TOOL_CALL_START","timestamp":1766544056669,"toolCallId":"call_00_0ft8jE6CQoRJiSGE3sKciFzo","toolCallName":"calculator","parentMessageId":"214e586c-9825-4122-8e0b-edc39267ace9"}
+
+id: TOOL_CALL_ARGS_1766544056669
+data: {"type":"TOOL_CALL_ARGS","timestamp":1766544056669,"toolCallId":"call_00_0ft8jE6CQoRJiSGE3sKciFzo","delta":"{\"a\": 2, \"b\": 22, \"op\": \"multiply\"}"}
+
+id: TOOL_CALL_END_1766544056669
+data: {"type":"TOOL_CALL_END","timestamp":1766544056669,"toolCallId":"call_00_0ft8jE6CQoRJiSGE3sKciFzo"}
+
+id: TOOL_CALL_RESULT_1766544056670
+data: {"type":"TOOL_CALL_RESULT","timestamp":1766544056670,"messageId":"61ad8b37-4e0b-4fa2-889f-d5e487bf0b7c","toolCallId":"call_00_0ft8jE6CQoRJiSGE3sKciFzo","content":"{\"a\":2,\"b\":22,\"op\":\"multiply\",\"res\":44}","role":"tool"}
+
+id: TEXT_MESSAGE_START_1766544057715
+data: {"type":"TEXT_MESSAGE_START","timestamp":1766544057715,"messageId":"7e85845e-5cf0-4df2-8d4e-e7a4cf6810d9","role":"assistant"}
+
+id: TEXT_MESSAGE_CONTENT_1766544057715
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544057715,"messageId":"7e85845e-5cf0-4df2-8d4e-e7a4cf6810d9","delta":"2"}
+
+id: TEXT_MESSAGE_CONTENT_1766544057857
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544057857,"messageId":"7e85845e-5cf0-4df2-8d4e-e7a4cf6810d9","delta":" *"}
+
+id: TEXT_MESSAGE_CONTENT_1766544057925
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544057925,"messageId":"7e85845e-5cf0-4df2-8d4e-e7a4cf6810d9","delta":" "}
+
+id: TEXT_MESSAGE_CONTENT_1766544057925
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544057925,"messageId":"7e85845e-5cf0-4df2-8d4e-e7a4cf6810d9","delta":"22"}
+
+id: TEXT_MESSAGE_CONTENT_1766544058213
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544058213,"messageId":"7e85845e-5cf0-4df2-8d4e-e7a4cf6810d9","delta":" ="}
+
+id: TEXT_MESSAGE_CONTENT_1766544058213
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544058213,"messageId":"7e85845e-5cf0-4df2-8d4e-e7a4cf6810d9","delta":" "}
+
+id: TEXT_MESSAGE_CONTENT_1766544058225
+data: {"type":"TEXT_MESSAGE_CONTENT","timestamp":1766544058225,"messageId":"7e85845e-5cf0-4df2-8d4e-e7a4cf6810d9","delta":"44"}
+
+id: TEXT_MESSAGE_END_1766544058240
+data: {"type":"TEXT_MESSAGE_END","timestamp":1766544058240,"messageId":"7e85845e-5cf0-4df2-8d4e-e7a4cf6810d9"}
+
+id: RUN_FINISHED_1766544058377
+data: {"type":"RUN_FINISHED","timestamp":1766544058377,"threadId":"1","runId":"1"}
+
