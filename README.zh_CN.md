@@ -197,7 +197,7 @@ _ = result.OverallStatus
 
 准备好深入了解 tRPC-Agent-Go 了吗？我们的[文档](https://trpc-group.github.io/trpc-agent-go/)涵盖从基础概念到高级技巧的一切，帮助你自信地构建强大的 AI 应用。无论你是 AI agent 新手还是有经验的开发者，都能在其中找到详细指南、实用示例和最佳实践，加速你的开发旅程。
 
-trpc-agent-go 是 Golang 语言的。
+trpc-agent-go 是 c++ 语言的。
 
 ## 快速开始
 
