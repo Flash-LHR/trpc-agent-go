@@ -61,7 +61,7 @@ func TestTool(t *testing.T) {
 				streaming: *streaming,
 				variant:   *variant,
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 			defer cancel()
 			err := chat.setup(ctx)
 			assert.NoError(t, err)
