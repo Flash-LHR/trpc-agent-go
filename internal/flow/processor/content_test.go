@@ -405,14 +405,17 @@ func TestSanitizeToolCallMessages_RewritesInvalidToolCallArgumentsAsUserContext(
 	}
 
 	out := sanitizeToolCallMessages(messages, true)
-	assert.Len(t, out, 3)
+	assert.Len(t, out, 4)
 	assert.Equal(t, model.RoleUser, out[0].Role)
-	assert.Equal(t, model.RoleUser, out[1].Role)
-	assert.True(t, strings.HasPrefix(out[1].Content, contextPrefix), "should prefix context message")
-	assert.Contains(t, out[1].Content, "tool-a")
-	assert.Contains(t, out[1].Content, `{"a":1,}`)
-	assert.Contains(t, out[1].Content, "invalid json")
-	assert.Equal(t, model.RoleAssistant, out[2].Role)
+	assert.Equal(t, model.RoleAssistant, out[1].Role)
+	assert.Equal(t, "I will call a tool.", out[1].Content)
+	assert.Len(t, out[1].ToolCalls, 0)
+	assert.Equal(t, model.RoleUser, out[2].Role)
+	assert.True(t, strings.HasPrefix(out[2].Content, contextPrefix), "should prefix context message")
+	assert.Contains(t, out[2].Content, "tool-a")
+	assert.Contains(t, out[2].Content, `{"a":1,}`)
+	assert.Contains(t, out[2].Content, "invalid json")
+	assert.Equal(t, model.RoleAssistant, out[3].Role)
 }
 
 func TestSanitizeToolCallMessages_PreservesValidToolCallsAndRewritesInvalidOnes(t *testing.T) {

@@ -840,6 +840,13 @@ func sanitizeToolCallMessages(messages []model.Message, addContextPrefix bool) [
 		// rewrite the affected tool calls and tool responses into a user context
 		// message so the model can recover and retry.
 		validToolCalls, invalidToolCalls := splitToolCallsByValidJSONArguments(keptToolCalls)
+		if len(validToolCalls) == 0 && len(invalidToolCalls) > 0 {
+			cleaned := msg
+			cleaned.ToolCalls = nil
+			if cleaned.Content != "" || cleaned.ReasoningContent != "" || len(cleaned.ContentParts) > 0 {
+				out = append(out, cleaned)
+			}
+		}
 		if len(validToolCalls) > 0 {
 			msg.ToolCalls = validToolCalls
 			out = append(out, msg)
