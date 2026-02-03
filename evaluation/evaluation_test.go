@@ -102,6 +102,10 @@ type countingEvalResultManager struct {
 	last  *evalresult.EvalSetResult
 }
 
+func (m *countingEvalResultManager) Close() error {
+	return nil
+}
+
 func (m *countingEvalResultManager) Save(_ context.Context, _ string, evalSetResult *evalresult.EvalSetResult) (string, error) {
 	atomic.AddInt32(&m.saves, 1)
 	m.last = evalSetResult
@@ -120,6 +124,10 @@ type fakeMetricManager struct {
 	listErr error
 	getErr  error
 	metrics map[string]*metric.EvalMetric
+}
+
+func (f *fakeMetricManager) Close() error {
+	return nil
 }
 
 func (f *fakeMetricManager) List(ctx context.Context, appName, evalSetID string) ([]string, error) {
@@ -650,6 +658,10 @@ func TestAgentEvaluatorRunEvaluationNilRunResult(t *testing.T) {
 type failingEvalResultManager struct {
 	last *evalresult.EvalSetResult
 	err  error
+}
+
+func (m *failingEvalResultManager) Close() error {
+	return nil
 }
 
 func (m *failingEvalResultManager) Save(_ context.Context, _ string, evalSetResult *evalresult.EvalSetResult) (string, error) {
