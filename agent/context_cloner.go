@@ -23,10 +23,11 @@ import (
 // metadata) while still preserving cancellation and deadlines.
 type GoroutineContextCloner func(context.Context) context.Context
 
-var goroutineContextCloner atomic.Value
+var goroutineContextCloner atomic.Pointer[GoroutineContextCloner]
+var identityCloner = GoroutineContextCloner(identityContext)
 
 func init() {
-	goroutineContextCloner.Store(GoroutineContextCloner(identityContext))
+	goroutineContextCloner.Store(&identityCloner)
 }
 
 // SetGoroutineContextCloner configures how contexts are cloned for
@@ -37,7 +38,8 @@ func SetGoroutineContextCloner(cloner GoroutineContextCloner) {
 	if cloner == nil {
 		cloner = identityContext
 	}
-	goroutineContextCloner.Store(cloner)
+	c := cloner
+	goroutineContextCloner.Store(&c)
 }
 
 // CloneContext returns a context safe to use inside a new goroutine.
@@ -47,11 +49,11 @@ func CloneContext(ctx context.Context) context.Context {
 	if ctx == nil {
 		return nil
 	}
-	cloner, ok := goroutineContextCloner.Load().(GoroutineContextCloner)
-	if !ok || cloner == nil {
+	cloner := goroutineContextCloner.Load()
+	if cloner == nil || *cloner == nil {
 		return ctx
 	}
-	return cloner(ctx)
+	return (*cloner)(ctx)
 }
 
 // CloneContextForGoroutine returns a context safe to use inside a new

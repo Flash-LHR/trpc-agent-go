@@ -92,6 +92,10 @@ type FunctionCallResponseProcessor struct {
 	toolCallbacks       *tool.Callbacks
 }
 
+func (p *FunctionCallResponseProcessor) HandlesPartialResponse() bool {
+	return false
+}
+
 // NewFunctionCallResponseProcessor creates a new transfer response processor.
 func NewFunctionCallResponseProcessor(enableParallelTools bool, toolCallbacks *tool.Callbacks) *FunctionCallResponseProcessor {
 	return &FunctionCallResponseProcessor{
@@ -339,7 +343,7 @@ func (p *FunctionCallResponseProcessor) executeSingleToolCallSequential(
 	index int,
 	toolCall model.ToolCall,
 ) (*event.Event, error) {
-	_, span := trace.Tracer.Start(ctx, itelemetry.NewExecuteToolSpanName(toolCall.Function.Name))
+	_, span := trace.StartSpan(ctx, itelemetry.NewExecuteToolSpanName(toolCall.Function.Name))
 	defer span.End()
 	startTime := time.Now()
 	ctx, choices, modifiedArgs, shouldIgnoreError, err := p.executeToolCall(
@@ -499,7 +503,7 @@ func (p *FunctionCallResponseProcessor) runParallelToolCall(
 	}()
 
 	// Trace the tool execution for observability.
-	_, span := trace.Tracer.Start(ctx, itelemetry.NewExecuteToolSpanName(tc.Function.Name))
+	_, span := trace.StartSpan(ctx, itelemetry.NewExecuteToolSpanName(tc.Function.Name))
 	defer span.End()
 	startTime := time.Now()
 	// Execute the tool (streamable or callable) with callbacks.
@@ -708,7 +712,7 @@ func (p *FunctionCallResponseProcessor) buildMergedParallelEvent(
 		mergedEvent = mergeParallelToolCallResponseEvents(toolCallEvents)
 	}
 	if len(toolCallEvents) > 1 {
-		_, span := trace.Tracer.Start(ctx, itelemetry.NewExecuteToolSpanName(itelemetry.ToolNameMergedTools))
+		_, span := trace.StartSpan(ctx, itelemetry.NewExecuteToolSpanName(itelemetry.ToolNameMergedTools))
 		itelemetry.TraceMergedToolCalls(span, mergedEvent)
 		span.End()
 	}

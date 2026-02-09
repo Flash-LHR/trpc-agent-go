@@ -303,7 +303,7 @@ func TestRunModel_PluginBeforeModelShortCircuits(t *testing.T) {
 	runCtx := agent.NewInvocationContext(context.Background(), inv)
 
 	llm := &pluginCaptureModel{name: modelName}
-	ctx, ch, err := runModel(runCtx, local, llm, &model.Request{})
+	ctx, stream, err := runModel(runCtx, inv, local, llm, &model.Request{})
 	require.NoError(t, err)
 
 	got, ok := ctx.Value(testCtxKey{}).(string)
@@ -311,9 +311,11 @@ func TestRunModel_PluginBeforeModelShortCircuits(t *testing.T) {
 	require.Equal(t, ctxVal, got)
 
 	var resp *model.Response
-	for r := range ch {
+	stream.Seq(func(r *model.Response, respErr error) bool {
+		require.NoError(t, respErr)
 		resp = r
-	}
+		return true
+	})
 	require.NotNil(t, resp)
 	require.True(t, resp.Done)
 
@@ -340,9 +342,10 @@ func TestRunModel_PluginBeforeModelError(t *testing.T) {
 	runCtx := agent.NewInvocationContext(context.Background(), inv)
 
 	llm := &pluginCaptureModel{name: "m"}
-	_, ch, err := runModel(runCtx, nil, llm, &model.Request{})
+	_, stream, err := runModel(runCtx, inv, nil, llm, &model.Request{})
 	require.Error(t, err)
-	require.Nil(t, ch)
+	require.Nil(t, stream.Seq)
+	require.Nil(t, stream.Ch)
 }
 
 func TestProcessModelResponse_PluginAfterModelOverrides(t *testing.T) {

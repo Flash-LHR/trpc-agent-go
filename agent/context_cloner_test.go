@@ -28,7 +28,7 @@ func TestCloneContext_NilContext(t *testing.T) {
 func TestCloneContext_NilStoredCloner(t *testing.T) {
 	t.Cleanup(func() { SetGoroutineContextCloner(nil) })
 
-	goroutineContextCloner.Store(GoroutineContextCloner(nil))
+	goroutineContextCloner.Store(nil)
 
 	ctx := context.WithValue(context.Background(), "k", "v")
 	require.Same(t, ctx, CloneContext(ctx))

@@ -13,6 +13,7 @@ import (
 	"context"
 	"time"
 
+	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 )
@@ -100,10 +101,6 @@ func WithEmitterTimeout(timeout time.Duration) EventEmitterOption {
 // NewEventEmitter creates a new EventEmitter with the given event channel and options.
 // If eventChan is nil, returns a no-op emitter that safely ignores all emit calls.
 func NewEventEmitter(eventChan chan<- *event.Event, opts ...EventEmitterOption) EventEmitter {
-	if eventChan == nil {
-		return &noopEmitter{}
-	}
-
 	emitter := &eventEmitter{
 		ctx:       context.Background(),
 		eventChan: eventChan,
@@ -112,6 +109,16 @@ func NewEventEmitter(eventChan chan<- *event.Event, opts ...EventEmitterOption) 
 
 	for _, opt := range opts {
 		opt(emitter)
+	}
+
+	if emitter.eventChan == nil {
+		if emitter.ctx == nil {
+			return &noopEmitter{}
+		}
+		invocation, ok := agent.InvocationFromContext(emitter.ctx)
+		if !ok || invocation == nil || invocation.EventHandler() == nil {
+			return &noopEmitter{}
+		}
 	}
 
 	return emitter
@@ -235,7 +242,14 @@ func (e *eventEmitter) emitWithRecover(evt *event.Event) (err error) {
 		}
 	}()
 
-	return event.EmitEventWithTimeout(e.ctx, e.eventChan, evt, e.timeout)
+	if e.eventChan != nil {
+		return event.EmitEventWithTimeout(e.ctx, e.eventChan, evt, e.timeout)
+	}
+	if e.ctx == nil {
+		return nil
+	}
+	invocation, _ := agent.InvocationFromContext(e.ctx)
+	return agent.EmitEvent(e.ctx, invocation, nil, evt)
 }
 
 // noopEmitter is a no-op implementation of EventEmitter.
@@ -289,7 +303,7 @@ func GetEventEmitterWithContext(ctx context.Context, state State) EventEmitter {
 	}
 
 	// Check if EventChan is available
-	if execCtx.EventChan == nil {
+	if execCtx.EventChan == nil && (execCtx.Invocation == nil || execCtx.Invocation.EventHandler() == nil) {
 		return &noopEmitter{}
 	}
 

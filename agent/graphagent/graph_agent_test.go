@@ -165,6 +165,86 @@ func TestGraphAgentRun(t *testing.T) {
 	}
 }
 
+func TestGraphAgentRunWithEventHandler(t *testing.T) {
+	// Create a simple graph using the new API.
+	schema := graph.NewStateSchema().
+		AddField("message", graph.StateField{
+			Type:    reflect.TypeOf(""),
+			Reducer: graph.DefaultReducer,
+		}).
+		AddField("response", graph.StateField{
+			Type:    reflect.TypeOf(""),
+			Reducer: graph.DefaultReducer,
+		})
+
+	g, err := graph.NewStateGraph(schema).
+		AddNode("respond", func(ctx context.Context, state graph.State) (any, error) {
+			message := state["message"].(string)
+			return graph.State{"response": "Echo: " + message}, nil
+		}).
+		SetEntryPoint("respond").
+		SetFinishPoint("respond").
+		Compile()
+	require.NoError(t, err)
+
+	graphAgent, err := New("echo-agent", g, WithInitialState(graph.State{"message": "hello"}))
+	require.NoError(t, err)
+
+	invocation := &agent.Invocation{
+		InvocationID: "test-invocation",
+		RunOptions: agent.RunOptions{
+			DisableTracing: true,
+		},
+	}
+
+	eventCount := 0
+	err = graphAgent.RunWithEventHandler(context.Background(), invocation, func(ctx context.Context, evt *event.Event) error {
+		eventCount++
+		return nil
+	})
+	require.NoError(t, err)
+	require.Greater(t, eventCount, 0)
+}
+
+func TestGraphAgentRunWithEventHandler_HandlerError(t *testing.T) {
+	// Create a simple graph using the new API.
+	schema := graph.NewStateSchema().
+		AddField("message", graph.StateField{
+			Type:    reflect.TypeOf(""),
+			Reducer: graph.DefaultReducer,
+		}).
+		AddField("response", graph.StateField{
+			Type:    reflect.TypeOf(""),
+			Reducer: graph.DefaultReducer,
+		})
+
+	g, err := graph.NewStateGraph(schema).
+		AddNode("respond", func(ctx context.Context, state graph.State) (any, error) {
+			message := state["message"].(string)
+			return graph.State{"response": "Echo: " + message}, nil
+		}).
+		SetEntryPoint("respond").
+		SetFinishPoint("respond").
+		Compile()
+	require.NoError(t, err)
+
+	graphAgent, err := New("echo-agent", g, WithInitialState(graph.State{"message": "hello"}))
+	require.NoError(t, err)
+
+	invocation := &agent.Invocation{
+		InvocationID: "test-invocation",
+		RunOptions: agent.RunOptions{
+			DisableTracing: true,
+		},
+	}
+
+	expectedErr := errors.New("handler error")
+	err = graphAgent.RunWithEventHandler(context.Background(), invocation, func(ctx context.Context, evt *event.Event) error {
+		return expectedErr
+	})
+	require.ErrorIs(t, err, expectedErr)
+}
+
 func TestGraphAgentWithRuntimeState(t *testing.T) {
 	// Create a simple graph that uses runtime state.
 	schema := graph.NewStateSchema().

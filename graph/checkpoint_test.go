@@ -1214,9 +1214,14 @@ func TestRunModel_BeforeModelCustomResponse(t *testing.T) {
 	cbs := model.NewCallbacks().RegisterBeforeModel(func(ctx context.Context, req *model.Request) (*model.Response, error) {
 		return &model.Response{Choices: []model.Choice{{Index: 0, Message: model.NewAssistantMessage("custom")}}}, nil
 	})
-	_, ch, err := runModel(context.Background(), cbs, &dummyModel{}, &model.Request{Messages: []model.Message{model.NewUserMessage("hi")}})
+	_, stream, err := runModel(context.Background(), nil, cbs, &dummyModel{}, &model.Request{Messages: []model.Message{model.NewUserMessage("hi")}})
 	require.NoError(t, err)
-	rsp := <-ch
+	var rsp *model.Response
+	stream.Seq(func(resp *model.Response, respErr error) bool {
+		require.NoError(t, respErr)
+		rsp = resp
+		return false
+	})
 	require.NotNil(t, rsp)
 	require.Equal(t, "custom", rsp.Choices[0].Message.Content)
 }
@@ -1626,7 +1631,7 @@ func (e *errModel) GenerateContent(ctx context.Context, req *model.Request) (<-c
 func (e *errModel) Info() model.Info { return model.Info{Name: "err"} }
 
 func TestRunModel_GenerateContentError(t *testing.T) {
-	_, _, err := runModel(context.Background(), nil, &errModel{}, &model.Request{Messages: []model.Message{model.NewUserMessage("hi")}})
+	_, _, err := runModel(context.Background(), nil, nil, &errModel{}, &model.Request{Messages: []model.Message{model.NewUserMessage("hi")}})
 	require.Error(t, err)
 }
 
@@ -1664,7 +1669,7 @@ func TestRunModel_CallbackContextPropagation(t *testing.T) {
 		Messages: []model.Message{model.NewUserMessage("test")},
 	}
 
-	ctx, responseChan, err := runModel(ctx, callbacks, dummyModel, request)
+	ctx, stream, err := runModel(ctx, nil, callbacks, dummyModel, request)
 	require.NoError(t, err)
 
 	// Process the response to trigger AfterModel callback.
@@ -1673,7 +1678,8 @@ func TestRunModel_CallbackContextPropagation(t *testing.T) {
 	defer span.End()
 
 	// Consume all responses.
-	for response := range responseChan {
+	handleResponse := func(response *model.Response, respErr error) bool {
+		require.NoError(t, respErr)
 		// Process each response to trigger AfterModel callback.
 		_, _, err = processModelResponse(ctx, modelResponseConfig{
 			Response:       response,
@@ -1686,6 +1692,16 @@ func TestRunModel_CallbackContextPropagation(t *testing.T) {
 			Span:           span,
 		})
 		require.NoError(t, err)
+		return true
+	}
+	if stream.Ch != nil {
+		for response := range stream.Ch {
+			if !handleResponse(response, nil) {
+				break
+			}
+		}
+	} else if stream.Seq != nil {
+		stream.Seq(handleResponse)
 	}
 
 	// Verify that the context value was captured in AfterModel callback.

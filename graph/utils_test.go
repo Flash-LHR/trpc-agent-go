@@ -13,6 +13,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 type testStruct struct {
@@ -187,6 +189,62 @@ func TestDeepCopyAny(t *testing.T) {
 			input: map[string]int{},
 			want:  map[string]int{},
 		},
+		{
+			name: "MessageOp (AppendMessages)",
+			input: func() any {
+				text := "hello"
+				msg := model.Message{
+					Role: model.RoleUser,
+					ContentParts: []model.ContentPart{
+						{Type: model.ContentTypeText, Text: &text},
+					},
+				}
+				var op MessageOp = AppendMessages{Items: []model.Message{msg}}
+				return op
+			}(),
+			want: func() any {
+				text := "hello"
+				msg := model.Message{
+					Role: model.RoleUser,
+					ContentParts: []model.ContentPart{
+						{Type: model.ContentTypeText, Text: &text},
+					},
+				}
+				var op MessageOp = AppendMessages{Items: []model.Message{msg}}
+				return op
+			}(),
+		},
+		{
+			name: "[]MessageOp",
+			input: func() any {
+				text := "hello"
+				msg := model.Message{
+					Role: model.RoleUser,
+					ContentParts: []model.ContentPart{
+						{Type: model.ContentTypeText, Text: &text},
+					},
+				}
+				return []MessageOp{
+					AppendMessages{Items: []model.Message{msg}},
+					ReplaceLastUser{Content: "world"},
+					RemoveAllMessages{},
+				}
+			}(),
+			want: func() any {
+				text := "hello"
+				msg := model.Message{
+					Role: model.RoleUser,
+					ContentParts: []model.ContentPart{
+						{Type: model.ContentTypeText, Text: &text},
+					},
+				}
+				return []MessageOp{
+					AppendMessages{Items: []model.Message{msg}},
+					ReplaceLastUser{Content: "world"},
+					RemoveAllMessages{},
+				}
+			}(),
+		},
 	}
 
 	for _, tt := range tests {
@@ -196,6 +254,51 @@ func TestDeepCopyAny(t *testing.T) {
 				t.Errorf("deepCopyAny(%v) = %v, want %v", tt.input, copied, tt.want)
 			}
 		})
+	}
+}
+
+func TestDeepCopyAny_MessageOpsDeepCopySlices(t *testing.T) {
+	text := "hello"
+	msgs := []model.Message{
+		{
+			Role: model.RoleUser,
+			ContentParts: []model.ContentPart{
+				{Type: model.ContentTypeText, Text: &text},
+			},
+		},
+	}
+	ops := []MessageOp{
+		AppendMessages{Items: msgs},
+	}
+
+	copiedAny := deepCopyAny(ops)
+	copiedOps, ok := copiedAny.([]MessageOp)
+	if !ok {
+		t.Fatalf("expected []MessageOp, got %T", copiedAny)
+	}
+	if len(copiedOps) != 1 {
+		t.Fatalf("expected 1 op, got %d", len(copiedOps))
+	}
+	copiedAppend, ok := copiedOps[0].(AppendMessages)
+	if !ok {
+		t.Fatalf("expected AppendMessages, got %T", copiedOps[0])
+	}
+	if len(copiedAppend.Items) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(copiedAppend.Items))
+	}
+
+	origPtr := ops[0].(AppendMessages).Items[0].ContentParts[0].Text
+	copiedPtr := copiedAppend.Items[0].ContentParts[0].Text
+	if origPtr == nil || copiedPtr == nil {
+		t.Fatalf("expected non-nil text pointers")
+	}
+	if origPtr == copiedPtr {
+		t.Fatalf("expected deep-copied text pointer, got same address")
+	}
+
+	*origPtr = "changed"
+	if got := *copiedPtr; got != "hello" {
+		t.Fatalf("copied text mutated: got=%q want=%q", got, "hello")
 	}
 }
 

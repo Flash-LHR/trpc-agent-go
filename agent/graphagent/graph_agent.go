@@ -13,15 +13,18 @@ package graphagent
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/llmflow"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
+	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/barrier"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/log"
@@ -34,6 +37,7 @@ import (
 type GraphAgent struct {
 	name              string
 	description       string
+	invokeSpanName    string
 	graph             *graph.Graph
 	executor          *graph.Executor
 	subAgents         []agent.Agent
@@ -53,16 +57,22 @@ func New(name string, g *graph.Graph, opts ...Option) (*GraphAgent, error) {
 		opt(&options)
 	}
 
-	// Build executor options.
-	var executorOpts []graph.ExecutorOption
-	executorOpts = append(executorOpts,
-		graph.WithChannelBufferSize(options.ChannelBufferSize))
+	var (
+		executor *graph.Executor
+		err      error
+	)
 	if options.CheckpointSaver != nil {
-		executorOpts = append(executorOpts,
-			graph.WithCheckpointSaver(options.CheckpointSaver))
+		executor, err = graph.NewExecutor(
+			g,
+			graph.WithChannelBufferSize(options.ChannelBufferSize),
+			graph.WithCheckpointSaver(options.CheckpointSaver),
+		)
+	} else {
+		executor, err = graph.NewExecutor(
+			g,
+			graph.WithChannelBufferSize(options.ChannelBufferSize),
+		)
 	}
-
-	executor, err := graph.NewExecutor(g, executorOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create graph executor: %w", err)
 	}
@@ -70,6 +80,7 @@ func New(name string, g *graph.Graph, opts ...Option) (*GraphAgent, error) {
 	return &GraphAgent{
 		name:              name,
 		description:       options.Description,
+		invokeSpanName:    itelemetry.OperationInvokeAgent + " " + name,
 		graph:             g,
 		executor:          executor,
 		subAgents:         options.SubAgents,
@@ -85,18 +96,149 @@ func (ga *GraphAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-
 	// Setup invocation
 	ga.setupInvocation(invocation)
 
-	out := make(chan *event.Event, ga.channelBufferSize)
+	tracingDisabled := invocation != nil && invocation.RunOptions.DisableTracing
+	// When the framework tracer is still the default no-op tracer, treating
+	// tracing as disabled avoids extra goroutine/channel hops on hot paths while
+	// preserving observable behavior (no spans are recorded).
+	if !tracingDisabled && trace.IsNoopTracer() {
+		tracingDisabled = true
+	}
+
+	if invocation != nil &&
+		tracingDisabled &&
+		ga.agentCallbacks == nil &&
+		!barrier.Enabled(invocation) {
+		initialState := ga.createInitialState(ctx, invocation)
+		eventChan, err := ga.executor.Execute(ctx, initialState, invocation)
+		if err != nil {
+			out := make(chan *event.Event, 1)
+			evt := event.NewErrorEvent(invocation.InvocationID, invocation.AgentName,
+				model.ErrorTypeFlowError, err.Error())
+			if emitErr := agent.EmitEvent(ctx, invocation, out, evt); emitErr != nil {
+				log.Errorf("graphagent: emit error event failed: %v", emitErr)
+			}
+			close(out)
+			return out, nil
+		}
+		return eventChan, nil
+	}
+
+	outSize := ga.channelBufferSize
+	if invocation != nil && invocation.RunOptions.EventChannelBufferSize > 0 {
+		outSize = invocation.RunOptions.EventChannelBufferSize
+	}
+	out := make(chan *event.Event, outSize)
 	runCtx := agent.CloneContext(ctx)
 	go ga.runWithBarrier(runCtx, invocation, out)
 	return out, nil
 }
 
+// RunWithEventHandler executes the graph and delivers emitted events to handler.
+//
+// When tracing is disabled and there are no agent callbacks/barriers, this runs
+// the graph in the current goroutine and avoids creating an extra event channel
+// hop. This can reduce overhead for streaming integrations (for example SSE).
+//
+// For other execution modes it falls back to Agent.Run and forwards events from
+// the returned channel to handler.
+func (ga *GraphAgent) RunWithEventHandler(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	handler agent.EventHandler,
+) error {
+	if handler == nil {
+		return fmt.Errorf("handler is nil")
+	}
+
+	ga.setupInvocation(invocation)
+
+	if invocation != nil &&
+		ga.agentCallbacks == nil &&
+		!barrier.Enabled(invocation) {
+		runCtx, cancel := context.WithCancel(agent.CloneContext(ctx))
+		defer cancel()
+
+		// Match GraphAgent.Run tracing semantics even when we avoid the extra
+		// channel hop.
+		if !invocation.RunOptions.DisableTracing {
+			var span oteltrace.Span
+			runCtx, span = trace.StartSpan(runCtx, ga.invokeSpanName)
+			itelemetry.TraceBeforeInvokeAgent(span, invocation, ga.description, "", nil)
+			defer span.End()
+		}
+
+		initialState := ga.createInitialState(runCtx, invocation)
+
+		type handlerErrHolder struct {
+			err error
+		}
+		var handlerErr atomic.Pointer[handlerErrHolder]
+
+		prevHandler := invocation.EventHandler()
+		invocation.SetEventHandler(func(hctx context.Context, evt *event.Event) error {
+			if herr := handlerErr.Load(); herr != nil {
+				return herr.err
+			}
+			if err := handler(hctx, evt); err != nil {
+				if handlerErr.CompareAndSwap(nil, &handlerErrHolder{err: err}) {
+					cancel()
+				}
+				return err
+			}
+			return nil
+		})
+		defer invocation.SetEventHandler(prevHandler)
+
+		err := ga.executor.ExecuteBlocking(runCtx, initialState, invocation, nil)
+		if herr := handlerErr.Load(); herr != nil {
+			return herr.err
+		}
+		return err
+	}
+
+	eventChan, err := ga.Run(ctx, invocation)
+	if err != nil {
+		return err
+	}
+	for evt := range eventChan {
+		if err := handler(ctx, evt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // runWithBarrier emits a start barrier, waits for completion, then runs the graph with callbacks
 // pipeline and forwards all events to the provided output channel.
 func (ga *GraphAgent) runWithBarrier(ctx context.Context, invocation *agent.Invocation, out chan<- *event.Event) {
-	ctx, span := trace.Tracer.Start(ctx, fmt.Sprintf("%s %s", itelemetry.OperationInvokeAgent, invocation.AgentName))
+	ctx, span := trace.StartSpan(ctx, ga.invokeSpanName)
 	itelemetry.TraceBeforeInvokeAgent(span, invocation, ga.description, "", nil)
 	defer span.End()
+
+	// GraphAgent.Run already owns the goroutine boundary that delivers events to
+	// out. When there are no agent callbacks, execute the graph in this goroutine
+	// to avoid an additional executor goroutine and forwarding hop.
+	if ga.agentCallbacks == nil {
+		// Emit a barrier event and wait for completion in a dedicated goroutine so that the runner can append all prior
+		// events before GraphAgent reads history.
+		if err := ga.emitStartBarrierAndWait(ctx, invocation, out); err != nil {
+			evt := event.NewErrorEvent(invocation.InvocationID, invocation.AgentName,
+				model.ErrorTypeFlowError, err.Error())
+			span.SetStatus(codes.Error, err.Error())
+			span.SetAttributes(attribute.String(itelemetry.KeyErrorType, model.ErrorTypeFlowError))
+			if emitErr := agent.EmitEvent(ctx, invocation, out, evt); emitErr != nil {
+				log.Errorf("graphagent: emit error event failed: %v", emitErr)
+			}
+			close(out)
+			return
+		}
+
+		initialState := ga.createInitialState(ctx, invocation)
+		// ExecuteBlocking closes out when execution completes.
+		_ = ga.executor.ExecuteBlocking(ctx, initialState, invocation, out)
+		return
+	}
+
 	defer close(out)
 	// Emit a barrier event and wait for completion in a dedicated goroutine so that the runner can append all prior
 	// events before GraphAgent reads history.
@@ -205,7 +347,7 @@ func (ga *GraphAgent) createInitialState(ctx context.Context, invocation *agent.
 		// Clone the base initial state to avoid modifying the original.
 		initialState = ga.initialState.Clone()
 	} else {
-		initialState = make(graph.State)
+		initialState = make(graph.State, 8)
 	}
 
 	// Merge runtime state from RunOptions if provided.
@@ -218,30 +360,45 @@ func (ga *GraphAgent) createInitialState(ctx context.Context, invocation *agent.
 	// Seed messages from session events so multi‑turn runs share history.
 	// This mirrors ContentRequestProcessor behavior used by non-graph flows.
 	if invocation.Session != nil {
-		// Build a temporary request to reuse the processor logic.
-		req := &model.Request{}
+		sess := invocation.Session
+		sess.EventMu.RLock()
+		hasEvents := len(sess.Events) > 0
+		sess.EventMu.RUnlock()
 
-		// Default processor: include (possibly overridden) + preserve same branch.
-		contentOpts := []processor.ContentOption{
-			processor.WithAddSessionSummary(ga.options.AddSessionSummary),
-			processor.WithMaxHistoryRuns(ga.options.MaxHistoryRuns),
-			processor.WithPreserveSameBranch(true),
-			processor.WithTimelineFilterMode(ga.options.messageTimelineFilterMode),
-			processor.WithBranchFilterMode(ga.options.messageBranchFilterMode),
-		}
-		if ga.options.ReasoningContentMode != "" {
-			contentOpts = append(contentOpts,
-				processor.WithReasoningContentMode(ga.options.ReasoningContentMode))
-		}
-		if ga.options.summaryFormatter != nil {
-			contentOpts = append(contentOpts,
-				processor.WithSummaryFormatter(ga.options.summaryFormatter))
-		}
-		p := processor.NewContentRequestProcessor(contentOpts...)
-		// We only need messages side effect; no output channel needed.
-		p.ProcessRequest(ctx, invocation, req, nil)
-		if len(req.Messages) > 0 {
-			initialState[graph.StateKeyMessages] = req.Messages
+		sess.TracksMu.RLock()
+		hasTracks := len(sess.Tracks) > 0
+		sess.TracksMu.RUnlock()
+
+		sess.SummariesMu.RLock()
+		hasSummaries := len(sess.Summaries) > 0
+		sess.SummariesMu.RUnlock()
+
+		if hasEvents || hasTracks || hasSummaries {
+			// Build a temporary request to reuse the processor logic.
+			req := &model.Request{}
+
+			// Default processor: include (possibly overridden) + preserve same branch.
+			contentOpts := []processor.ContentOption{
+				processor.WithAddSessionSummary(ga.options.AddSessionSummary),
+				processor.WithMaxHistoryRuns(ga.options.MaxHistoryRuns),
+				processor.WithPreserveSameBranch(true),
+				processor.WithTimelineFilterMode(ga.options.messageTimelineFilterMode),
+				processor.WithBranchFilterMode(ga.options.messageBranchFilterMode),
+			}
+			if ga.options.ReasoningContentMode != "" {
+				contentOpts = append(contentOpts,
+					processor.WithReasoningContentMode(ga.options.ReasoningContentMode))
+			}
+			if ga.options.summaryFormatter != nil {
+				contentOpts = append(contentOpts,
+					processor.WithSummaryFormatter(ga.options.summaryFormatter))
+			}
+			p := processor.NewContentRequestProcessor(contentOpts...)
+			// We only need messages side effect; no output channel needed.
+			p.ProcessRequest(ctx, invocation, req, nil)
+			if len(req.Messages) > 0 {
+				initialState[graph.StateKeyMessages] = req.Messages
+			}
 		}
 	}
 
@@ -265,6 +422,7 @@ func (ga *GraphAgent) createInitialState(ctx context.Context, invocation *agent.
 	if invocation.Session != nil {
 		initialState[graph.StateKeySession] = invocation.Session
 	}
+
 	// Add parent agent to state so agent nodes can access sub-agents.
 	initialState[graph.StateKeyParentAgent] = ga
 	// Set checkpoint namespace if not already set.
@@ -279,6 +437,54 @@ func (ga *GraphAgent) setupInvocation(invocation *agent.Invocation) {
 	// Set agent and agent name.
 	invocation.Agent = ga
 	invocation.AgentName = ga.name
+
+	ga.tuneRunOptionsForDirectStreaming(invocation)
+}
+
+func (ga *GraphAgent) tuneRunOptionsForDirectStreaming(invocation *agent.Invocation) {
+	if invocation == nil {
+		return
+	}
+	ro := &invocation.RunOptions
+	if !ro.StreamModeEnabled || len(ro.StreamModes) == 0 {
+		return
+	}
+	// When running without Runner's event loop (no appender attached), avoid
+	// emitting graph lifecycle events that the caller did not request via
+	// StreamModes. This preserves existing behavior when Runner is present and
+	// reduces overhead for direct streaming integrations.
+	if appender.IsAttached(invocation) {
+		return
+	}
+
+	allowTasks := false
+	allowUpdates := false
+	for _, mode := range ro.StreamModes {
+		switch mode {
+		case agent.StreamModeTasks, agent.StreamModeDebug:
+			allowTasks = true
+		case agent.StreamModeUpdates:
+			allowUpdates = true
+		default:
+		}
+		if allowTasks && allowUpdates {
+			break
+		}
+	}
+	if !allowTasks {
+		ro.DisableGraphExecutorEvents = true
+		ro.DisableModelExecutionEvents = true
+	}
+	if !allowUpdates {
+		ro.DisableGraphCompletionEvent = true
+	}
+	// Reduce per-request allocations for the common "direct streaming messages"
+	// integration (e.g., SSE) when callers do not request task/update events.
+	//
+	// Callers can still override this explicitly via WithEventChannelBufferSize.
+	if ro.EventChannelBufferSize <= 0 && !allowTasks && !allowUpdates {
+		ro.EventChannelBufferSize = 32
+	}
 }
 
 // Tools returns the list of tools available to this agent.

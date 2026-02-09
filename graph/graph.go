@@ -146,7 +146,6 @@ type Node struct {
 	// conditional branches to resolve results with clearer, local semantics.
 	ends map[string]string
 
-	// It's effect just for LLM node
 	modelCallbacks *model.Callbacks
 	// just for tool node.
 	toolCallbacks *tool.Callbacks
@@ -159,6 +158,11 @@ type Node struct {
 	// llmGenerationConfig stores per-node generation configuration for LLM nodes.
 	// If set, AddLLMNode forwards it to the underlying LLM runner.
 	llmGenerationConfig *model.GenerationConfig
+	// llmRunner is the internal execution helper for LLM nodes built via
+	// StateGraph.AddLLMNode. It enables executor fast-paths to bypass
+	// state-update construction when the graph is terminal and state isn't
+	// externally observed.
+	llmRunner *llmRunner
 
 	// Subgraph (agent node) options
 	agentInputMapper      SubgraphInputMapper
@@ -202,8 +206,14 @@ type Graph struct {
 	edges            map[string][]*Edge
 	conditionalEdges map[string]*ConditionalEdge
 	entryPoint       string
+	// validationRevision is bumped whenever the graph structure changes so that
+	// repeated calls to validate() can return early for immutable compiled
+	// graphs.
+	validationRevision uint64
+	validatedRevision  uint64
+	validated          bool
 	// Pregel-style extensions
-	channelManager *channel.Manager
+	channelDefs    map[string]channelDef
 	triggerToNodes map[string][]string // Maps channel names to nodes that are triggered
 
 	// Caching
@@ -214,6 +224,11 @@ type Graph struct {
 	graphVersion string
 }
 
+type channelDef struct {
+	Behavior        channel.Behavior
+	BarrierExpected []string
+}
+
 // New creates a new empty graph with the given state schema.
 func New(schema *StateSchema) *Graph {
 	if schema == nil {
@@ -221,13 +236,17 @@ func New(schema *StateSchema) *Graph {
 	}
 
 	return &Graph{
-		schema:           schema,
-		nodes:            make(map[string]*Node),
-		edges:            make(map[string][]*Edge),
-		conditionalEdges: make(map[string]*ConditionalEdge),
-		channelManager:   channel.NewChannelManager(),
-		triggerToNodes:   make(map[string][]string),
+		schema:         schema,
+		nodes:          make(map[string]*Node),
+		edges:          make(map[string][]*Edge),
+		// channelDefs and triggerToNodes are lazily initialized. Many graphs
+		// (for example single-node graphs) don't require Pregel channels.
 	}
+}
+
+func (g *Graph) invalidateValidationLocked() {
+	g.validationRevision++
+	g.validated = false
 }
 
 // Node returns a node by ID.
@@ -306,9 +325,9 @@ func (g *Graph) cacheNamespace(nodeID string) string {
 	v := g.graphVersion
 	g.mu.RUnlock()
 	if v == "" {
-		return fmt.Sprintf("%s:%s", CacheNamespacePrefix, nodeID)
+		return CacheNamespacePrefix + ":" + nodeID
 	}
-	return fmt.Sprintf("%s:%s:%s", CacheNamespacePrefix, v, nodeID)
+	return CacheNamespacePrefix + ":" + v + ":" + nodeID
 }
 
 // clearCacheForNodes clears cache entries for the given node IDs.
@@ -327,11 +346,17 @@ func (g *Graph) clearCacheForNodes(nodes []string) {
 // validate validates the graph structure.
 func (g *Graph) validate() error {
 	g.mu.RLock()
-	defer g.mu.RUnlock()
+	if g.validated && g.validatedRevision == g.validationRevision {
+		g.mu.RUnlock()
+		return nil
+	}
+	validationRevision := g.validationRevision
 	if g.entryPoint == "" {
+		g.mu.RUnlock()
 		return fmt.Errorf("graph must have an entry point")
 	}
 	if _, exists := g.nodes[g.entryPoint]; !exists {
+		g.mu.RUnlock()
 		return fmt.Errorf("entry point node %s does not exist", g.entryPoint)
 	}
 	// Validate declared destinations exist.
@@ -345,6 +370,7 @@ func (g *Graph) validate() error {
 					continue
 				}
 				if _, ok := g.nodes[to]; !ok {
+					g.mu.RUnlock()
 					return fmt.Errorf("node %s declares destination %s which does not exist", n.ID, to)
 				}
 			}
@@ -356,12 +382,26 @@ func (g *Graph) validate() error {
 					continue
 				}
 				if _, ok := g.nodes[target]; !ok {
+					g.mu.RUnlock()
 					return fmt.Errorf("node %s declares end target %s which does not exist", n.ID, target)
 				}
 			}
 		}
 	}
-	return g.schema.validateSchema()
+	schema := g.schema
+	g.mu.RUnlock()
+
+	if err := schema.validateSchema(); err != nil {
+		return err
+	}
+
+	g.mu.Lock()
+	if g.validationRevision == validationRevision {
+		g.validated = true
+		g.validatedRevision = validationRevision
+	}
+	g.mu.Unlock()
+	return nil
 }
 
 // ExecutionContext contains context for graph execution.
@@ -423,6 +463,7 @@ func (g *Graph) addNode(node *Node) error {
 		return fmt.Errorf("node with ID %s already exists for %+v", node.ID, node)
 	}
 	g.nodes[node.ID] = node
+	g.invalidateValidationLocked()
 	return nil
 }
 
@@ -445,6 +486,7 @@ func (g *Graph) addEdge(edge *Edge) error {
 		}
 	}
 	g.edges[edge.From] = append(g.edges[edge.From], edge)
+	g.invalidateValidationLocked()
 	return nil
 }
 
@@ -472,7 +514,11 @@ func (g *Graph) addConditionalEdge(condEdge *ConditionalEdge) error {
 			}
 		}
 	}
+	if g.conditionalEdges == nil {
+		g.conditionalEdges = make(map[string]*ConditionalEdge)
+	}
 	g.conditionalEdges[condEdge.From] = condEdge
+	g.invalidateValidationLocked()
 	return nil
 }
 
@@ -480,12 +526,16 @@ func (g *Graph) addConditionalEdge(condEdge *ConditionalEdge) error {
 func (g *Graph) setEntryPoint(nodeID string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.entryPoint == nodeID {
+		return nil
+	}
 	if nodeID != "" {
 		if _, exists := g.nodes[nodeID]; !exists {
 			return fmt.Errorf("entry point node %s does not exist", nodeID)
 		}
 	}
 	g.entryPoint = nodeID
+	g.invalidateValidationLocked()
 	return nil
 }
 
@@ -493,29 +543,77 @@ func (g *Graph) setEntryPoint(nodeID string) error {
 
 // addChannel adds a channel to the graph.
 func (g *Graph) addChannel(name string, channelType channel.Behavior) {
-	g.channelManager.AddChannel(name, channelType)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.channelDefs == nil {
+		g.channelDefs = make(map[string]channelDef)
+	}
+	if _, exists := g.channelDefs[name]; exists {
+		return
+	}
+	g.channelDefs[name] = channelDef{Behavior: channelType}
 }
 
 // getChannel retrieves a channel definition by name. This is primarily used
 // during graph construction and in tests. Runtime execution should operate on
 // the per-execution channels stored in ExecutionContext.
-func (g *Graph) getChannel(name string) (*channel.Channel, bool) {
-	return g.channelManager.GetChannel(name)
+func (g *Graph) getChannel(name string) (channelDef, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	ch, ok := g.channelDefs[name]
+	if !ok {
+		return channelDef{}, false
+	}
+	return ch, true
 }
 
 // getAllChannels returns all channel definitions in the graph. Callers must
 // treat the returned channels as immutable templates (name + behavior).
 // Per-execution channel state (values, versions, availability) is stored in
 // ExecutionContext.channels.
-func (g *Graph) getAllChannels() map[string]*channel.Channel {
-	return g.channelManager.GetAllChannels()
+func (g *Graph) getAllChannels() map[string]channelDef {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	if len(g.channelDefs) == 0 {
+		return nil
+	}
+	result := make(map[string]channelDef, len(g.channelDefs))
+	for name, def := range g.channelDefs {
+		if len(def.BarrierExpected) > 0 {
+			def.BarrierExpected = append([]string(nil), def.BarrierExpected...)
+		}
+		result[name] = def
+	}
+	return result
+}
+
+func (g *Graph) setBarrierExpected(channelName string, expected []string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.channelDefs == nil {
+		g.channelDefs = make(map[string]channelDef)
+	}
+	def, ok := g.channelDefs[channelName]
+	if !ok {
+		return
+	}
+	if len(expected) == 0 {
+		def.BarrierExpected = nil
+		g.channelDefs[channelName] = def
+		return
+	}
+	def.BarrierExpected = append([]string(nil), expected...)
+	g.channelDefs[channelName] = def
 }
 
 // getTriggerToNodes returns the mapping of channels to triggered nodes.
 func (g *Graph) getTriggerToNodes() map[string][]string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	result := make(map[string][]string)
+	if len(g.triggerToNodes) == 0 {
+		return nil
+	}
+	result := make(map[string][]string, len(g.triggerToNodes))
 	for k, v := range g.triggerToNodes {
 		result[k] = append([]string{}, v...)
 	}
@@ -526,6 +624,9 @@ func (g *Graph) getTriggerToNodes() map[string][]string {
 func (g *Graph) addNodeTrigger(channelName string, nodeID string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.triggerToNodes == nil {
+		g.triggerToNodes = make(map[string][]string)
+	}
 	// Deduplicate
 	existing := g.triggerToNodes[channelName]
 	for _, n := range existing {

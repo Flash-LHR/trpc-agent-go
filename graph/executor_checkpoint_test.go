@@ -414,9 +414,6 @@ func TestExecutor_GetNextChannelsInStep_And_ClearMarks_And_UpdateVersionsSeen(t 
 	g := New(NewStateSchema())
 	// add a channel and mark updated at step 5
 	g.addChannel("branch:to:x", ichannel.BehaviorLastValue)
-	c, ok := g.getChannel("branch:to:x")
-	require.True(t, ok)
-	c.Update([]any{"v"}, 5)
 
 	exec := &Executor{graph: g}
 	// Build execution context so per-run channels are created from definitions.
@@ -953,7 +950,7 @@ func TestExecutor_GetNextNodes_And_BuildTaskStateCopy_And_MergeNodeCallbacks(t *
 
 	// buildTaskStateCopy with overlay
 	tsk := &Task{NodeID: "nodeX", Overlay: State{"b": 2}}
-	st := exec.buildTaskStateCopy(ec, tsk)
+	st := exec.buildTaskStateCopy(ec, tsk, false)
 	require.Equal(t, 1, st["a"])
 	require.Equal(t, 2, st["b"])
 
@@ -1002,9 +999,7 @@ func TestExecutor_BuildExecutionContext_ResumedNilCheckpoint(t *testing.T) {
 
 	g := New(NewStateSchema())
 	g.addChannel(barrierChannel, ichannel.BehaviorBarrier)
-	template, ok := g.getChannel(barrierChannel)
-	require.True(t, ok)
-	template.SetBarrierExpected(expectedSenders)
+	g.setBarrierExpected(barrierChannel, expectedSenders)
 
 	exec := &Executor{graph: g}
 	ec := exec.buildExecutionContext(nil, invocationID, State{}, true, nil)
@@ -1031,9 +1026,7 @@ func TestExecutor_BuildExecutionContext_SkipsMissingCheckpointChannels(
 	g := New(NewStateSchema())
 	g.addChannel(knownChannel, ichannel.BehaviorLastValue)
 	g.addChannel(barrierChannel, ichannel.BehaviorBarrier)
-	template, ok := g.getChannel(barrierChannel)
-	require.True(t, ok)
-	template.SetBarrierExpected([]string{barrierSender})
+	g.setBarrierExpected(barrierChannel, []string{barrierSender})
 
 	exec := &Executor{graph: g}
 	last := &Checkpoint{
@@ -1087,9 +1080,9 @@ func TestExecutor_ApplyPendingWrites_UsesExecCtxChannels(t *testing.T) {
 	exec.applyPendingWrites(context.Background(), nil, ec, writes)
 
 	// Graph-level channel definition should remain untouched.
-	graphCh, _ := g.getChannel("x")
-	require.NotNil(t, graphCh)
-	require.Equal(t, int64(0), graphCh.Version)
+	def, ok := g.getChannel("x")
+	require.True(t, ok)
+	require.Equal(t, ichannel.BehaviorLastValue, def.Behavior)
 
 	// Per-run channel should have applied both writes in sequence order
 	// (Sequence=1 then Sequence=2), ending with value 1 and version 2.
@@ -1114,6 +1107,6 @@ func TestRunModel_BeforeModelError(t *testing.T) {
 	cbs := model.NewCallbacks().RegisterBeforeModel(func(ctx context.Context, req *model.Request) (*model.Response, error) {
 		return nil, fmt.Errorf("boom")
 	})
-	_, _, err := runModel(context.Background(), cbs, &dummyModel{}, &model.Request{Messages: []model.Message{model.NewUserMessage("hi")}})
+	_, _, err := runModel(context.Background(), nil, cbs, &dummyModel{}, &model.Request{Messages: []model.Message{model.NewUserMessage("hi")}})
 	require.Error(t, err)
 }

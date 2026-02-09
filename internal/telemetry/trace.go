@@ -59,7 +59,7 @@ func NewChatSpanName(requestModel string) string {
 
 // NewExecuteToolSpanName creates a new execute tool span name.
 func NewExecuteToolSpanName(toolName string) string {
-	return fmt.Sprintf("%s %s", OperationExecuteTool, toolName)
+	return OperationExecuteTool + " " + toolName
 }
 
 const (
@@ -87,11 +87,14 @@ type Workflow struct {
 
 // NewWorkflowSpanName creates a new workflow span name.
 func NewWorkflowSpanName(workflowName string) string {
-	return fmt.Sprintf("%s %s", OperationWorkflow, workflowName)
+	return OperationWorkflow + " " + workflowName
 }
 
 // TraceWorkflow traces the workflow.
 func TraceWorkflow(span trace.Span, workflow *Workflow) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
 	span.SetAttributes(attribute.String(KeyGenAIOperationName, OperationWorkflow))
 	span.SetAttributes(attribute.String(KeyGenAIWorkflowName, workflow.Name))
 	span.SetAttributes(attribute.String(KeyGenAIWorkflowID, workflow.ID))
@@ -125,7 +128,7 @@ func newInferenceSpanName(operationNames, requestModel string) string {
 	if requestModel == "" {
 		return operationNames
 	}
-	return fmt.Sprintf("%s %s", operationNames, requestModel)
+	return operationNames + " " + requestModel
 }
 
 const (
@@ -285,6 +288,9 @@ func TraceMergedToolCalls(span trace.Span, rspEvent *event.Event) {
 
 // TraceBeforeInvokeAgent traces the before invocation of an agent.
 func TraceBeforeInvokeAgent(span trace.Span, invoke *agent.Invocation, agentDescription, instructions string, genConfig *model.GenerationConfig) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
 	if invoke != nil && len(invoke.RunOptions.SpanAttributes) > 0 {
 		span.SetAttributes(invoke.RunOptions.SpanAttributes...)
 	}
@@ -342,6 +348,9 @@ type TokenUsage struct {
 
 // TraceAfterInvokeAgent traces the after invocation of an agent.
 func TraceAfterInvokeAgent(span trace.Span, rspEvent *event.Event, tokenUsage *TokenUsage, timeToFirstToken time.Duration) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
 	if rspEvent == nil {
 		return
 	}
@@ -384,6 +393,9 @@ func TraceAfterInvokeAgent(span trace.Span, rspEvent *event.Event, tokenUsage *T
 
 // TraceChat traces the invocation of an LLM call.
 func TraceChat(span trace.Span, invoke *agent.Invocation, req *model.Request, rsp *model.Response, eventID string, timeToFirstToken time.Duration) {
+	if span == nil || !span.IsRecording() {
+		return
+	}
 	attrs := []attribute.KeyValue{
 		attribute.String(KeyGenAISystem, SystemTRPCGoAgent),
 		attribute.String(KeyGenAIOperationName, OperationChat),

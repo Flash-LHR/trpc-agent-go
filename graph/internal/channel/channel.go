@@ -47,11 +47,9 @@ type Channel struct {
 // NewChannel creates a new channel with the specified behavior.
 func NewChannel(name string, channelBehavior Behavior) *Channel {
 	return &Channel{
-		Name:       name,
-		Behavior:   channelBehavior,
-		Values:     make([]any, 0),
-		BarrierSet: make(map[string]bool),
-		Available:  false,
+		Name:      name,
+		Behavior:  channelBehavior,
+		Available: false,
 	}
 }
 

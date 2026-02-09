@@ -19,11 +19,40 @@ type InvocationContext struct {
 }
 type invocationKey struct{}
 
+// WithInvocation attaches invocation to ctx.
+//
+// It avoids allocating an InvocationContext wrapper and returns ctx unchanged
+// when it already carries the same invocation.
+func WithInvocation(ctx context.Context, invocation *Invocation) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if current, ok := InvocationFromContext(ctx); ok && current == invocation {
+		return ctx
+	}
+	return context.WithValue(ctx, invocationKey{}, invocation)
+}
+
 // NewInvocationContext creates a new InvocationContext.
 func NewInvocationContext(ctx context.Context, invocation *Invocation) *InvocationContext {
 	return &InvocationContext{
-		Context: context.WithValue(ctx, invocationKey{}, invocation),
+		Context: WithInvocation(ctx, invocation),
 	}
+}
+
+// NewInvocationContextIfNeeded wraps ctx with invocation only when ctx doesn't
+// already carry the same invocation.
+//
+// This avoids building deep context chains (and extra allocations) on hot paths
+// where contexts are forwarded through multiple layers.
+func NewInvocationContextIfNeeded(ctx context.Context, invocation *Invocation) context.Context {
+	if ctx == nil {
+		return NewInvocationContext(context.Background(), invocation)
+	}
+	if current, ok := InvocationFromContext(ctx); ok && current == invocation {
+		return ctx
+	}
+	return NewInvocationContext(ctx, invocation)
 }
 
 // InvocationFromContext returns the invocation from the context.
@@ -80,10 +109,5 @@ func GetRuntimeStateValueFromContext[T any](ctx context.Context, key string) (T,
 
 // CheckContextCancelled check context cancelled
 func CheckContextCancelled(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		return nil
-	}
+	return ctx.Err()
 }
