@@ -280,8 +280,7 @@ func EmitEventWithTimeout(ctx context.Context, ch chan<- *Event,
 	// rather than attempting to send. This avoids a racy select where both
 	// the send and the ctx.Done() cases are ready, which could otherwise
 	// result in emitting an event after cancellation.
-	select {
-	case <-ctx.Done():
+	if err := ctx.Err(); err != nil {
 		object := ""
 		done := false
 		isPartial := false
@@ -292,15 +291,15 @@ func EmitEventWithTimeout(ctx context.Context, ch chan<- *Event,
 		}
 		log.WarnfContext(
 			ctx,
-			"EmitEventWithTimeout: context cancelled, event_id=%s invocation_id=%s object=%s done=%v partial=%v",
+			"EmitEventWithTimeout: context error=%v, event_id=%s invocation_id=%s object=%s done=%v partial=%v",
+			err,
 			e.ID,
 			e.InvocationID,
 			object,
 			done,
 			isPartial,
 		)
-		return ctx.Err()
-	default:
+		return err
 	}
 
 	if log.IsTraceEnabled() {
@@ -331,6 +330,7 @@ func EmitEventWithTimeout(ctx context.Context, ch chan<- *Event,
 				)
 			}
 		case <-ctx.Done():
+			err := ctx.Err()
 			object := ""
 			done := false
 			isPartial := false
@@ -341,14 +341,15 @@ func EmitEventWithTimeout(ctx context.Context, ch chan<- *Event,
 			}
 			log.WarnfContext(
 				ctx,
-				"EmitEventWithTimeout: context cancelled, event_id=%s invocation_id=%s object=%s done=%v partial=%v",
+				"EmitEventWithTimeout: context error=%v, event_id=%s invocation_id=%s object=%s done=%v partial=%v",
+				err,
 				e.ID,
 				e.InvocationID,
 				object,
 				done,
 				isPartial,
 			)
-			return ctx.Err()
+			return err
 		}
 		return nil
 	}
@@ -377,6 +378,7 @@ func EmitEventWithTimeout(ctx context.Context, ch chan<- *Event,
 			)
 		}
 	case <-ctx.Done():
+		err := ctx.Err()
 		object := ""
 		done := false
 		isPartial := false
@@ -387,14 +389,15 @@ func EmitEventWithTimeout(ctx context.Context, ch chan<- *Event,
 		}
 		log.WarnfContext(
 			ctx,
-			"EmitEventWithTimeout: context cancelled, event_id=%s invocation_id=%s object=%s done=%v partial=%v",
+			"EmitEventWithTimeout: context error=%v, event_id=%s invocation_id=%s object=%s done=%v partial=%v",
+			err,
 			e.ID,
 			e.InvocationID,
 			object,
 			done,
 			isPartial,
 		)
-		return ctx.Err()
+		return err
 	case <-timer.C:
 		object := ""
 		done := false

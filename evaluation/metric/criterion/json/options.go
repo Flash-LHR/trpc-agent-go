@@ -16,9 +16,10 @@ const defaultNumberTolerance = 1e-6
 type options struct {
 	ignore          bool
 	ignoreTree      map[string]any
+	onlyTree        map[string]any
 	matchStrategy   JSONMatchStrategy
 	numberTolerance *float64
-	compare         func(actual, expected map[string]any) (bool, error)
+	compare         func(actual, expected any) (bool, error)
 }
 
 // newOptions creates a Options with the provided options.
@@ -47,6 +48,13 @@ func WithIgnoreTree(ignoreTree map[string]any) Option {
 	}
 }
 
+// WithOnlyTree sets the only tree.
+func WithOnlyTree(onlyTree map[string]any) Option {
+	return func(o *options) {
+		o.onlyTree = onlyTree
+	}
+}
+
 // WithMatchStrategy sets the match strategy.
 func WithMatchStrategy(matchStrategy JSONMatchStrategy) Option {
 	return func(o *options) {
@@ -62,7 +70,7 @@ func WithNumberTolerance(tolerance float64) Option {
 }
 
 // WithCompare sets the compare function.
-func WithCompare(compare func(actual, expected map[string]any) (bool, error)) Option {
+func WithCompare(compare func(actual, expected any) (bool, error)) Option {
 	return func(o *options) {
 		o.compare = compare
 	}

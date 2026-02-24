@@ -26,7 +26,9 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
+	"trpc.group/trpc-go/trpc-agent-go/internal/jsonrepair"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
+	"trpc.group/trpc-go/trpc-agent-go/internal/toolcall"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
@@ -277,10 +279,11 @@ func (f *Flow) runOneStep(
 	}
 
 	// 2. Call LLM (get response channel).
-	responseSeq, err := f.callLLM(ctx, invocation, llmRequest)
+	ctx, responseSeq, err := f.callLLM(ctx, invocation, llmRequest)
 	if err != nil {
 		return nil, err
 	}
+
 	// 3. Process streaming responses.
 	return f.processStreamingResponses(ctx, invocation, llmRequest, responseSeq, eventChan, span)
 }
@@ -307,7 +310,7 @@ func (f *Flow) processStreamingResponses(
 	var partialUsageFallback *model.Usage
 	if !usageTrackingDisabled {
 		timingInfo = invocation.GetOrCreateTimingInfo()
-		tracker = itelemetry.NewChatMetricsTracker(ctx, invocation, llmRequest, timingInfo, &err)
+		tracker = itelemetry.NewChatMetricsTracker(ctx, invocation, llmRequest, timingInfo, nil, &err)
 		defer tracker.RecordMetrics()()
 	}
 	var eventSeq uint64
@@ -359,7 +362,10 @@ func (f *Flow) processStreamingResponses(
 				response = customResp
 			}
 		}
-
+		// Repair tool call arguments in place when needed.
+		if jsonrepair.IsToolCallArgumentsJSONRepairEnabled(invocation) {
+			jsonrepair.RepairResponseToolCallArgumentsInPlace(ctx, response)
+		}
 		// 4. Create and send LLM response using the clean constructor.
 		eventSeq++
 		eventID := ""
@@ -401,7 +407,13 @@ func (f *Flow) processStreamingResponses(
 		}
 
 		if traceRecording {
-			itelemetry.TraceChat(span, invocation, llmRequest, response, llmResponseEvent.ID, tracker.FirstTokenTimeDuration())
+			itelemetry.TraceChat(span, &itelemetry.TraceChatAttributes{
+				Invocation:       invocation,
+				Request:          llmRequest,
+				Response:         response,
+				EventID:          llmResponseEvent.ID,
+				TimeToFirstToken: tracker.FirstTokenTimeDuration(),
+			})
 		}
 
 		return true
@@ -608,7 +620,6 @@ func (f *Flow) preprocess(
 	for _, processor := range f.requestProcessors {
 		processor.ProcessRequest(ctx, invocation, llmRequest, eventChan)
 	}
-
 	// Add tools to the request with optional filtering.
 	if invocation.Agent != nil {
 		tools := f.getFilteredTools(ctx, invocation)
@@ -621,6 +632,8 @@ func (f *Flow) preprocess(
 			}
 		}
 	}
+	// Sanitize invalid tool calls in history to avoid poisoning future requests.
+	llmRequest.Messages = toolcall.SanitizeMessagesWithTools(llmRequest.Messages, llmRequest.Tools)
 }
 
 // UserToolsProvider is an optional interface that agents can implement to expose
@@ -726,9 +739,9 @@ func (f *Flow) callLLM(
 	ctx context.Context,
 	invocation *agent.Invocation,
 	llmRequest *model.Request,
-) (iter.Seq2[*model.Response, error], error) {
+) (context.Context, iter.Seq2[*model.Response, error], error) {
 	if invocation.Model == nil {
-		return nil, errors.New("no model available for LLM call")
+		return ctx, nil, errors.New("no model available for LLM call")
 	}
 
 	log.DebugfContext(
@@ -741,7 +754,7 @@ func (f *Flow) callLLM(
 	// configured (<= 0), this is a no-op and preserves existing behavior.
 	if err := invocation.IncLLMCallCount(); err != nil {
 		log.Errorf("LLM call limit exceeded for agent %s: %v", invocation.AgentName, err)
-		return nil, err
+		return ctx, nil, err
 	}
 
 	// Run before model callbacks if they exist.
@@ -759,13 +772,13 @@ func (f *Flow) callLLM(
 					invocation.AgentName,
 					err,
 				)
-				return nil, err
+				return ctx, nil, err
 			}
 			if result != nil && result.Context != nil {
 				ctx = result.Context
 			}
 			if result != nil && result.CustomResponse != nil {
-				return func(yield func(*model.Response, error) bool) {
+				return ctx, func(yield func(*model.Response, error) bool) {
 					yield(result.CustomResponse, nil)
 				}, nil
 			}
@@ -783,14 +796,14 @@ func (f *Flow) callLLM(
 				invocation.AgentName,
 				err,
 			)
-			return nil, err
+			return ctx, nil, err
 		}
 		// Use the context from result if provided.
 		if result != nil && result.Context != nil {
 			ctx = result.Context
 		}
 		if result != nil && result.CustomResponse != nil {
-			return func(yield func(*model.Response, error) bool) {
+			return ctx, func(yield func(*model.Response, error) bool) {
 				yield(result.CustomResponse, nil)
 			}, nil
 		}
@@ -806,9 +819,9 @@ func (f *Flow) callLLM(
 				invocation.AgentName,
 				err,
 			)
-			return nil, err
+			return ctx, nil, err
 		}
-		return seq, nil
+		return ctx, seq, nil
 	}
 
 	responseChan, err := invocation.Model.GenerateContent(ctx, llmRequest)
@@ -819,10 +832,10 @@ func (f *Flow) callLLM(
 			invocation.AgentName,
 			err,
 		)
-		return nil, err
+		return ctx, nil, err
 	}
 
-	return func(yield func(*model.Response, error) bool) {
+	return ctx, func(yield func(*model.Response, error) bool) {
 		for resp := range responseChan {
 			if !yield(resp, nil) {
 				return

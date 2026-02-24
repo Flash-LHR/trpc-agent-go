@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/internal/jsonrepair"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	itool "trpc.group/trpc-go/trpc-agent-go/internal/tool"
@@ -385,9 +386,12 @@ func (p *FunctionCallResponseProcessor) executeSingleToolCallSequential(
 		agentName string
 	)
 	// Attach state delta if the tool provides it.
-	if tl, ok := tools[toolCall.Function.Name]; ok {
-		// Use the first choice as the canonical tool result for state delta.
-		p.attachStateDelta(tl, modifiedArgs, &choices[0], toolEvent)
+	if err == nil {
+		if tl, ok := tools[toolCall.Function.Name]; ok {
+			// Use the first choice as the canonical tool result for state
+			// delta.
+			p.attachStateDelta(tl, modifiedArgs, &choices[0], toolEvent)
+		}
 	}
 
 	if invocation != nil {
@@ -583,9 +587,14 @@ func (p *FunctionCallResponseProcessor) runParallelToolCall(
 		}
 	}
 	// Attach state delta if the tool provides it.
-	if tl, ok := tools[tc.Function.Name]; ok {
-		// Use the first choice as the canonical tool result for state delta.
-		p.attachStateDelta(tl, modifiedArgs, &choices[0], toolCallResponseEvent)
+	if err == nil {
+		if tl, ok := tools[tc.Function.Name]; ok {
+			// Use the first choice as the canonical tool result for state
+			// delta.
+			p.attachStateDelta(
+				tl, modifiedArgs, &choices[0], toolCallResponseEvent,
+			)
+		}
 	}
 	itelemetry.TraceToolCall(span, sess, decl, modifiedArgs, toolCallResponseEvent, err)
 	itelemetry.ReportExecuteToolMetrics(ctx, itelemetry.ExecuteToolAttributes{
@@ -1142,7 +1151,10 @@ func (p *FunctionCallResponseProcessor) executeToolWithCallbacks(
 ) (context.Context, any, []byte, error) {
 	// Inject tool call ID into context for callbacks to use.
 	ctx = context.WithValue(ctx, tool.ContextKeyToolCallID{}, toolCall.ID)
-
+	// Repair tool call arguments in place when needed.
+	if jsonrepair.IsToolCallArgumentsJSONRepairEnabled(invocation) {
+		jsonrepair.RepairToolCallArgumentsInPlace(ctx, &toolCall)
+	}
 	toolDeclaration := tl.Declaration()
 
 	ctx, toolCall, customResult, err := p.runBeforeToolPluginCallbacks(
@@ -1373,7 +1385,7 @@ func (f *FunctionCallResponseProcessor) buildPartialToolResponseEvent(
 		Choices: []model.Choice{{
 			Index:   0,
 			Message: model.Message{Role: model.RoleTool, ToolID: toolCall.ID},
-			Delta:   model.Message{Content: text},
+			Delta:   model.Message{Role: model.RoleTool, Content: text, ToolID: toolCall.ID},
 		}},
 		Timestamp: time.Now(),
 		Done:      false,
