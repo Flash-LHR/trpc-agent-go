@@ -1,0 +1,646 @@
+{
+  "evalSetResultId": "claudecode-eval-app_claudecode-basic_119fdaa7-6cb7-4b34-8a4a-bb9f75305429",
+  "evalSetResultName": "claudecode-eval-app_claudecode-basic_119fdaa7-6cb7-4b34-8a4a-bb9f75305429",
+  "evalSetId": "claudecode-basic",
+  "evalCaseResults": [
+    {
+      "evalSetId": "claudecode-basic",
+      "evalId": "mcp_calculator",
+      "runId": 1,
+      "finalEvalStatus": "passed",
+      "overallEvalMetricResults": [
+        {
+          "metricName": "tool_trajectory_avg_score",
+          "score": 1,
+          "evalStatus": "passed",
+          "threshold": 1,
+          "criterion": {
+            "toolTrajectory": {
+              "defaultStrategy": {
+                "name": {
+                  "matchStrategy": "exact"
+                },
+                "arguments": {
+                  "matchStrategy": "exact"
+                },
+                "result": {
+                  "matchStrategy": "exact"
+                }
+              },
+              "toolStrategy": {
+                "Task": {
+                  "name": {
+                    "matchStrategy": "exact"
+                  },
+                  "arguments": {
+                    "onlyTree": {
+                      "subagent_type": true
+                    },
+                    "matchStrategy": "exact"
+                  },
+                  "result": {
+                    "ignore": true
+                  }
+                },
+                "skill_run": {
+                  "name": {
+                    "matchStrategy": "exact"
+                  },
+                  "arguments": {
+                    "onlyTree": {
+                      "skill": true
+                    },
+                    "matchStrategy": "exact"
+                  },
+                  "result": {
+                    "ignore": true
+                  }
+                }
+              },
+              "orderSensitive": true,
+              "subsetMatching": true
+            }
+          },
+          "details": {
+            "score": 1
+          }
+        }
+      ],
+      "evalMetricResultPerInvocation": [
+        {
+          "actualInvocation": {
+            "invocationId": "1ecd72e1-0a04-4fbb-8000-32906a230aba",
+            "userContent": {
+              "role": "user",
+              "content": "Compute 1+2."
+            },
+            "finalResponse": {
+              "role": "assistant",
+              "content": "1 + 2 = 3"
+            },
+            "tools": [
+              {
+                "id": "call_22ad6cbd063f48a7b2b0beda",
+                "name": "mcp__eva_cli_example__calculator",
+                "arguments": {
+                  "a": 1,
+                  "b": 2,
+                  "operation": "add"
+                },
+                "result": {
+                  "a": 1,
+                  "b": 2,
+                  "operation": "add",
+                  "result": 3
+                }
+              }
+            ]
+          },
+          "expectedInvocation": {
+            "invocationId": "mcp_calculator-1",
+            "userContent": {
+              "role": "user",
+              "content": "Compute 1+2."
+            },
+            "tools": [
+              {
+                "id": "tool_use_1",
+                "name": "mcp__eva_cli_example__calculator",
+                "arguments": {
+                  "a": 1,
+                  "b": 2,
+                  "operation": "add"
+                },
+                "result": {
+                  "a": 1,
+                  "b": 2,
+                  "operation": "add",
+                  "result": 3
+                }
+              }
+            ]
+          },
+          "evalMetricResults": [
+            {
+              "metricName": "tool_trajectory_avg_score",
+              "score": 1,
+              "evalStatus": "passed",
+              "threshold": 1,
+              "criterion": {
+                "toolTrajectory": {
+                  "defaultStrategy": {
+                    "name": {
+                      "matchStrategy": "exact"
+                    },
+                    "arguments": {
+                      "matchStrategy": "exact"
+                    },
+                    "result": {
+                      "matchStrategy": "exact"
+                    }
+                  },
+                  "toolStrategy": {
+                    "Task": {
+                      "name": {
+                        "matchStrategy": "exact"
+                      },
+                      "arguments": {
+                        "onlyTree": {
+                          "subagent_type": true
+                        },
+                        "matchStrategy": "exact"
+                      },
+                      "result": {
+                        "ignore": true
+                      }
+                    },
+                    "skill_run": {
+                      "name": {
+                        "matchStrategy": "exact"
+                      },
+                      "arguments": {
+                        "onlyTree": {
+                          "skill": true
+                        },
+                        "matchStrategy": "exact"
+                      },
+                      "result": {
+                        "ignore": true
+                      }
+                    }
+                  },
+                  "orderSensitive": true,
+                  "subsetMatching": true
+                }
+              },
+              "details": {
+                "score": 1
+              }
+            }
+          ]
+        }
+      ],
+      "sessionId": "f847fac0-c595-456f-acbe-60f3b7ce9f09",
+      "userId": "user"
+    },
+    {
+      "evalSetId": "claudecode-basic",
+      "evalId": "skill_call",
+      "runId": 1,
+      "finalEvalStatus": "passed",
+      "overallEvalMetricResults": [
+        {
+          "metricName": "tool_trajectory_avg_score",
+          "score": 1,
+          "evalStatus": "passed",
+          "threshold": 1,
+          "criterion": {
+            "toolTrajectory": {
+              "defaultStrategy": {
+                "name": {
+                  "matchStrategy": "exact"
+                },
+                "arguments": {
+                  "matchStrategy": "exact"
+                },
+                "result": {
+                  "matchStrategy": "exact"
+                }
+              },
+              "toolStrategy": {
+                "Task": {
+                  "name": {
+                    "matchStrategy": "exact"
+                  },
+                  "arguments": {
+                    "onlyTree": {
+                      "subagent_type": true
+                    },
+                    "matchStrategy": "exact"
+                  },
+                  "result": {
+                    "ignore": true
+                  }
+                },
+                "skill_run": {
+                  "name": {
+                    "matchStrategy": "exact"
+                  },
+                  "arguments": {
+                    "onlyTree": {
+                      "skill": true
+                    },
+                    "matchStrategy": "exact"
+                  },
+                  "result": {
+                    "ignore": true
+                  }
+                }
+              },
+              "orderSensitive": true,
+              "subsetMatching": true
+            }
+          },
+          "details": {
+            "score": 1
+          }
+        }
+      ],
+      "evalMetricResultPerInvocation": [
+        {
+          "actualInvocation": {
+            "invocationId": "6ed552e5-6526-4970-8310-71b53d72449c",
+            "userContent": {
+              "role": "user",
+              "content": "What's the weather in Shenzhen?"
+            },
+            "finalResponse": {
+              "role": "assistant",
+              "content": "The weather in Shenzhen is sunny with a temperature of 25°C."
+            },
+            "tools": [
+              {
+                "id": "toolu_mlzz93c6_vw5s2iy",
+                "name": "skill_run",
+                "arguments": {
+                  "command": "",
+                  "skill": "weather-query"
+                },
+                "result": "Launching skill: weather-query"
+              }
+            ]
+          },
+          "expectedInvocation": {
+            "invocationId": "skill_call-1",
+            "userContent": {
+              "role": "user",
+              "content": "What's the weather in Shenzhen?"
+            },
+            "tools": [
+              {
+                "id": "tool_use_1",
+                "name": "skill_run",
+                "arguments": {
+                  "skill": "weather-query"
+                }
+              }
+            ]
+          },
+          "evalMetricResults": [
+            {
+              "metricName": "tool_trajectory_avg_score",
+              "score": 1,
+              "evalStatus": "passed",
+              "threshold": 1,
+              "criterion": {
+                "toolTrajectory": {
+                  "defaultStrategy": {
+                    "name": {
+                      "matchStrategy": "exact"
+                    },
+                    "arguments": {
+                      "matchStrategy": "exact"
+                    },
+                    "result": {
+                      "matchStrategy": "exact"
+                    }
+                  },
+                  "toolStrategy": {
+                    "Task": {
+                      "name": {
+                        "matchStrategy": "exact"
+                      },
+                      "arguments": {
+                        "onlyTree": {
+                          "subagent_type": true
+                        },
+                        "matchStrategy": "exact"
+                      },
+                      "result": {
+                        "ignore": true
+                      }
+                    },
+                    "skill_run": {
+                      "name": {
+                        "matchStrategy": "exact"
+                      },
+                      "arguments": {
+                        "onlyTree": {
+                          "skill": true
+                        },
+                        "matchStrategy": "exact"
+                      },
+                      "result": {
+                        "ignore": true
+                      }
+                    }
+                  },
+                  "orderSensitive": true,
+                  "subsetMatching": true
+                }
+              },
+              "details": {
+                "score": 1
+              }
+            }
+          ]
+        }
+      ],
+      "sessionId": "d1a0638d-b0bb-4e38-b84f-d9eacb30e795",
+      "userId": "user"
+    },
+    {
+      "evalSetId": "claudecode-basic",
+      "evalId": "subagent_task",
+      "runId": 1,
+      "finalEvalStatus": "passed",
+      "overallEvalMetricResults": [
+        {
+          "metricName": "tool_trajectory_avg_score",
+          "score": 1,
+          "evalStatus": "passed",
+          "threshold": 1,
+          "criterion": {
+            "toolTrajectory": {
+              "defaultStrategy": {
+                "name": {
+                  "matchStrategy": "exact"
+                },
+                "arguments": {
+                  "matchStrategy": "exact"
+                },
+                "result": {
+                  "matchStrategy": "exact"
+                }
+              },
+              "toolStrategy": {
+                "Task": {
+                  "name": {
+                    "matchStrategy": "exact"
+                  },
+                  "arguments": {
+                    "onlyTree": {
+                      "subagent_type": true
+                    },
+                    "matchStrategy": "exact"
+                  },
+                  "result": {
+                    "ignore": true
+                  }
+                },
+                "skill_run": {
+                  "name": {
+                    "matchStrategy": "exact"
+                  },
+                  "arguments": {
+                    "onlyTree": {
+                      "skill": true
+                    },
+                    "matchStrategy": "exact"
+                  },
+                  "result": {
+                    "ignore": true
+                  }
+                }
+              },
+              "orderSensitive": true,
+              "subsetMatching": true
+            }
+          },
+          "details": {
+            "score": 1
+          }
+        }
+      ],
+      "evalMetricResultPerInvocation": [
+        {
+          "actualInvocation": {
+            "invocationId": "d90a02e1-cf2b-4bb6-8648-a8518e112124",
+            "userContent": {
+              "role": "user",
+              "content": "What are today's news headlines?"
+            },
+            "finalResponse": {
+              "role": "assistant",
+              "content": "I apologize, but I don't have access to real-time news sources. As an AI, I cannot browse the internet for current events. The news-query agent you see in my available skills is a demo tool that only returns fixed responses, not actual news headlines.\n\nTo get today's news, you would need to:\n- Visit a news website directly\n- Use a dedicated news API or service\n- Check a news app on your device\n\nIs there anything else I can help you with regarding software engineering or coding tasks?"
+            },
+            "tools": [
+              {
+                "id": "call_c5b72f90f2a243ed8784c056",
+                "name": "Task",
+                "arguments": {
+                  "description": "Get today's news headlines",
+                  "prompt": "What are today's news headlines?",
+                  "subagent_type": "news-query-agent"
+                },
+                "result": "{\"date\":\"2026-02-24\",\"headlines\":[\"I don't have access to real-time news sources\",\"As an AI, I cannot browse the internet for current events\"]}\nagentId: abddc79 (for resuming to continue this agent's work if needed)\n\u003cusage\u003etotal_tokens: 753\ntool_uses: 0\nduration_ms: 3375\u003c/usage\u003e"
+              }
+            ]
+          },
+          "expectedInvocation": {
+            "invocationId": "subagent_task-1",
+            "userContent": {
+              "role": "user",
+              "content": "What are today's news headlines?"
+            },
+            "tools": [
+              {
+                "id": "tool_use_1",
+                "name": "Task",
+                "arguments": {
+                  "subagent_type": "news-query-agent"
+                }
+              }
+            ]
+          },
+          "evalMetricResults": [
+            {
+              "metricName": "tool_trajectory_avg_score",
+              "score": 1,
+              "evalStatus": "passed",
+              "threshold": 1,
+              "criterion": {
+                "toolTrajectory": {
+                  "defaultStrategy": {
+                    "name": {
+                      "matchStrategy": "exact"
+                    },
+                    "arguments": {
+                      "matchStrategy": "exact"
+                    },
+                    "result": {
+                      "matchStrategy": "exact"
+                    }
+                  },
+                  "toolStrategy": {
+                    "Task": {
+                      "name": {
+                        "matchStrategy": "exact"
+                      },
+                      "arguments": {
+                        "onlyTree": {
+                          "subagent_type": true
+                        },
+                        "matchStrategy": "exact"
+                      },
+                      "result": {
+                        "ignore": true
+                      }
+                    },
+                    "skill_run": {
+                      "name": {
+                        "matchStrategy": "exact"
+                      },
+                      "arguments": {
+                        "onlyTree": {
+                          "skill": true
+                        },
+                        "matchStrategy": "exact"
+                      },
+                      "result": {
+                        "ignore": true
+                      }
+                    }
+                  },
+                  "orderSensitive": true,
+                  "subsetMatching": true
+                }
+              },
+              "details": {
+                "score": 1
+              }
+            }
+          ]
+        }
+      ],
+      "sessionId": "b0a9d6d2-a74f-4cea-9204-3a98d7a4fc0f",
+      "userId": "user"
+    }
+  ],
+  "summary": {
+    "overallStatus": "passed",
+    "numRuns": 1,
+    "runStatusCounts": {
+      "passed": 1
+    },
+    "runSummaries": [
+      {
+        "runId": 1,
+        "overallStatus": "passed",
+        "caseStatusCounts": {
+          "passed": 3
+        },
+        "metricSummaries": [
+          {
+            "metricName": "tool_trajectory_avg_score",
+            "averageScore": 1,
+            "evalStatus": "passed",
+            "threshold": 1,
+            "statusCounts": {
+              "passed": 3
+            }
+          }
+        ]
+      }
+    ],
+    "evalCaseSummaries": [
+      {
+        "evalId": "mcp_calculator",
+        "overallStatus": "passed",
+        "runStatusCounts": {
+          "passed": 1
+        },
+        "metricSummaries": [
+          {
+            "metricName": "tool_trajectory_avg_score",
+            "averageScore": 1,
+            "evalStatus": "passed",
+            "threshold": 1,
+            "statusCounts": {
+              "passed": 1
+            }
+          }
+        ],
+        "runSummaries": [
+          {
+            "runId": 1,
+            "finalEvalStatus": "passed",
+            "metricResults": [
+              {
+                "metricName": "tool_trajectory_avg_score",
+                "score": 1,
+                "evalStatus": "passed",
+                "threshold": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "evalId": "skill_call",
+        "overallStatus": "passed",
+        "runStatusCounts": {
+          "passed": 1
+        },
+        "metricSummaries": [
+          {
+            "metricName": "tool_trajectory_avg_score",
+            "averageScore": 1,
+            "evalStatus": "passed",
+            "threshold": 1,
+            "statusCounts": {
+              "passed": 1
+            }
+          }
+        ],
+        "runSummaries": [
+          {
+            "runId": 1,
+            "finalEvalStatus": "passed",
+            "metricResults": [
+              {
+                "metricName": "tool_trajectory_avg_score",
+                "score": 1,
+                "evalStatus": "passed",
+                "threshold": 1
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "evalId": "subagent_task",
+        "overallStatus": "passed",
+        "runStatusCounts": {
+          "passed": 1
+        },
+        "metricSummaries": [
+          {
+            "metricName": "tool_trajectory_avg_score",
+            "averageScore": 1,
+            "evalStatus": "passed",
+            "threshold": 1,
+            "statusCounts": {
+              "passed": 1
+            }
+          }
+        ],
+        "runSummaries": [
+          {
+            "runId": 1,
+            "finalEvalStatus": "passed",
+            "metricResults": [
+              {
+                "metricName": "tool_trajectory_avg_score",
+                "score": 1,
+                "evalStatus": "passed",
+                "threshold": 1
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "creationTimestamp": 1771899589.7830315
+}
