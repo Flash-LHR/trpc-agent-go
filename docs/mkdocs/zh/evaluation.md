@@ -2858,14 +2858,14 @@ Metric 的 `toolTrajectory` 配置示例如下：
           "invocationId": "subagent_task-1",
           "userContent": {
             "role": "user",
-            "content": "What are today's news headlines?"
+            "content": "Look up the phone number for Alice."
           },
           "tools": [
             {
               "id": "tool_use_1",
               "name": "Task",
               "arguments": {
-                "subagent_type": "news-query-agent"
+                "subagent_type": "contact-lookup-agent"
               }
             }
           ]

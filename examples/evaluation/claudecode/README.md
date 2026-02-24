@@ -6,7 +6,7 @@ It covers three Claude Code capabilities without relying on any user-level confi
 
 - **MCP tool call**: a project-scoped MCP server exposes a calculator tool.
 - **Skill**: a project-level skill returns a fixed weather answer.
-- **Subagent**: a project-level subagent returns fixed news headlines, triggered via the **Task** tool.
+- **Subagent**: a project-level subagent returns fixed contact lookup data, triggered via the **Task** tool.
 
 The evaluation uses `tool_trajectory_avg_score` to verify the expected tool calls, including names and selected arguments/results.
 
@@ -46,7 +46,7 @@ claudecode/
   .mcp.json
   .claude/
     skills/weather-query/SKILL.md
-    agents/news-query-agent.md
+    agents/contact-lookup-agent.md
   mcpserver/
     main.go
   data/
