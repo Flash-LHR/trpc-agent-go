@@ -570,13 +570,13 @@ func TestModelCallbacks_AfterError(t *testing.T) {
 	require.Equal(t, "after error", events[1].Error.Message)
 }
 
-func TestFlow_RunBeforeModelPluginCallbacks_NoModelCallbacks(t *testing.T) {
+func TestFlow_RunBeforeModelCallbacks_NoModelCallbacks(t *testing.T) {
 	f := New(nil, nil, Options{})
 	inv := agent.NewInvocation()
 	inv.Plugins = stubPluginManager{}
 
 	ctx := context.Background()
-	gotCtx, resp, err := f.runBeforeModelPluginCallbacks(ctx, inv, &model.Request{})
+	gotCtx, resp, err := f.runBeforeModelCallbacks(ctx, inv, &model.Request{})
 	require.NoError(t, err)
 	require.Equal(t, ctx, gotCtx)
 	require.Nil(t, resp)

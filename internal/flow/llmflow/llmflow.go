@@ -623,74 +623,49 @@ func (f *Flow) callLLM(
 	return ctx, seq, nil
 }
 
-func (f *Flow) runBeforeModelPluginCallbacks(
-	ctx context.Context,
-	invocation *agent.Invocation,
-	llmRequest *model.Request,
-) (context.Context, *model.Response, error) {
-	if invocation.Plugins == nil {
-		return ctx, nil, nil
-	}
-	callbacks := invocation.Plugins.ModelCallbacks()
-	if callbacks == nil {
-		return ctx, nil, nil
-	}
-	result, err := callbacks.RunBeforeModel(ctx, &model.BeforeModelArgs{Request: llmRequest})
-	if err != nil {
-		log.ErrorfContext(
-			ctx,
-			"Before model plugin failed for agent %s: %v",
-			invocation.AgentName,
-			err,
-		)
-		return ctx, nil, err
-	}
-	if result != nil && result.Context != nil {
-		ctx = result.Context
-	}
-	if result != nil && result.CustomResponse != nil {
-		return ctx, result.CustomResponse, nil
-	}
-	return ctx, nil, nil
-}
-
-func (f *Flow) runBeforeModelLocalCallbacks(
-	ctx context.Context,
-	invocation *agent.Invocation,
-	llmRequest *model.Request,
-) (context.Context, *model.Response, error) {
-	if f.modelCallbacks == nil {
-		return ctx, nil, nil
-	}
-	result, err := f.modelCallbacks.RunBeforeModel(ctx, &model.BeforeModelArgs{Request: llmRequest})
-	if err != nil {
-		log.ErrorfContext(
-			ctx,
-			"Before model callback failed for agent %s: %v",
-			invocation.AgentName,
-			err,
-		)
-		return ctx, nil, err
-	}
-	if result != nil && result.Context != nil {
-		ctx = result.Context
-	}
-	if result != nil && result.CustomResponse != nil {
-		return ctx, result.CustomResponse, nil
-	}
-	return ctx, nil, nil
-}
-
 func (f *Flow) runBeforeModelCallbacks(
 	ctx context.Context,
 	invocation *agent.Invocation,
 	llmRequest *model.Request,
 ) (context.Context, *model.Response, error) {
-	ctx, resp, err := f.runBeforeModelPluginCallbacks(ctx, invocation, llmRequest)
-	if err != nil || resp != nil {
-		return ctx, resp, err
+	var pluginCallbacks *model.Callbacks
+	if invocation.Plugins != nil {
+		pluginCallbacks = invocation.Plugins.ModelCallbacks()
 	}
-	return f.runBeforeModelLocalCallbacks(ctx, invocation, llmRequest)
+	ctx, resp, err := runBeforeModelCallbacksWith(ctx, llmRequest, pluginCallbacks)
+	if err != nil {
+		log.ErrorfContext(ctx, "Before model plugin failed for agent %s: %v", invocation.AgentName, err)
+		return ctx, nil, err
+	}
+	if resp != nil {
+		return ctx, resp, nil
+	}
+	newCtx, resp, err := runBeforeModelCallbacksWith(ctx, llmRequest, f.modelCallbacks)
+	if err != nil {
+		log.ErrorfContext(newCtx, "Before model callback failed for agent %s: %v", invocation.AgentName, err)
+	}
+	return newCtx, resp, err
+}
+
+func runBeforeModelCallbacksWith(
+	ctx context.Context,
+	llmRequest *model.Request,
+	callbacks *model.Callbacks,
+) (context.Context, *model.Response, error) {
+	if callbacks == nil {
+		return ctx, nil, nil
+	}
+	result, err := callbacks.RunBeforeModel(ctx, &model.BeforeModelArgs{Request: llmRequest})
+	if err != nil {
+		return ctx, nil, err
+	}
+	if result != nil && result.Context != nil {
+		ctx = result.Context
+	}
+	if result != nil && result.CustomResponse != nil {
+		return ctx, result.CustomResponse, nil
+	}
+	return ctx, nil, nil
 }
 
 func (f *Flow) generateContentSeq(
