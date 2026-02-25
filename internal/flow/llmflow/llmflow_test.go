@@ -119,16 +119,16 @@ func TestProcessStreamingResponses_RepairsToolCallArgumentsWhenEnabled(t *testin
 			},
 		},
 	}
-	responseChan := make(chan *model.Response, 1)
-	responseChan <- response
-	close(responseChan)
+	responseSeq := func(yield func(*model.Response) bool) {
+		yield(response)
+	}
 
 	eventChan := make(chan *event.Event, 10)
 	tracer := oteltrace.NewNoopTracerProvider().Tracer("t")
 	ctx, span := tracer.Start(context.Background(), "s")
 	defer span.End()
 
-	lastEvent, err := f.processStreamingResponses(ctx, inv, req, responseChan, eventChan, span)
+	lastEvent, err := f.processStreamingResponses(ctx, inv, req, responseSeq, eventChan, span)
 	require.NoError(t, err)
 	require.NotNil(t, lastEvent)
 	require.Equal(t, "{\"a\":2}", string(response.Choices[0].Message.ToolCalls[0].Function.Arguments))
@@ -751,8 +751,7 @@ func TestFlow_CallLLM_PluginBeforeModelCanShortCircuit(t *testing.T) {
 
 	_, ch, err := flow.callLLM(context.Background(), inv, &model.Request{})
 	require.NoError(t, err)
-	for range ch {
-	}
+	ch(func(_ *model.Response) bool { return true })
 	require.True(t, plugCalled)
 	require.False(t, localCalled)
 	require.False(t, m.called)
@@ -840,8 +839,7 @@ func TestFlow_CallLLM_PluginBeforeModelContextPropagates(t *testing.T) {
 
 	_, ch, err := flow.callLLM(context.Background(), inv, &model.Request{})
 	require.NoError(t, err)
-	for range ch {
-	}
+	ch(func(_ *model.Response) bool { return true })
 	require.True(t, plugCalled)
 	require.Equal(t, "v", localSaw)
 

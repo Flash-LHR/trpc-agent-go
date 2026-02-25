@@ -152,7 +152,17 @@ type Model interface {
 type Info struct {
     Name string // Model name.
 }
+
+// IterModel is an optional interface that reduces channel overhead compared to Model.
+type IterModel interface {
+    GenerateContentIter(ctx context.Context, request *Request) (Seq[*Response], error)
+}
+
+// Seq is a callback-based sequence type that yields one value on demand.
+type Seq[T any] func(yield func(T) bool)
 ```
+
+When a model implements both `Model` and `IterModel`, the framework prefers iterator-based streaming to reduce goroutine and channel scheduling overhead.
 
 ### Request Structure
 

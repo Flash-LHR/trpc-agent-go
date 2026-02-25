@@ -250,14 +250,14 @@ func (f *Flow) runOneStep(
 	_, span = trace.Tracer.Start(ctx, itelemetry.NewChatSpanName(modelName))
 	defer span.End()
 
-	// 2. Call LLM (get response channel).
-	ctx, responseChan, err := f.callLLM(ctx, invocation, llmRequest)
+	// 2. Call LLM (get response sequence).
+	ctx, responseSeq, err := f.callLLM(ctx, invocation, llmRequest)
 	if err != nil {
 		return nil, err
 	}
 
 	// 3. Process streaming responses.
-	return f.processStreamingResponses(ctx, invocation, llmRequest, responseChan, eventChan, span)
+	return f.processStreamingResponses(ctx, invocation, llmRequest, responseSeq, eventChan, span)
 }
 
 // processStreamingResponses handles the streaming response processing logic.
@@ -265,7 +265,7 @@ func (f *Flow) processStreamingResponses(
 	ctx context.Context,
 	invocation *agent.Invocation,
 	llmRequest *model.Request,
-	responseChan <-chan *model.Response,
+	responseSeq model.Seq[*model.Response],
 	eventChan chan<- *event.Event,
 	span oteltrace.Span,
 ) (lastEvent *event.Event, err error) {
@@ -276,7 +276,7 @@ func (f *Flow) processStreamingResponses(
 	tracker := itelemetry.NewChatMetricsTracker(ctx, invocation, llmRequest, timingInfo, nil, &err)
 	defer tracker.RecordMetrics()()
 
-	for response := range responseChan {
+	responseSeq(func(response *model.Response) bool {
 		// Track response for telemetry (token usage and timing info)
 		tracker.TrackResponse(response)
 
@@ -288,9 +288,10 @@ func (f *Flow) processStreamingResponses(
 		response.Usage.TimingInfo = timingInfo
 
 		// Handle after model callbacks.
-		customResp, err := f.handleAfterModelCallbacks(ctx, invocation, llmRequest, response, eventChan)
-		if err != nil {
-			return lastEvent, err
+		customResp, cbErr := f.handleAfterModelCallbacks(ctx, invocation, llmRequest, response, eventChan)
+		if cbErr != nil {
+			err = cbErr
+			return false
 		}
 		if customResp != nil {
 			response = customResp
@@ -306,13 +307,14 @@ func (f *Flow) processStreamingResponses(
 		tracker.SetLastEvent(lastEvent)
 		// 5. Check context cancellation.
 		if err = agent.CheckContextCancelled(ctx); err != nil {
-			return lastEvent, err
+			return false
 		}
 
 		// 6. Postprocess response.
 		f.postprocess(ctx, invocation, llmRequest, response, eventChan)
-		if err := agent.CheckContextCancelled(ctx); err != nil {
-			return lastEvent, err
+		if ctxErr := agent.CheckContextCancelled(ctx); ctxErr != nil {
+			err = ctxErr
+			return false
 		}
 
 		itelemetry.TraceChat(span, &itelemetry.TraceChatAttributes{
@@ -322,8 +324,11 @@ func (f *Flow) processStreamingResponses(
 			EventID:          llmResponseEvent.ID,
 			TimeToFirstToken: tracker.FirstTokenTimeDuration(),
 		})
+		return true
+	})
+	if err != nil {
+		return nil, err
 	}
-
 	return lastEvent, nil
 }
 
@@ -586,7 +591,7 @@ func (f *Flow) callLLM(
 	ctx context.Context,
 	invocation *agent.Invocation,
 	llmRequest *model.Request,
-) (context.Context, <-chan *model.Response, error) {
+) (context.Context, model.Seq[*model.Response], error) {
 	if invocation.Model == nil {
 		return ctx, nil, errors.New("no model available for LLM call")
 	}
@@ -625,10 +630,9 @@ func (f *Flow) callLLM(
 				ctx = result.Context
 			}
 			if result != nil && result.CustomResponse != nil {
-				responseChan := make(chan *model.Response, 1)
-				responseChan <- result.CustomResponse
-				close(responseChan)
-				return ctx, responseChan, nil
+				return ctx, func(yield func(*model.Response) bool) {
+					yield(result.CustomResponse)
+				}, nil
 			}
 		}
 	}
@@ -651,15 +655,27 @@ func (f *Flow) callLLM(
 			ctx = result.Context
 		}
 		if result != nil && result.CustomResponse != nil {
-			// Create a channel that returns the custom response and then closes.
-			responseChan := make(chan *model.Response, 1)
-			responseChan <- result.CustomResponse
-			close(responseChan)
-			return ctx, responseChan, nil
+			return ctx, func(yield func(*model.Response) bool) {
+				yield(result.CustomResponse)
+			}, nil
 		}
 	}
 
 	// Call the model.
+	if iterModel, ok := invocation.Model.(model.IterModel); ok {
+		seq, err := iterModel.GenerateContentIter(ctx, llmRequest)
+		if err != nil {
+			log.ErrorfContext(
+				ctx,
+				"LLM call failed for agent %s: %v",
+				invocation.AgentName,
+				err,
+			)
+			return ctx, nil, err
+		}
+		return ctx, seq, nil
+	}
+
 	responseChan, err := invocation.Model.GenerateContent(ctx, llmRequest)
 	if err != nil {
 		log.ErrorfContext(
@@ -671,7 +687,13 @@ func (f *Flow) callLLM(
 		return ctx, nil, err
 	}
 
-	return ctx, responseChan, nil
+	return ctx, func(yield func(*model.Response) bool) {
+		for resp := range responseChan {
+			if !yield(resp) {
+				return
+			}
+		}
+	}, nil
 }
 
 // postprocess handles post-LLM call processing using response processors.
