@@ -1710,10 +1710,6 @@ func (m *Model) handleNonStreamingResponseWithEmitter(
 	if m.chatResponseCallback != nil {
 		m.chatResponseCallback(ctx, &chatRequest, chatCompletion)
 	}
-
-	if ctx.Err() != nil {
-		return
-	}
 	emit(m.createResponseFromCompletion(chatCompletion))
 }
 
