@@ -586,6 +586,121 @@ func (f *Flow) getFilteredTools(ctx context.Context, invocation *agent.Invocatio
 	return filtered
 }
 
+func singleResponseSeq(resp *model.Response) model.Seq[*model.Response] {
+	return func(yield func(*model.Response) bool) {
+		yield(resp)
+	}
+}
+
+func (f *Flow) runBeforeModelPluginCallbacks(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	llmRequest *model.Request,
+) (context.Context, *model.Response, error) {
+	if invocation.Plugins == nil {
+		return ctx, nil, nil
+	}
+	callbacks := invocation.Plugins.ModelCallbacks()
+	if callbacks == nil {
+		return ctx, nil, nil
+	}
+	result, err := callbacks.RunBeforeModel(ctx, &model.BeforeModelArgs{Request: llmRequest})
+	if err != nil {
+		log.ErrorfContext(
+			ctx,
+			"Before model plugin failed for agent %s: %v",
+			invocation.AgentName,
+			err,
+		)
+		return ctx, nil, err
+	}
+	if result != nil && result.Context != nil {
+		ctx = result.Context
+	}
+	if result != nil && result.CustomResponse != nil {
+		return ctx, result.CustomResponse, nil
+	}
+	return ctx, nil, nil
+}
+
+func (f *Flow) runBeforeModelLocalCallbacks(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	llmRequest *model.Request,
+) (context.Context, *model.Response, error) {
+	if f.modelCallbacks == nil {
+		return ctx, nil, nil
+	}
+	result, err := f.modelCallbacks.RunBeforeModel(ctx, &model.BeforeModelArgs{Request: llmRequest})
+	if err != nil {
+		log.ErrorfContext(
+			ctx,
+			"Before model callback failed for agent %s: %v",
+			invocation.AgentName,
+			err,
+		)
+		return ctx, nil, err
+	}
+	if result != nil && result.Context != nil {
+		ctx = result.Context
+	}
+	if result != nil && result.CustomResponse != nil {
+		return ctx, result.CustomResponse, nil
+	}
+	return ctx, nil, nil
+}
+
+func (f *Flow) runBeforeModelCallbacks(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	llmRequest *model.Request,
+) (context.Context, *model.Response, error) {
+	ctx, resp, err := f.runBeforeModelPluginCallbacks(ctx, invocation, llmRequest)
+	if err != nil || resp != nil {
+		return ctx, resp, err
+	}
+	return f.runBeforeModelLocalCallbacks(ctx, invocation, llmRequest)
+}
+
+func (f *Flow) generateContentSeq(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	llmRequest *model.Request,
+) (model.Seq[*model.Response], error) {
+	if iterModel, ok := invocation.Model.(model.IterModel); ok {
+		seq, err := iterModel.GenerateContentIter(ctx, llmRequest)
+		if err != nil {
+			log.ErrorfContext(
+				ctx,
+				"LLM call failed for agent %s: %v",
+				invocation.AgentName,
+				err,
+			)
+			return nil, err
+		}
+		return seq, nil
+	}
+
+	responseChan, err := invocation.Model.GenerateContent(ctx, llmRequest)
+	if err != nil {
+		log.ErrorfContext(
+			ctx,
+			"LLM call failed for agent %s: %v",
+			invocation.AgentName,
+			err,
+		)
+		return nil, err
+	}
+
+	return func(yield func(*model.Response) bool) {
+		for resp := range responseChan {
+			if !yield(resp) {
+				return
+			}
+		}
+	}, nil
+}
+
 // callLLM performs the actual LLM call using core/model.
 func (f *Flow) callLLM(
 	ctx context.Context,
@@ -610,90 +725,19 @@ func (f *Flow) callLLM(
 	}
 
 	// Run before model callbacks if they exist.
-	if invocation.Plugins != nil {
-		callbacks := invocation.Plugins.ModelCallbacks()
-		if callbacks != nil {
-			result, err := callbacks.RunBeforeModel(
-				ctx,
-				&model.BeforeModelArgs{Request: llmRequest},
-			)
-			if err != nil {
-				log.ErrorfContext(
-					ctx,
-					"Before model plugin failed for agent %s: %v",
-					invocation.AgentName,
-					err,
-				)
-				return ctx, nil, err
-			}
-			if result != nil && result.Context != nil {
-				ctx = result.Context
-			}
-			if result != nil && result.CustomResponse != nil {
-				return ctx, func(yield func(*model.Response) bool) {
-					yield(result.CustomResponse)
-				}, nil
-			}
-		}
-	}
-
-	if f.modelCallbacks != nil {
-		result, err := f.modelCallbacks.RunBeforeModel(ctx, &model.BeforeModelArgs{
-			Request: llmRequest,
-		})
-		if err != nil {
-			log.ErrorfContext(
-				ctx,
-				"Before model callback failed for agent %s: %v",
-				invocation.AgentName,
-				err,
-			)
-			return ctx, nil, err
-		}
-		// Use the context from result if provided.
-		if result != nil && result.Context != nil {
-			ctx = result.Context
-		}
-		if result != nil && result.CustomResponse != nil {
-			return ctx, func(yield func(*model.Response) bool) {
-				yield(result.CustomResponse)
-			}, nil
-		}
-	}
-
-	// Call the model.
-	if iterModel, ok := invocation.Model.(model.IterModel); ok {
-		seq, err := iterModel.GenerateContentIter(ctx, llmRequest)
-		if err != nil {
-			log.ErrorfContext(
-				ctx,
-				"LLM call failed for agent %s: %v",
-				invocation.AgentName,
-				err,
-			)
-			return ctx, nil, err
-		}
-		return ctx, seq, nil
-	}
-
-	responseChan, err := invocation.Model.GenerateContent(ctx, llmRequest)
+	ctx, customResp, err := f.runBeforeModelCallbacks(ctx, invocation, llmRequest)
 	if err != nil {
-		log.ErrorfContext(
-			ctx,
-			"LLM call failed for agent %s: %v",
-			invocation.AgentName,
-			err,
-		)
 		return ctx, nil, err
 	}
+	if customResp != nil {
+		return ctx, singleResponseSeq(customResp), nil
+	}
 
-	return ctx, func(yield func(*model.Response) bool) {
-		for resp := range responseChan {
-			if !yield(resp) {
-				return
-			}
-		}
-	}, nil
+	seq, err := f.generateContentSeq(ctx, invocation, llmRequest)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return ctx, seq, nil
 }
 
 // postprocess handles post-LLM call processing using response processors.
