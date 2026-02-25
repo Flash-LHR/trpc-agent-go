@@ -586,10 +586,41 @@ func (f *Flow) getFilteredTools(ctx context.Context, invocation *agent.Invocatio
 	return filtered
 }
 
-func singleResponseSeq(resp *model.Response) model.Seq[*model.Response] {
-	return func(yield func(*model.Response) bool) {
-		yield(resp)
+// callLLM performs the actual LLM call using core/model.
+func (f *Flow) callLLM(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	llmRequest *model.Request,
+) (context.Context, model.Seq[*model.Response], error) {
+	if invocation.Model == nil {
+		return ctx, nil, errors.New("no model available for LLM call")
 	}
+	log.DebugfContext(
+		ctx,
+		"Calling LLM for agent %s",
+		invocation.AgentName,
+	)
+	// Enforce optional per-invocation LLM call limit. When the limit is not
+	// configured (<= 0), this is a no-op and preserves existing behavior.
+	if err := invocation.IncLLMCallCount(); err != nil {
+		log.Errorf("LLM call limit exceeded for agent %s: %v", invocation.AgentName, err)
+		return ctx, nil, err
+	}
+	// Run before model callbacks if they exist.
+	ctx, customResp, err := f.runBeforeModelCallbacks(ctx, invocation, llmRequest)
+	if err != nil {
+		return ctx, nil, err
+	}
+	if customResp != nil {
+		return ctx, func(yield func(*model.Response) bool) {
+			yield(customResp)
+		}, nil
+	}
+	seq, err := f.generateContentSeq(ctx, invocation, llmRequest)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return ctx, seq, nil
 }
 
 func (f *Flow) runBeforeModelPluginCallbacks(
@@ -699,45 +730,6 @@ func (f *Flow) generateContentSeq(
 			}
 		}
 	}, nil
-}
-
-// callLLM performs the actual LLM call using core/model.
-func (f *Flow) callLLM(
-	ctx context.Context,
-	invocation *agent.Invocation,
-	llmRequest *model.Request,
-) (context.Context, model.Seq[*model.Response], error) {
-	if invocation.Model == nil {
-		return ctx, nil, errors.New("no model available for LLM call")
-	}
-
-	log.DebugfContext(
-		ctx,
-		"Calling LLM for agent %s",
-		invocation.AgentName,
-	)
-
-	// Enforce optional per-invocation LLM call limit. When the limit is not
-	// configured (<= 0), this is a no-op and preserves existing behavior.
-	if err := invocation.IncLLMCallCount(); err != nil {
-		log.Errorf("LLM call limit exceeded for agent %s: %v", invocation.AgentName, err)
-		return ctx, nil, err
-	}
-
-	// Run before model callbacks if they exist.
-	ctx, customResp, err := f.runBeforeModelCallbacks(ctx, invocation, llmRequest)
-	if err != nil {
-		return ctx, nil, err
-	}
-	if customResp != nil {
-		return ctx, singleResponseSeq(customResp), nil
-	}
-
-	seq, err := f.generateContentSeq(ctx, invocation, llmRequest)
-	if err != nil {
-		return ctx, nil, err
-	}
-	return ctx, seq, nil
 }
 
 // postprocess handles post-LLM call processing using response processors.
