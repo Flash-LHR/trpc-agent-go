@@ -162,7 +162,9 @@ type IterModel interface {
 type Seq[T any] func(yield func(T) bool)
 ```
 
-When a model implements both `Model` and `IterModel`, the framework prefers iterator-based streaming to reduce goroutine and channel scheduling overhead.
+Channel-based streaming typically requires a dedicated goroutine and incurs channel synchronization on each chunk. In high-frequency streaming, this overhead can become a measurable cost. `IterModel` is an optional iterator-style API that streams responses synchronously in the caller goroutine to reduce this overhead. 
+
+When a model implements `IterModel`, the framework uses `GenerateContentIter`; otherwise it uses `GenerateContent`. Implementations must call `yield` sequentially and stop when it returns `false`.
 
 ### Request Structure
 

@@ -162,7 +162,9 @@ type IterModel interface {
 type Seq[T any] func(yield func(T) bool)
 ```
 
-当模型同时实现 `Model` 与 `IterModel` 接口时，框架优先使用基于迭代器的流式输出，以减少 goroutine 与 channel 的调度开销。
+基于 channel 的流式接口通常需要额外 goroutine 驱动读取，并在每个响应片段上产生一次 channel 同步。高频流式输出时，该开销可能成为主要的性能成本。`IterModel` 提供可选的迭代器式接口，使响应在调用方 goroutine 内同步产出，以降低上述开销。
+
+模型实现 `IterModel` 时，框架优先调用 `GenerateContentIter`；否则继续调用 `GenerateContent`。实现方必须串行调用 `yield`，并在其返回 `false` 时停止。
 
 ### Request 结构
 
