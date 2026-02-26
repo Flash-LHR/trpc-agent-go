@@ -235,6 +235,25 @@ func TestTracefContext(t *testing.T) {
 		"TracefContext args should match expected")
 }
 
+func TestTracefContext_Disabled(t *testing.T) {
+	ctx := context.Background()
+	stub := &traceLogger{}
+	original := log.ContextDefault
+	log.ContextDefault = stub
+	t.Cleanup(func() {
+		log.ContextDefault = original
+	})
+
+	log.SetTraceEnabled(false)
+	t.Cleanup(func() {
+		log.SetTraceEnabled(false)
+	})
+
+	log.TracefContext(ctx, "hello %s", "world")
+
+	assert.Equal(t, 0, stub.debugfCalls, "TracefContext should not call Debugf when trace is disabled")
+}
+
 func wrapLoggerWithObserver(t *testing.T, logger log.Logger) (*observer.ObservedLogs, log.Logger) {
 	t.Helper()
 	sugar, ok := logger.(*zap.SugaredLogger)
