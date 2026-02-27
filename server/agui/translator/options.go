@@ -14,7 +14,7 @@ type options struct {
 	graphNodeLifecycleActivityEnabled      bool // graphNodeLifecycleActivityEnabled enables graph node lifecycle activity events.
 	graphNodeInterruptActivityEnabled      bool // graphNodeInterruptActivityEnabled enables graph interrupt activity events.
 	graphNodeInterruptActivityTopLevelOnly bool // graphNodeInterruptActivityTopLevelOnly drops nested graph interrupt activity events.
-	reasoningContentSuppressed             bool // reasoningContentSuppressed controls whether reasoning content is suppressed.
+	reasoningContentEnabled                bool // reasoningContentEnabled controls whether reasoning content events are emitted.
 }
 
 // Option is a function that configures the options.
@@ -53,9 +53,9 @@ func WithGraphNodeInterruptActivityTopLevelOnly(enabled bool) Option {
 	}
 }
 
-// WithReasoningContentSuppressed controls whether the translator drops REASONING_* events.
-func WithReasoningContentSuppressed(suppressed bool) Option {
+// WithReasoningContentEnabled controls whether the translator emits REASONING_* events.
+func WithReasoningContentEnabled(enabled bool) Option {
 	return func(o *options) {
-		o.reasoningContentSuppressed = suppressed
+		o.reasoningContentEnabled = enabled
 	}
 }

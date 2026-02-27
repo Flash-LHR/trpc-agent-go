@@ -839,7 +839,7 @@ func TestTranslateSequentialEvents(t *testing.T) {
 }
 
 func TestTranslateReasoningStreamEndsOnContent(t *testing.T) {
-	tr := newTranslatorImplForTest(t)
+	tr := newTranslatorImplForTest(t, WithReasoningContentEnabled(true))
 	if tr == nil {
 		return
 	}
@@ -858,7 +858,7 @@ func TestTranslateReasoningStreamEndsOnContent(t *testing.T) {
 	assert.IsType(t, (*aguievents.ReasoningMessageStartEvent)(nil), events[1])
 	assert.IsType(t, (*aguievents.ReasoningMessageContentEvent)(nil), events[2])
 	assert.True(t, tr.receivingReasoning)
-	assert.Equal(t, reasoningMessageID("msg-1"), tr.lastReasoningMessageID)
+	assert.Equal(t, "msg-1", tr.lastReasoningMessageID)
 	second := &model.Response{
 		ID:     "msg-1",
 		Object: model.ObjectTypeChatCompletionChunk,
@@ -872,7 +872,7 @@ func TestTranslateReasoningStreamEndsOnContent(t *testing.T) {
 	assert.Len(t, events, 1)
 	content, ok := events[0].(*aguievents.ReasoningMessageContentEvent)
 	assert.True(t, ok)
-	assert.Equal(t, reasoningMessageID("msg-1"), content.MessageID)
+	assert.Equal(t, "msg-1", content.MessageID)
 	assert.Equal(t, " more", content.Delta)
 	third := &model.Response{
 		ID:     "msg-1",
@@ -907,7 +907,7 @@ func TestTranslateReasoningStreamEndsOnContent(t *testing.T) {
 }
 
 func TestTranslateReasoningNonStreamPrecedesText(t *testing.T) {
-	tr := newTranslatorImplForTest(t)
+	tr := newTranslatorImplForTest(t, WithReasoningContentEnabled(true))
 	if tr == nil {
 		return
 	}
@@ -937,7 +937,7 @@ func TestTranslateReasoningNonStreamPrecedesText(t *testing.T) {
 }
 
 func TestTranslateReasoningSuppressed(t *testing.T) {
-	tr := newTranslatorImplForTest(t, WithReasoningContentSuppressed(true))
+	tr := newTranslatorImplForTest(t, WithReasoningContentEnabled(false))
 	if tr == nil {
 		return
 	}
@@ -963,8 +963,57 @@ func TestTranslateReasoningSuppressed(t *testing.T) {
 	assert.Empty(t, tr.lastReasoningMessageID)
 }
 
+func TestTranslateReasoningStreamingDoesNotDuplicateOnFinalCompletion(t *testing.T) {
+	tr := newTranslatorImplForTest(t, WithReasoningContentEnabled(true))
+	if tr == nil {
+		return
+	}
+	first := &model.Response{
+		ID:     "msg-1",
+		Object: model.ObjectTypeChatCompletionChunk,
+		Choices: []model.Choice{{
+			Delta: model.Message{Role: model.RoleAssistant, ReasoningContent: "579"},
+		}},
+		IsPartial: true,
+	}
+	events, err := tr.Translate(context.Background(), &agentevent.Event{Response: first})
+	assert.NoError(t, err)
+	assert.Len(t, events, 3)
+	assert.IsType(t, (*aguievents.ReasoningStartEvent)(nil), events[0])
+	assert.IsType(t, (*aguievents.ReasoningMessageStartEvent)(nil), events[1])
+	assert.IsType(t, (*aguievents.ReasoningMessageContentEvent)(nil), events[2])
+
+	reason := "stop"
+	finish := &model.Response{
+		ID:     "msg-1",
+		Object: model.ObjectTypeChatCompletionChunk,
+		Choices: []model.Choice{{
+			Delta:        model.Message{Role: model.RoleAssistant},
+			FinishReason: &reason,
+		}},
+		IsPartial: true,
+	}
+	events, err = tr.Translate(context.Background(), &agentevent.Event{Response: finish})
+	assert.NoError(t, err)
+	assert.Len(t, events, 2)
+	assert.IsType(t, (*aguievents.ReasoningMessageEndEvent)(nil), events[0])
+	assert.IsType(t, (*aguievents.ReasoningEndEvent)(nil), events[1])
+
+	final := &model.Response{
+		ID:     "msg-1",
+		Object: model.ObjectTypeChatCompletion,
+		Choices: []model.Choice{{
+			Message: model.Message{Role: model.RoleAssistant, ReasoningContent: "579"},
+		}},
+		Done: true,
+	}
+	events, err = tr.Translate(context.Background(), &agentevent.Event{Response: final})
+	assert.NoError(t, err)
+	assert.Empty(t, events)
+}
+
 func TestTranslateReasoningStreamEndsOnToolCall(t *testing.T) {
-	tr := newTranslatorImplForTest(t)
+	tr := newTranslatorImplForTest(t, WithReasoningContentEnabled(true))
 	if tr == nil {
 		return
 	}
@@ -1008,7 +1057,7 @@ func TestTranslateReasoningStreamEndsOnToolCall(t *testing.T) {
 }
 
 func TestTranslateReasoningStreamEndsOnFinishReason(t *testing.T) {
-	tr := newTranslatorImplForTest(t)
+	tr := newTranslatorImplForTest(t, WithReasoningContentEnabled(true))
 	if tr == nil {
 		return
 	}
@@ -1043,7 +1092,7 @@ func TestTranslateReasoningStreamEndsOnFinishReason(t *testing.T) {
 }
 
 func TestTranslateReasoningStreamClosesOnIDChange(t *testing.T) {
-	tr := newTranslatorImplForTest(t)
+	tr := newTranslatorImplForTest(t, WithReasoningContentEnabled(true))
 	if tr == nil {
 		return
 	}
@@ -1058,7 +1107,7 @@ func TestTranslateReasoningStreamClosesOnIDChange(t *testing.T) {
 	_, err := tr.Translate(context.Background(), &agentevent.Event{Response: first})
 	assert.NoError(t, err)
 	assert.True(t, tr.receivingReasoning)
-	assert.Equal(t, reasoningMessageID("msg-1"), tr.lastReasoningMessageID)
+	assert.Equal(t, "msg-1", tr.lastReasoningMessageID)
 
 	next := &model.Response{
 		ID:     "msg-2",
@@ -1077,11 +1126,11 @@ func TestTranslateReasoningStreamClosesOnIDChange(t *testing.T) {
 	assert.IsType(t, (*aguievents.ReasoningMessageStartEvent)(nil), events[3])
 	assert.IsType(t, (*aguievents.ReasoningMessageContentEvent)(nil), events[4])
 	assert.True(t, tr.receivingReasoning)
-	assert.Equal(t, reasoningMessageID("msg-2"), tr.lastReasoningMessageID)
+	assert.Equal(t, "msg-2", tr.lastReasoningMessageID)
 }
 
 func TestTranslateRunnerCompletionClosesReasoningStream(t *testing.T) {
-	tr := newTranslatorImplForTest(t)
+	tr := newTranslatorImplForTest(t, WithReasoningContentEnabled(true))
 	if tr == nil {
 		return
 	}

@@ -149,10 +149,10 @@ func WithGraphNodeInterruptActivityTopLevelOnly(enabled bool) Option {
 	}
 }
 
-// WithReasoningContentSuppressed controls whether the AG-UI server suppresses reasoning content.
-func WithReasoningContentSuppressed(suppressed bool) Option {
+// WithReasoningContentEnabled controls whether the AG-UI server emits reasoning content events.
+func WithReasoningContentEnabled(enabled bool) Option {
 	return func(o *options) {
-		o.aguiRunnerOptions = append(o.aguiRunnerOptions, aguirunner.WithReasoningContentSuppressed(suppressed))
+		o.aguiRunnerOptions = append(o.aguiRunnerOptions, aguirunner.WithReasoningContentEnabled(enabled))
 	}
 }
 

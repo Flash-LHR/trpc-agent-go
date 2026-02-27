@@ -44,7 +44,7 @@ func New(ctx context.Context, threadID, runID string, opts ...Option) (Translato
 		graphNodeLifecycleActivityEnabled:      options.graphNodeLifecycleActivityEnabled,
 		graphNodeInterruptActivityEnabled:      options.graphNodeInterruptActivityEnabled,
 		graphNodeInterruptActivityTopLevelOnly: options.graphNodeInterruptActivityTopLevelOnly,
-		reasoningContentSuppressed:             options.reasoningContentSuppressed,
+		reasoningContentEnabled:                options.reasoningContentEnabled,
 	}, nil
 }
 
@@ -61,7 +61,7 @@ type translator struct {
 	graphNodeLifecycleActivityEnabled      bool
 	graphNodeInterruptActivityEnabled      bool
 	graphNodeInterruptActivityTopLevelOnly bool
-	reasoningContentSuppressed             bool
+	reasoningContentEnabled                bool
 }
 
 // Translate translates one trpc-agent-go event into zero or more AG-UI events.
@@ -103,7 +103,7 @@ func (t *translator) Translate(ctx context.Context, event *agentevent.Event) ([]
 		return events, nil
 	}
 	if rsp.Object == model.ObjectTypeChatCompletionChunk || rsp.Object == model.ObjectTypeChatCompletion {
-		if !t.reasoningContentSuppressed {
+		if t.reasoningContentEnabled {
 			reasoningEvents, err := t.reasoningEvents(rsp)
 			if err != nil {
 				return nil, err
@@ -132,7 +132,7 @@ func (t *translator) Translate(ctx context.Context, event *agentevent.Event) ([]
 	}
 	if event.IsRunnerCompletion() {
 		if t.receivingReasoning {
-			if !t.reasoningContentSuppressed {
+			if t.reasoningContentEnabled {
 				events = append(events,
 					aguievents.NewReasoningMessageEndEvent(t.lastReasoningMessageID),
 					aguievents.NewReasoningEndEvent(t.lastReasoningMessageID),
@@ -255,29 +255,61 @@ func (t *translator) graphNodeInterruptActivityEvents(evt *agentevent.Event) []a
 	}
 }
 
-func reasoningMessageID(messageID string) string {
-	return fmt.Sprintf("reasoning_%s", messageID)
-}
-
 // reasoningEvents translates reasoning_content emitted by models (e.g. DeepSeek, Claude Thinking)
 // into AG-UI REASONING_* events.
 func (t *translator) reasoningEvents(rsp *model.Response) ([]aguievents.Event, error) {
-	if t.reasoningContentSuppressed {
-		return nil, nil
-	}
 	if rsp == nil || len(rsp.Choices) == 0 {
 		return nil, nil
 	}
-	switch rsp.Object {
-	case model.ObjectTypeChatCompletionChunk, model.ObjectTypeChatCompletion:
-	default:
+	if rsp.ID == "" {
 		return nil, nil
 	}
-	messageID := rsp.ID
-	if messageID == "" {
-		return nil, nil
+	reasoningID := rsp.ID
+	var events []aguievents.Event
+	// Different message ID means a new reasoning message.
+	if t.lastReasoningMessageID != reasoningID {
+		switch rsp.Object {
+		case model.ObjectTypeChatCompletionChunk:
+			if rsp.Choices[0].Delta.ReasoningContent == "" {
+				return nil, nil
+			}
+			if t.receivingReasoning {
+				events = append(events,
+					aguievents.NewReasoningMessageEndEvent(t.lastReasoningMessageID),
+					aguievents.NewReasoningEndEvent(t.lastReasoningMessageID),
+				)
+				t.receivingReasoning = false
+			}
+			t.lastReasoningMessageID = reasoningID
+			t.receivingReasoning = true
+			events = append(events,
+				aguievents.NewReasoningStartEvent(reasoningID),
+				aguievents.NewReasoningMessageStartEvent(reasoningID, model.RoleAssistant.String()),
+			)
+		case model.ObjectTypeChatCompletion:
+			if rsp.Choices[0].Message.ReasoningContent == "" {
+				return nil, nil
+			}
+			if t.receivingReasoning {
+				events = append(events,
+					aguievents.NewReasoningMessageEndEvent(t.lastReasoningMessageID),
+					aguievents.NewReasoningEndEvent(t.lastReasoningMessageID),
+				)
+				t.receivingReasoning = false
+			}
+			t.lastReasoningMessageID = reasoningID
+			events = append(events,
+				aguievents.NewReasoningStartEvent(reasoningID),
+				aguievents.NewReasoningMessageStartEvent(reasoningID, model.RoleAssistant.String()),
+				aguievents.NewReasoningMessageContentEvent(reasoningID, rsp.Choices[0].Message.ReasoningContent),
+				aguievents.NewReasoningMessageEndEvent(reasoningID),
+				aguievents.NewReasoningEndEvent(reasoningID),
+			)
+			return events, nil
+		default:
+			return nil, errors.New("invalid response object")
+		}
 	}
-	reasoningID := reasoningMessageID(messageID)
 	choice := rsp.Choices[0]
 	reasoningDelta := ""
 	contentDelta := ""
@@ -288,49 +320,43 @@ func (t *translator) reasoningEvents(rsp *model.Response) ([]aguievents.Event, e
 		reasoningDelta = choice.Message.ReasoningContent
 		contentDelta = choice.Message.Content
 	}
-	var events []aguievents.Event
-	// Close any previous reasoning stream if the response ID changes unexpectedly.
-	if t.receivingReasoning && t.lastReasoningMessageID != "" && t.lastReasoningMessageID != reasoningID {
-		events = append(events,
-			aguievents.NewReasoningMessageEndEvent(t.lastReasoningMessageID),
-			aguievents.NewReasoningEndEvent(t.lastReasoningMessageID),
-		)
-		t.receivingReasoning = false
-	}
-	// Start or continue the reasoning stream.
-	if reasoningDelta != "" {
-		if !t.receivingReasoning || t.lastReasoningMessageID != reasoningID {
-			t.lastReasoningMessageID = reasoningID
-			t.receivingReasoning = true
-			events = append(events,
-				aguievents.NewReasoningStartEvent(reasoningID),
-				aguievents.NewReasoningMessageStartEvent(reasoningID, model.RoleAssistant.String()),
-			)
+	// Streaming response.
+	switch rsp.Object {
+	case model.ObjectTypeChatCompletionChunk:
+		if reasoningDelta != "" {
+			events = append(events, aguievents.NewReasoningMessageContentEvent(reasoningID, reasoningDelta))
 		}
-		events = append(events, aguievents.NewReasoningMessageContentEvent(reasoningID, reasoningDelta))
-	}
-	// End the reasoning stream once regular content/tool calls start flowing, or the response is terminal.
-	if t.receivingReasoning && t.lastReasoningMessageID == reasoningID {
-		shouldEnd := false
-		if contentDelta != "" {
-			shouldEnd = true
+		if t.receivingReasoning {
+			shouldEnd := false
+			if contentDelta != "" {
+				shouldEnd = true
+			}
+			if rsp.IsToolCallResponse() {
+				shouldEnd = true
+			}
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				shouldEnd = true
+			}
+			if shouldEnd {
+				t.receivingReasoning = false
+				events = append(events,
+					aguievents.NewReasoningMessageEndEvent(reasoningID),
+					aguievents.NewReasoningEndEvent(reasoningID),
+				)
+			}
 		}
-		if rsp.IsToolCallResponse() {
-			shouldEnd = true
-		}
-		if choice.FinishReason != nil && *choice.FinishReason != "" {
-			shouldEnd = true
-		}
-		if rsp.Object == model.ObjectTypeChatCompletion {
-			shouldEnd = true
-		}
-		if shouldEnd {
+	// For streaming response, don't need to emit final completion event.
+	// It means the response is ended.
+	case model.ObjectTypeChatCompletion:
+		if t.receivingReasoning {
+			t.receivingReasoning = false
 			events = append(events,
 				aguievents.NewReasoningMessageEndEvent(reasoningID),
 				aguievents.NewReasoningEndEvent(reasoningID),
 			)
-			t.receivingReasoning = false
 		}
+	default:
+		return nil, errors.New("invalid response object")
 	}
 	return events, nil
 }

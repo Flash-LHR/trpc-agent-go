@@ -363,12 +363,12 @@ REASONING_START
 REASONING_END
 ```
 
-If you do not want to expose thinking content to the frontend, you can enable suppression when creating the Server. It is not suppressed by default:
+By default, thought-provoking content is disabled. You can enable it when creating the server using `agui.WithReasoningContentEnabled`.
 
 ```go
 import "trpc.group/trpc-go/trpc-agent-go/server/agui"
 
-server, err := agui.New(runner, agui.WithReasoningContentSuppressed(true))
+server, err := agui.New(runner, agui.WithReasoningContentEnabled(true))
 ```
 
 ### Custom `UserIDResolver`

@@ -104,10 +104,10 @@ func TestWithGraphNodeInterruptActivityTopLevelOnly(t *testing.T) {
 	assert.True(t, ro.GraphNodeInterruptActivityTopLevelOnly)
 }
 
-func TestWithReasoningContentSuppressed(t *testing.T) {
-	opts := newOptions(WithReasoningContentSuppressed(true))
+func TestWithReasoningContentEnabled(t *testing.T) {
+	opts := newOptions(WithReasoningContentEnabled(true))
 	ro := aguirunner.NewOptions(opts.aguiRunnerOptions...)
-	assert.True(t, ro.ReasoningContentSuppressed)
+	assert.True(t, ro.ReasoningContentEnabled)
 }
 
 func TestWithMessagesSnapshotFollowEnabled(t *testing.T) {

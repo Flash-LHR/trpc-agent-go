@@ -70,7 +70,7 @@ func New(r trunner.Runner, opt ...Option) Runner {
 		graphNodeLifecycleActivityEnabled:      opts.GraphNodeLifecycleActivityEnabled,
 		graphNodeInterruptActivityEnabled:      opts.GraphNodeInterruptActivityEnabled,
 		graphNodeInterruptActivityTopLevelOnly: opts.GraphNodeInterruptActivityTopLevelOnly,
-		reasoningContentSuppressed:             opts.ReasoningContentSuppressed,
+		reasoningContentEnabled:                opts.ReasoningContentEnabled,
 		userIDResolver:                         opts.UserIDResolver,
 		translateCallbacks:                     opts.TranslateCallbacks,
 		runAgentInputHook:                      opts.RunAgentInputHook,
@@ -96,7 +96,7 @@ type runner struct {
 	graphNodeLifecycleActivityEnabled      bool
 	graphNodeInterruptActivityEnabled      bool
 	graphNodeInterruptActivityTopLevelOnly bool
-	reasoningContentSuppressed             bool
+	reasoningContentEnabled                bool
 	userIDResolver                         UserIDResolver
 	translateCallbacks                     *translator.Callbacks
 	runAgentInputHook                      RunAgentInputHook
@@ -229,7 +229,7 @@ func (r *runner) Run(ctx context.Context, runAgentInput *adapter.RunAgentInput) 
 		translator.WithGraphNodeLifecycleActivityEnabled(r.graphNodeLifecycleActivityEnabled),
 		translator.WithGraphNodeInterruptActivityEnabled(r.graphNodeInterruptActivityEnabled),
 		translator.WithGraphNodeInterruptActivityTopLevelOnly(r.graphNodeInterruptActivityTopLevelOnly),
-		translator.WithReasoningContentSuppressed(r.reasoningContentSuppressed),
+		translator.WithReasoningContentEnabled(r.reasoningContentEnabled),
 	)
 	if err != nil {
 		span.End()

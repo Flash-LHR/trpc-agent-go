@@ -27,7 +27,7 @@ const (
 	defaultGraphNodeLifecycleActivityEnabled      = false
 	defaultGraphNodeInterruptActivityEnabled      = false
 	defaultGraphNodeInterruptActivityTopLevelOnly = false
-	defaultReasoningContentSuppressed             = false
+	defaultReasoningContentEnabled                = false
 )
 
 // Options holds the options for the runner.
@@ -51,7 +51,7 @@ type Options struct {
 	GraphNodeLifecycleActivityEnabled      bool                  // GraphNodeLifecycleActivityEnabled enables graph node lifecycle activity events.
 	GraphNodeInterruptActivityEnabled      bool                  // GraphNodeInterruptActivityEnabled enables graph interrupt activity events.
 	GraphNodeInterruptActivityTopLevelOnly bool                  // GraphNodeInterruptActivityTopLevelOnly drops nested graph interrupt activity events.
-	ReasoningContentSuppressed             bool                  // ReasoningContentSuppressed controls whether reasoning content is suppressed.
+	ReasoningContentEnabled                bool                  // ReasoningContentEnabled controls whether reasoning content events are emitted.
 }
 
 // NewOptions creates a new options instance.
@@ -69,7 +69,7 @@ func NewOptions(opt ...Option) *Options {
 		GraphNodeLifecycleActivityEnabled:      defaultGraphNodeLifecycleActivityEnabled,
 		GraphNodeInterruptActivityEnabled:      defaultGraphNodeInterruptActivityEnabled,
 		GraphNodeInterruptActivityTopLevelOnly: defaultGraphNodeInterruptActivityTopLevelOnly,
-		ReasoningContentSuppressed:             defaultReasoningContentSuppressed,
+		ReasoningContentEnabled:                defaultReasoningContentEnabled,
 	}
 	for _, o := range opt {
 		o(opts)
@@ -232,10 +232,10 @@ func WithGraphNodeInterruptActivityTopLevelOnly(enabled bool) Option {
 	}
 }
 
-// WithReasoningContentSuppressed controls whether the runner drops REASONING_* events.
-func WithReasoningContentSuppressed(suppressed bool) Option {
+// WithReasoningContentEnabled controls whether the runner emits REASONING_* events.
+func WithReasoningContentEnabled(enabled bool) Option {
 	return func(o *Options) {
-		o.ReasoningContentSuppressed = suppressed
+		o.ReasoningContentEnabled = enabled
 	}
 }
 

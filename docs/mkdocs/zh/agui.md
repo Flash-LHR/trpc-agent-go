@@ -361,12 +361,12 @@ REASONING_START
 REASONING_END
 ```
 
-如果你不希望把思考内容暴露给前端，可以在创建 Server 时开启屏蔽。默认不屏蔽：
+默认情况下会屏蔽思考内容，可以通过 `agui.WithReasoningContentEnabled` 在创建 Server 时开启思考内容：
 
 ```go
 import "trpc.group/trpc-go/trpc-agent-go/server/agui"
 
-server, err := agui.New(runner, agui.WithReasoningContentSuppressed(true))
+server, err := agui.New(runner, agui.WithReasoningContentEnabled(true))
 ```
 
 ### 自定义 `UserIDResolver`

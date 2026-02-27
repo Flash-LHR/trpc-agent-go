@@ -70,7 +70,7 @@ func TestNewOptionsDefaults(t *testing.T) {
 	assert.False(t, opts.GraphNodeLifecycleActivityEnabled)
 	assert.False(t, opts.GraphNodeInterruptActivityEnabled)
 	assert.False(t, opts.GraphNodeInterruptActivityTopLevelOnly)
-	assert.False(t, opts.ReasoningContentSuppressed)
+	assert.False(t, opts.ReasoningContentEnabled)
 }
 
 func TestWithUserIDResolver(t *testing.T) {
@@ -125,9 +125,9 @@ func TestWithGraphNodeInterruptActivityTopLevelOnly(t *testing.T) {
 	assert.True(t, opts.GraphNodeInterruptActivityTopLevelOnly)
 }
 
-func TestWithReasoningContentSuppressed(t *testing.T) {
-	opts := NewOptions(WithReasoningContentSuppressed(true))
-	assert.True(t, opts.ReasoningContentSuppressed)
+func TestWithReasoningContentEnabled(t *testing.T) {
+	opts := NewOptions(WithReasoningContentEnabled(true))
+	assert.True(t, opts.ReasoningContentEnabled)
 }
 
 func TestWithTranslateCallbacks(t *testing.T) {
