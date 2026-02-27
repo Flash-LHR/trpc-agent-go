@@ -27,6 +27,7 @@ const (
 	defaultGraphNodeLifecycleActivityEnabled      = false
 	defaultGraphNodeInterruptActivityEnabled      = false
 	defaultGraphNodeInterruptActivityTopLevelOnly = false
+	defaultReasoningContentSuppressed             = false
 )
 
 // Options holds the options for the runner.
@@ -50,6 +51,7 @@ type Options struct {
 	GraphNodeLifecycleActivityEnabled      bool                  // GraphNodeLifecycleActivityEnabled enables graph node lifecycle activity events.
 	GraphNodeInterruptActivityEnabled      bool                  // GraphNodeInterruptActivityEnabled enables graph interrupt activity events.
 	GraphNodeInterruptActivityTopLevelOnly bool                  // GraphNodeInterruptActivityTopLevelOnly drops nested graph interrupt activity events.
+	ReasoningContentSuppressed             bool                  // ReasoningContentSuppressed controls whether reasoning content is suppressed.
 }
 
 // NewOptions creates a new options instance.
@@ -67,6 +69,7 @@ func NewOptions(opt ...Option) *Options {
 		GraphNodeLifecycleActivityEnabled:      defaultGraphNodeLifecycleActivityEnabled,
 		GraphNodeInterruptActivityEnabled:      defaultGraphNodeInterruptActivityEnabled,
 		GraphNodeInterruptActivityTopLevelOnly: defaultGraphNodeInterruptActivityTopLevelOnly,
+		ReasoningContentSuppressed:             defaultReasoningContentSuppressed,
 	}
 	for _, o := range opt {
 		o(opts)
@@ -226,6 +229,13 @@ func WithGraphNodeInterruptActivityEnabled(enabled bool) Option {
 func WithGraphNodeInterruptActivityTopLevelOnly(enabled bool) Option {
 	return func(o *Options) {
 		o.GraphNodeInterruptActivityTopLevelOnly = enabled
+	}
+}
+
+// WithReasoningContentSuppressed controls whether the runner drops REASONING_* events.
+func WithReasoningContentSuppressed(suppressed bool) Option {
+	return func(o *Options) {
+		o.ReasoningContentSuppressed = suppressed
 	}
 }
 

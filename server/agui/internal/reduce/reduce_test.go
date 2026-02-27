@@ -225,6 +225,97 @@ func TestReduceAllowsUnclosedTextMessage(t *testing.T) {
 	assert.Equal(t, "hello", content)
 }
 
+func TestReduceReasoningMessageLifecycle(t *testing.T) {
+	events := trackEventsFrom(
+		aguievents.NewReasoningMessageStartEvent("reasoning-msg-1", "assistant"),
+		aguievents.NewReasoningMessageContentEvent("reasoning-msg-1", "a"),
+		aguievents.NewReasoningMessageContentEvent("reasoning-msg-1", "b"),
+		aguievents.NewReasoningMessageEndEvent("reasoning-msg-1"),
+	)
+	msgs, err := Reduce(testAppName, testUserID, events)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	msg := msgs[0]
+	assert.Equal(t, "reasoning-msg-1", msg.ID)
+	assert.Equal(t, types.RoleReasoning, msg.Role)
+	require.NotNil(t, msg.Name)
+	assert.Equal(t, testAppName, msg.Name)
+	content, ok := msg.ContentString()
+	require.True(t, ok)
+	assert.Equal(t, "ab", content)
+}
+
+func TestReduceReasoningMessageRoleMustBeAssistant(t *testing.T) {
+	events := trackEventsFrom(
+		aguievents.NewReasoningMessageStartEvent("reasoning-msg-1", "user"),
+	)
+	assertReduceError(t, events, "unsupported role: user")
+}
+
+func TestReduceAllowsUnclosedReasoningMessage(t *testing.T) {
+	events := trackEventsFrom(
+		aguievents.NewReasoningMessageStartEvent("reasoning-msg-1", "assistant"),
+		aguievents.NewReasoningMessageContentEvent("reasoning-msg-1", "hello"),
+	)
+	msgs, err := Reduce(testAppName, testUserID, events)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	require.NotNil(t, msgs[0].Content)
+	content, ok := msgs[0].ContentString()
+	require.True(t, ok)
+	assert.Equal(t, "hello", content)
+}
+
+func TestReduceReasoningMessageChunk(t *testing.T) {
+	messageID := "reasoning-msg-1"
+	delta := "chunk"
+	chunk := aguievents.NewReasoningMessageChunkEvent(&messageID, &delta)
+	msgs, err := Reduce(testAppName, testUserID, trackEventsFrom(chunk))
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "reasoning-msg-1", msgs[0].ID)
+	assert.Equal(t, types.RoleReasoning, msgs[0].Role)
+	require.NotNil(t, msgs[0].Name)
+	assert.Equal(t, testAppName, msgs[0].Name)
+	content, ok := msgs[0].ContentString()
+	require.True(t, ok)
+	assert.Equal(t, "chunk", content)
+}
+
+func TestReduceReasoningMessageChunkUsesPreviousID(t *testing.T) {
+	messageID := "reasoning-msg-1"
+	first := "a"
+	second := "b"
+	start := aguievents.NewReasoningMessageChunkEvent(&messageID, &first)
+	next := aguievents.NewReasoningMessageChunkEvent(nil, &second)
+	msgs, err := Reduce(testAppName, testUserID, trackEventsFrom(start, next))
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "reasoning-msg-1", msgs[0].ID)
+	content, ok := msgs[0].ContentString()
+	require.True(t, ok)
+	assert.Equal(t, "ab", content)
+}
+
+func TestReduceReasoningMessageChunkRequiresIDInitially(t *testing.T) {
+	delta := "chunk"
+	chunk := aguievents.NewReasoningMessageChunkEvent(nil, &delta)
+	assertReduceError(t, trackEventsFrom(chunk), "reasoning message chunk missing id")
+}
+
+func TestReduceReasoningEncryptedValue(t *testing.T) {
+	events := trackEventsFrom(
+		aguievents.NewReasoningMessageStartEvent("reasoning-msg-1", "assistant"),
+		aguievents.NewReasoningMessageContentEvent("reasoning-msg-1", "summary"),
+		aguievents.NewReasoningMessageEndEvent("reasoning-msg-1"),
+		aguievents.NewReasoningEncryptedValueEvent(aguievents.ReasoningEncryptedValueSubtypeMessage, "reasoning-msg-1", "encrypted"),
+	)
+	msgs, err := Reduce(testAppName, testUserID, events)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "encrypted", msgs[0].EncryptedValue)
+}
+
 func TestReduceAllowsUnclosedToolCallArgs(t *testing.T) {
 	events := trackEventsFrom(
 		aguievents.NewTextMessageStartEvent("assistant-1", aguievents.WithRole("assistant")),

@@ -44,6 +44,7 @@ func New(ctx context.Context, threadID, runID string, opts ...Option) (Translato
 		graphNodeLifecycleActivityEnabled:      options.graphNodeLifecycleActivityEnabled,
 		graphNodeInterruptActivityEnabled:      options.graphNodeInterruptActivityEnabled,
 		graphNodeInterruptActivityTopLevelOnly: options.graphNodeInterruptActivityTopLevelOnly,
+		reasoningContentSuppressed:             options.reasoningContentSuppressed,
 	}, nil
 }
 
@@ -53,11 +54,14 @@ type translator struct {
 	runID                                  string
 	lastMessageID                          string
 	receivingMessage                       bool
+	lastReasoningMessageID                 string
+	receivingReasoning                     bool
 	seenResponseIDs                        map[string]struct{}
 	seenToolCallIDs                        map[string]struct{}
 	graphNodeLifecycleActivityEnabled      bool
 	graphNodeInterruptActivityEnabled      bool
 	graphNodeInterruptActivityTopLevelOnly bool
+	reasoningContentSuppressed             bool
 }
 
 // Translate translates one trpc-agent-go event into zero or more AG-UI events.
@@ -99,6 +103,13 @@ func (t *translator) Translate(ctx context.Context, event *agentevent.Event) ([]
 		return events, nil
 	}
 	if rsp.Object == model.ObjectTypeChatCompletionChunk || rsp.Object == model.ObjectTypeChatCompletion {
+		if !t.reasoningContentSuppressed {
+			reasoningEvents, err := t.reasoningEvents(rsp)
+			if err != nil {
+				return nil, err
+			}
+			events = append(events, reasoningEvents...)
+		}
 		textMessageEvents, err := t.textMessageEvent(rsp)
 		if err != nil {
 			return nil, err
@@ -120,6 +131,15 @@ func (t *translator) Translate(ctx context.Context, event *agentevent.Event) ([]
 		events = append(events, toolResultEvents...)
 	}
 	if event.IsRunnerCompletion() {
+		if t.receivingReasoning {
+			if !t.reasoningContentSuppressed {
+				events = append(events,
+					aguievents.NewReasoningMessageEndEvent(t.lastReasoningMessageID),
+					aguievents.NewReasoningEndEvent(t.lastReasoningMessageID),
+				)
+			}
+			t.receivingReasoning = false
+		}
 		if t.receivingMessage {
 			events = append(events, aguievents.NewTextMessageEndEvent(t.lastMessageID))
 		}
@@ -233,6 +253,86 @@ func (t *translator) graphNodeInterruptActivityEvents(evt *agentevent.Event) []a
 	return []aguievents.Event{
 		aguievents.NewActivityDeltaEvent(uuid.NewString(), graphNodeInterruptActivityType, patch),
 	}
+}
+
+func reasoningMessageID(messageID string) string {
+	return fmt.Sprintf("reasoning_%s", messageID)
+}
+
+// reasoningEvents translates reasoning_content emitted by models (e.g. DeepSeek, Claude Thinking)
+// into AG-UI REASONING_* events.
+func (t *translator) reasoningEvents(rsp *model.Response) ([]aguievents.Event, error) {
+	if t.reasoningContentSuppressed {
+		return nil, nil
+	}
+	if rsp == nil || len(rsp.Choices) == 0 {
+		return nil, nil
+	}
+	switch rsp.Object {
+	case model.ObjectTypeChatCompletionChunk, model.ObjectTypeChatCompletion:
+	default:
+		return nil, nil
+	}
+	messageID := rsp.ID
+	if messageID == "" {
+		return nil, nil
+	}
+	reasoningID := reasoningMessageID(messageID)
+	choice := rsp.Choices[0]
+	reasoningDelta := ""
+	contentDelta := ""
+	if rsp.Object == model.ObjectTypeChatCompletionChunk {
+		reasoningDelta = choice.Delta.ReasoningContent
+		contentDelta = choice.Delta.Content
+	} else {
+		reasoningDelta = choice.Message.ReasoningContent
+		contentDelta = choice.Message.Content
+	}
+	var events []aguievents.Event
+	// Close any previous reasoning stream if the response ID changes unexpectedly.
+	if t.receivingReasoning && t.lastReasoningMessageID != "" && t.lastReasoningMessageID != reasoningID {
+		events = append(events,
+			aguievents.NewReasoningMessageEndEvent(t.lastReasoningMessageID),
+			aguievents.NewReasoningEndEvent(t.lastReasoningMessageID),
+		)
+		t.receivingReasoning = false
+	}
+	// Start or continue the reasoning stream.
+	if reasoningDelta != "" {
+		if !t.receivingReasoning || t.lastReasoningMessageID != reasoningID {
+			t.lastReasoningMessageID = reasoningID
+			t.receivingReasoning = true
+			events = append(events,
+				aguievents.NewReasoningStartEvent(reasoningID),
+				aguievents.NewReasoningMessageStartEvent(reasoningID, model.RoleAssistant.String()),
+			)
+		}
+		events = append(events, aguievents.NewReasoningMessageContentEvent(reasoningID, reasoningDelta))
+	}
+	// End the reasoning stream once regular content/tool calls start flowing, or the response is terminal.
+	if t.receivingReasoning && t.lastReasoningMessageID == reasoningID {
+		shouldEnd := false
+		if contentDelta != "" {
+			shouldEnd = true
+		}
+		if rsp.IsToolCallResponse() {
+			shouldEnd = true
+		}
+		if choice.FinishReason != nil && *choice.FinishReason != "" {
+			shouldEnd = true
+		}
+		if rsp.Object == model.ObjectTypeChatCompletion {
+			shouldEnd = true
+		}
+		if shouldEnd {
+			events = append(events,
+				aguievents.NewReasoningMessageEndEvent(reasoningID),
+				aguievents.NewReasoningEndEvent(reasoningID),
+			)
+			t.receivingReasoning = false
+		}
+	}
+	return events, nil
 }
 
 // textMessageEvent translates a text message trpc-agent-go event to AG-UI events.

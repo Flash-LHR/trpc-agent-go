@@ -45,5 +45,5 @@ require (
 )
 
 replace trpc.group/trpc-go/trpc-agent-go => ../
-
 replace trpc.group/trpc-go/trpc-agent-go/server/agui => ../server/agui
+replace github.com/ag-ui-protocol/ag-ui/sdks/community/go => ../../ag-ui/sdks/community/go
