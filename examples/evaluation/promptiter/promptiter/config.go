@@ -42,6 +42,8 @@ type Config struct {
 	OutputDir string
 	// SchemaPath is the output JSON schema file path.
 	SchemaPath string
+	// AggregatedGradientSchemaPath is the JSON schema used for the aggregated gradient output.
+	AggregatedGradientSchemaPath string
 	// PromptsDir holds prompt templates for the loop agents.
 	PromptsDir string
 	// TargetPromptPath is the initial prompt to optimize (v1_0).
@@ -71,10 +73,11 @@ func DefaultConfig() Config {
 	basePrompts := filepath.Join(".", "prompts")
 	return Config{
 		// Data layout.
-		AppName:    "sportscaster_eval_app",
-		DataDir:    filepath.Join(".", "data"),
-		OutputDir:  filepath.Join(".", "output"),
-		SchemaPath: filepath.Join(".", "schemas", "output_schema.json"),
+		AppName:                      "sportscaster_eval_app",
+		DataDir:                      filepath.Join(".", "data"),
+		OutputDir:                    filepath.Join(".", "output"),
+		SchemaPath:                   filepath.Join(".", "schemas", "output_schema.json"),
+		AggregatedGradientSchemaPath: filepath.Join(".", "schemas", "aggregated_gradient_schema.json"),
 		// Prompt templates.
 		PromptsDir:                   basePrompts,
 		TargetPromptPath:             filepath.Join(basePrompts, "target", "target_prompt_v1_0.md"),
@@ -140,6 +143,9 @@ func (c Config) Validate() error {
 	}
 	if c.SchemaPath == "" {
 		return errors.New("schema path is empty")
+	}
+	if c.AggregatedGradientSchemaPath == "" {
+		return errors.New("aggregated gradient schema path is empty")
 	}
 	if c.TargetPromptPath == "" {
 		return errors.New("target prompt path is empty")

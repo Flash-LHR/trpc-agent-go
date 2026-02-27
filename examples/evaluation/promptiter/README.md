@@ -81,6 +81,7 @@ promptiter/
       sportscaster_basic.metrics.json
   schemas/
     output_schema.json
+    aggregated_gradient_schema.json
   prompts/
     target/
       target_prompt_v1_0.md
@@ -90,7 +91,7 @@ promptiter/
     optimizer.md
 ```
 
-In this example, each eval case `userContent.content` is a **JSON string** representing the match state. The loop pre-validates that it can be parsed into a JSON object.
+In this example, each eval case `userContent.content` is a **JSON string** representing the match state. The candidate agent is expected to produce a JSON report that conforms to `schemas/output_schema.json`.
 
 ## Prompt Format
 
@@ -127,3 +128,4 @@ output/
 
 - `aggregated_gradient.json`: aggregated `issues[]` plus a `by_section` mapping that points to the target prompt sections.
 - `optimizer_changes.json`: section ids changed by the optimizer (derived from a before/after diff).
+- `evalsets/<evalset_id>/evalset_result.json`: raw `EvalSetResult` produced by `evaluation.AgentEvaluator` (includes per-case traces and per-metric details).

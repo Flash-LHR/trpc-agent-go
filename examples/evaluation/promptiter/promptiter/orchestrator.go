@@ -18,8 +18,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/google/uuid"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
+	"trpc.group/trpc-go/trpc-agent-go/evaluation"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/evalresult"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/evalresult/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/evalset"
@@ -27,8 +28,6 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/evaluator/registry"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/metric"
 	metriclocal "trpc.group/trpc-go/trpc-agent-go/evaluation/metric/local"
-	"trpc.group/trpc-go/trpc-agent-go/evaluation/service"
-	"trpc.group/trpc-go/trpc-agent-go/evaluation/service/local"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/status"
 	"trpc.group/trpc-go/trpc-agent-go/examples/evaluation/promptiter/promptiter/agent/aggregator"
 	"trpc.group/trpc-go/trpc-agent-go/examples/evaluation/promptiter/promptiter/agent/optimizer"
@@ -47,11 +46,9 @@ type Orchestrator struct {
 	iterFS            *iterfs.IterFS
 	evalSetMgr        evalset.Manager
 	metricMgr         metric.Manager
-	evalSvc           service.Service
+	evaluator         evaluation.AgentEvaluator
 	registry          registry.Registry
 	evalSetIDs        []string
-	evalSets          map[string]*evalset.EvalSet
-	evalMetricsBySet  map[string][]*metric.EvalMetric
 	outputSchema      map[string]any
 	outputSchemaBytes []byte
 	candidateRunner   runner.Runner
@@ -70,6 +67,10 @@ func NewOrchestrator(ctx context.Context, cfg Config) (orch *Orchestrator, err e
 	schemaBytes, schemaMap, err := readJSONFile(cfg.SchemaPath)
 	if err != nil {
 		return nil, fmt.Errorf("load output schema: %w", err)
+	}
+	_, aggSchemaMap, err := readJSONFile(cfg.AggregatedGradientSchemaPath)
+	if err != nil {
+		return nil, fmt.Errorf("load aggregated gradient schema: %w", err)
 	}
 	teacherPrompt, err := os.ReadFile(cfg.TeacherPromptPath)
 	if err != nil {
@@ -114,37 +115,26 @@ func NewOrchestrator(ctx context.Context, cfg Config) (orch *Orchestrator, err e
 	if err := orch.registry.Register(criticEval.Name(), criticEval); err != nil {
 		return nil, fmt.Errorf("register evaluator %s: %w", criticEval.Name(), err)
 	}
-	// Build evaluation service.
-	orch.evalSvc, err = local.New(
+	orch.evaluator, err = evaluation.New(
+		cfg.AppName,
 		orch.candidateRunner,
-		service.WithEvalSetManager(orch.evalSetMgr),
-		service.WithEvalResultManager(inmemory.New()),
-		service.WithRegistry(orch.registry),
+		evaluation.WithEvalSetManager(orch.evalSetMgr),
+		evaluation.WithMetricManager(orch.metricMgr),
+		evaluation.WithEvalResultManager(inmemory.New()),
+		evaluation.WithRegistry(orch.registry),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("create evaluation service: %w", err)
+		return nil, fmt.Errorf("create evaluator: %w", err)
 	}
-	// Load evalsets and metrics.
+	// Load evalsets.
 	orch.evalSetIDs, err = resolveEvalSetIDs(ctx, orch.evalSetMgr, cfg.AppName, cfg.EvalSetIDs)
 	if err != nil {
 		return nil, err
 	}
-	orch.evalSets = make(map[string]*evalset.EvalSet, len(orch.evalSetIDs))
-	orch.evalMetricsBySet = make(map[string][]*metric.EvalMetric, len(orch.evalSetIDs))
 	for _, evalSetID := range orch.evalSetIDs {
-		es, err := orch.evalSetMgr.Get(ctx, cfg.AppName, evalSetID)
-		if err != nil {
+		if _, err := orch.evalSetMgr.Get(ctx, cfg.AppName, evalSetID); err != nil {
 			return nil, fmt.Errorf("load evalset %s: %w", evalSetID, err)
 		}
-		metrics, err := LoadEvalMetrics(ctx, orch.metricMgr, cfg.AppName, evalSetID)
-		if err != nil {
-			return nil, fmt.Errorf("load metrics %s: %w", evalSetID, err)
-		}
-		if len(metrics) == 0 {
-			return nil, fmt.Errorf("no metrics found for evalset %s", evalSetID)
-		}
-		orch.evalSets[evalSetID] = es
-		orch.evalMetricsBySet[evalSetID] = metrics
 	}
 	// Build loop agents.
 	aggregatorModel, err := provider.Model(
@@ -156,7 +146,7 @@ func NewOrchestrator(ctx context.Context, cfg Config) (orch *Orchestrator, err e
 	if err != nil {
 		return nil, fmt.Errorf("create aggregator model: %w", err)
 	}
-	orch.aggregator, err = aggregator.New(aggregatorModel, cfg.AggregatorModel.Generation, cfg.GradientAggregatorPromptPath)
+	orch.aggregator, err = aggregator.New(aggregatorModel, cfg.AggregatorModel.Generation, cfg.GradientAggregatorPromptPath, aggSchemaMap)
 	if err != nil {
 		return nil, err
 	}
@@ -179,8 +169,15 @@ func NewOrchestrator(ctx context.Context, cfg Config) (orch *Orchestrator, err e
 // Close releases owned resources.
 func (o *Orchestrator) Close() error {
 	var errs []error
-	if o.evalSvc != nil {
-		errs = append(errs, o.evalSvc.Close())
+	if o.evaluator != nil {
+		errs = append(errs, o.evaluator.Close())
+	} else {
+		if o.evalSetMgr != nil {
+			errs = append(errs, o.evalSetMgr.Close())
+		}
+		if o.metricMgr != nil {
+			errs = append(errs, o.metricMgr.Close())
+		}
 	}
 	if o.candidateRunner != nil {
 		errs = append(errs, o.candidateRunner.Close())
@@ -193,12 +190,6 @@ func (o *Orchestrator) Close() error {
 	}
 	if o.optimizer != nil {
 		errs = append(errs, o.optimizer.Close())
-	}
-	if o.evalSetMgr != nil {
-		errs = append(errs, o.evalSetMgr.Close())
-	}
-	if o.metricMgr != nil {
-		errs = append(errs, o.metricMgr.Close())
 	}
 	return errors.Join(errs...)
 }
@@ -236,41 +227,34 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			return fmt.Errorf("parse prompt.md: %w", err)
 		}
 		// Run candidate inference and evaluation for each evalset.
-		runResults := make(map[string]*service.EvalSetRunResult, len(o.evalSetIDs))
+		runResults := make(map[string]*evalresult.EvalSetResult, len(o.evalSetIDs))
 		rawIssues := make([]issues.IssueRecord, 0)
+		allPassed := true
 		for _, evalSetID := range o.evalSetIDs {
-			es := o.evalSets[evalSetID]
-			if es == nil {
-				return fmt.Errorf("evalset %s is nil", evalSetID)
-			}
-			metrics := o.evalMetricsBySet[evalSetID]
-			if len(metrics) == 0 {
-				return fmt.Errorf("metrics for evalset %s are empty", evalSetID)
-			}
-			inferenceResults := InferEvalCases(
-				ctx,
-				o.candidateRunner,
-				o.cfg.AppName,
-				evalSetID,
-				es.EvalCases,
-				promptText,
-				func() string { return fmt.Sprintf("promptiter_%04d_%s_%s", iter, evalSetID, uuid.NewString()) },
-			)
-			runResult, err := Evaluate(ctx, o.evalSvc, o.cfg.AppName, evalSetID, inferenceResults, metrics)
+			result, err := o.evaluator.Evaluate(ctx, evalSetID, evaluation.WithRunOptions(agent.WithInstruction(promptText)))
 			if err != nil {
 				return fmt.Errorf("evaluate %s: %w", evalSetID, err)
 			}
-			runResults[evalSetID] = runResult
+			if result == nil || result.EvalResult == nil {
+				return fmt.Errorf("evaluation result for %s is nil", evalSetID)
+			}
+			runResults[evalSetID] = result.EvalResult
+			if !evalSetPassed(result.EvalResult) {
+				allPassed = false
+			}
 			evalDir := filepath.Join("evalsets", safePathSegment(evalSetID))
-			if _, err := o.iterFS.WriteJSON(iter, filepath.Join(evalDir, "evalset_result.json"), runResult); err != nil {
+			if _, err := o.iterFS.WriteJSON(iter, filepath.Join(evalDir, "evalset_result.json"), result.EvalResult); err != nil {
 				return fmt.Errorf("write evalset_result.json for %s: %w", evalSetID, err)
 			}
-			for _, cr := range runResult.EvalCaseResults {
+			if err := ensureMetricsEvaluated(evalSetID, result.EvalResult); err != nil {
+				return err
+			}
+			for _, cr := range result.EvalResult.EvalCaseResults {
 				rawIssues = append(rawIssues, issues.ExtractFromCaseResult(evalSetID, cr)...)
 			}
 		}
 		// Stop early if all metrics passed.
-		if allEvalSetsPassed(runResults, o.evalMetricsBySet) {
+		if allPassed {
 			if _, err := o.iterFS.WriteJSON(iter, "aggregated_gradient.json", &issues.AggregatedGradient{
 				Issues:    []issues.AggregatedIssue{},
 				BySection: map[string][]string{},
@@ -363,7 +347,7 @@ type aggregatorExample struct {
 	MetricReasons map[string]string `json:"metric_reasons,omitempty"`
 }
 
-func (o *Orchestrator) buildAggregatorExamples(ctx context.Context, runResults map[string]*service.EvalSetRunResult, rawIssues []issues.IssueRecord) []aggregatorExample {
+func (o *Orchestrator) buildAggregatorExamples(ctx context.Context, runResults map[string]*evalresult.EvalSetResult, rawIssues []issues.IssueRecord) []aggregatorExample {
 	p0Cases := make(map[string]struct{})
 	for _, r := range rawIssues {
 		if r.Severity == issues.SeverityP0 {
@@ -422,53 +406,45 @@ func evalCaseKey(evalSetID string, evalCaseID string) string {
 	return strings.TrimSpace(evalSetID) + ":" + strings.TrimSpace(evalCaseID)
 }
 
-func allEvalSetsPassed(runResults map[string]*service.EvalSetRunResult, metricsBySet map[string][]*metric.EvalMetric) bool {
-	if len(runResults) == 0 || len(metricsBySet) == 0 {
-		return false
-	}
-	for evalSetID, metrics := range metricsBySet {
-		runResult, ok := runResults[evalSetID]
-		if !ok {
-			return false
-		}
-		if !allMetricsPassed(runResult, metrics) {
-			return false
-		}
-	}
-	return true
-}
-
-func allMetricsPassed(runResult *service.EvalSetRunResult, metrics []*metric.EvalMetric) bool {
+func evalSetPassed(runResult *evalresult.EvalSetResult) bool {
 	if runResult == nil {
 		return false
 	}
-	required := make([]string, 0, len(metrics))
-	for _, m := range metrics {
-		if m != nil && m.MetricName != "" {
-			required = append(required, m.MetricName)
-		}
-	}
-	for _, cr := range runResult.EvalCaseResults {
-		if cr == nil {
-			return false
-		}
-		for _, name := range required {
-			st, ok := metricStatus(cr, name)
-			if !ok || st != status.EvalStatusPassed {
+	if runResult.Summary != nil && len(runResult.Summary.EvalCaseSummaries) > 0 {
+		for _, cs := range runResult.Summary.EvalCaseSummaries {
+			if cs == nil || cs.OverallStatus != status.EvalStatusPassed {
 				return false
 			}
+		}
+		return true
+	}
+	if len(runResult.EvalCaseResults) == 0 {
+		return false
+	}
+	for _, cr := range runResult.EvalCaseResults {
+		if cr == nil || cr.FinalEvalStatus != status.EvalStatusPassed {
+			return false
 		}
 	}
 	return true
 }
 
-func metricStatus(cr *evalresult.EvalCaseResult, metricName string) (status.EvalStatus, bool) {
-	for _, mr := range cr.OverallEvalMetricResults {
-		if mr != nil && mr.MetricName == metricName {
-			return mr.EvalStatus, true
+func ensureMetricsEvaluated(evalSetID string, runResult *evalresult.EvalSetResult) error {
+	if runResult == nil {
+		return fmt.Errorf("eval set result for %s is nil", evalSetID)
+	}
+	if len(runResult.EvalCaseResults) == 0 {
+		return fmt.Errorf("eval set %s produced no case results", evalSetID)
+	}
+	for _, cr := range runResult.EvalCaseResults {
+		if cr == nil {
+			return fmt.Errorf("eval set %s contains nil case result", evalSetID)
+		}
+		if len(cr.OverallEvalMetricResults) == 0 {
+			return fmt.Errorf("no metrics evaluated for evalset %s case %s", evalSetID, cr.EvalID)
 		}
 	}
-	return "", false
+	return nil
 }
 
 func fallbackAggregate(raw []issues.IssueRecord, sectionIDs []string) *issues.AggregatedGradient {

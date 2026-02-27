@@ -33,12 +33,15 @@ type Aggregator struct {
 }
 
 // New creates a new gradient aggregator.
-func New(m model.Model, gen model.GenerationConfig, promptTemplatePath string) (*Aggregator, error) {
+func New(m model.Model, gen model.GenerationConfig, promptTemplatePath string, outputSchema map[string]any) (*Aggregator, error) {
 	if m == nil {
 		return nil, errors.New("model is nil")
 	}
 	if promptTemplatePath == "" {
 		return nil, errors.New("prompt template path is empty")
+	}
+	if outputSchema == nil {
+		return nil, errors.New("output schema is nil")
 	}
 	// Load prompt template.
 	b, err := os.ReadFile(promptTemplatePath)
@@ -50,7 +53,6 @@ func New(m model.Model, gen model.GenerationConfig, promptTemplatePath string) (
 		return nil, fmt.Errorf("parse aggregator prompt template: %w", err)
 	}
 	// Build runner.
-	outputSchema := aggregatedGradientSchema()
 	gen.Stream = false
 	ag := llmagent.New(
 		"gradient_aggregator",
@@ -178,37 +180,4 @@ type promptTemplateData struct {
 	RawIssues string
 	// Examples is the JSON-encoded list of representative examples.
 	Examples string
-}
-
-func aggregatedGradientSchema() map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"required":             []any{"issues", "by_section"},
-		"properties": map[string]any{
-			"issues": map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"type":                 "object",
-					"additionalProperties": false,
-					"required":             []any{"severity", "key", "summary", "action", "cases"},
-					"properties": map[string]any{
-						"severity": map[string]any{"type": "string", "enum": []any{"P0", "P1"}},
-						"key":      map[string]any{"type": "string", "minLength": 1},
-						"summary":  map[string]any{"type": "string", "minLength": 1},
-						"action":   map[string]any{"type": "string", "minLength": 1},
-						"cases": map[string]any{
-							"type":  "array",
-							"items": map[string]any{"type": "string"},
-						},
-					},
-				},
-			},
-			"by_section": map[string]any{
-				"type":                 "object",
-				"additionalProperties": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			},
-			"notes": map[string]any{"type": "string"},
-		},
-	}
 }

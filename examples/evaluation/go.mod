@@ -4,7 +4,7 @@ go 1.24.1
 
 replace (
 	trpc.group/trpc-go/trpc-agent-go => ../../
-	trpc.group/trpc-go/trpc-agent-go/evaluation => ../../evaluation
+	trpc.group/trpc-go/trpc-agent-go/evaluation => github.com/Flash-LHR/trpc-agent-go/evaluation v0.0.0-20260227083626-466cc56f01fc
 	trpc.group/trpc-go/trpc-agent-go/model/anthropic => ../../model/anthropic
 	trpc.group/trpc-go/trpc-agent-go/model/gemini => ../../model/gemini
 	trpc.group/trpc-go/trpc-agent-go/model/ollama => ../../model/ollama

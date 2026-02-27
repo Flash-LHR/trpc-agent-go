@@ -79,17 +79,20 @@ func (o *Optimizer) Close() error {
 }
 
 // Optimize runs the optimizer agent and returns its final response content.
-func (o *Optimizer) Optimize(ctx context.Context, userMessage string) (finalContent string, retErr error) {
+func (o *Optimizer) Optimize(ctx context.Context, content string) (string, error) {
 	if o.runner == nil {
 		return "", errors.New("optimizer runner is nil")
 	}
+	var (
+		userID      = uuid.NewString()
+		sessionID   = uuid.NewString()
+		userMessage = model.NewUserMessage(content)
+	)
 	// Run and consume the event stream.
-	sessionID := uuid.NewString()
-	events, err := o.runner.Run(ctx, "optimizer_user", sessionID, model.Message{Role: model.RoleUser, Content: userMessage})
+	events, err := o.runner.Run(ctx, userID, sessionID, userMessage)
 	if err != nil {
 		return "", fmt.Errorf("run optimizer: %w", err)
 	}
-	hasFinal := false
 	for e := range events {
 		if e == nil {
 			continue
@@ -101,12 +104,8 @@ func (o *Optimizer) Optimize(ctx context.Context, userMessage string) (finalCont
 			if len(e.Response.Choices) == 0 {
 				return "", errors.New("optimizer final response has no choices")
 			}
-			finalContent = e.Response.Choices[0].Message.Content
-			hasFinal = true
+			return e.Response.Choices[0].Message.Content, nil
 		}
 	}
-	if !hasFinal {
-		return "", errors.New("optimizer did not return a final response")
-	}
-	return finalContent, nil
+	return "", errors.New("optimizer did not return a final response")
 }

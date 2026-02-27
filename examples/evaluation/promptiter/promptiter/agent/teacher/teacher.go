@@ -26,7 +26,7 @@ type Teacher struct {
 	runner          runner.Runner
 	instructionHash string
 	schemaHash      string
-	cache           *Cache
+	cache           *cache
 }
 
 // New creates a new teacher wrapper with an in-memory cache.
@@ -44,15 +44,15 @@ func New(r runner.Runner, instruction string, schemaBytes []byte) (*Teacher, err
 		runner:          r,
 		instructionHash: sha256Hex([]byte(instruction)),
 		schemaHash:      sha256Hex(schemaBytes),
-		cache:           NewCache(),
+		cache:           newCache(),
 	}, nil
 }
 
 // Get returns the cached teacher output or runs the teacher if cache misses.
 func (t *Teacher) Get(ctx context.Context, user model.Message) (string, error) {
 	key := t.cacheKey(user.Content)
-	if entry, ok := t.cache.Get(key); ok {
-		return entry.Output, nil
+	if output, ok := t.cache.get(key); ok {
+		return output, nil
 	}
 	sessionID := uuid.NewString()
 	events, err := t.runner.Run(ctx, "teacher_user", sessionID, user)
@@ -63,13 +63,7 @@ func (t *Teacher) Get(ctx context.Context, user model.Message) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := t.cache.Put(cacheEntry{
-		Key:             key,
-		InstructionHash: t.instructionHash,
-		SchemaHash:      t.schemaHash,
-		UserHash:        sha256Hex([]byte(user.Content)),
-		Output:          output,
-	}); err != nil {
+	if err := t.cache.put(key, output); err != nil {
 		return "", err
 	}
 	return output, nil
