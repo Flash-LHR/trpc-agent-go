@@ -1,0 +1,46 @@
+[
+  {
+    "metricName": "json_schema_valid",
+    "threshold": 1.0
+  },
+  {
+    "metricName": "llm_rubric_critic",
+    "threshold": 0.8,
+    "criterion": {
+      "llmJudge": {
+        "judgeModel": {
+          "providerName": "openai",
+          "modelName": "gpt-5.2",
+          "baseURL": "${OPENAI_BASE_URL}",
+          "apiKey": "${OPENAI_API_KEY}",
+          "numSamples": 1,
+          "generationConfig": {
+            "max_tokens": 1024,
+            "temperature": 0.0,
+            "stream": false
+          }
+        },
+        "rubrics": [
+          {
+            "id": "r1",
+            "content": {
+              "text": "The output is a single JSON object and contains no extra text."
+            }
+          },
+          {
+            "id": "r2",
+            "content": {
+              "text": "All required fields exist and are type-correct per the JSON schema."
+            }
+          },
+          {
+            "id": "r3",
+            "content": {
+              "text": "The content is grounded in the input JSON match state, does not invent facts or events, and explicitly lists unknowns/questions when information is missing or inconsistent."
+            }
+          }
+        ]
+      }
+    }
+  }
+]

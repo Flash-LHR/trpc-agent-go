@@ -13,8 +13,11 @@ replace (
 )
 
 require (
+	github.com/google/uuid v1.6.0
+	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	trpc.group/trpc-go/trpc-agent-go v0.8.0
 	trpc.group/trpc-go/trpc-agent-go/evaluation v0.8.0
+	trpc.group/trpc-go/trpc-agent-go/model/provider v0.8.0
 	trpc.group/trpc-go/trpc-mcp-go v0.0.10
 )
 
@@ -37,7 +40,6 @@ require (
 	github.com/go-sql-driver/mysql v1.9.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.7 // indirect
 	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
@@ -87,6 +89,5 @@ require (
 	trpc.group/trpc-go/trpc-agent-go/model/anthropic v0.8.0 // indirect
 	trpc.group/trpc-go/trpc-agent-go/model/gemini v0.8.1-0.20251222024650-ea147adf3d21 // indirect
 	trpc.group/trpc-go/trpc-agent-go/model/ollama v0.8.0 // indirect
-	trpc.group/trpc-go/trpc-agent-go/model/provider v0.8.0 // indirect
 	trpc.group/trpc-go/trpc-agent-go/storage/mysql v0.8.0 // indirect
 )
