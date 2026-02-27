@@ -45,5 +45,7 @@ require (
 )
 
 replace trpc.group/trpc-go/trpc-agent-go => ../
+
+replace github.com/ag-ui-protocol/ag-ui/sdks/community/go => github.com/Flash-LHR/ag-ui/sdks/community/go v0.0.0-20260226100332-50dd0f7a7764
+
 replace trpc.group/trpc-go/trpc-agent-go/server/agui => ../server/agui
-replace github.com/ag-ui-protocol/ag-ui/sdks/community/go => ../../ag-ui/sdks/community/go

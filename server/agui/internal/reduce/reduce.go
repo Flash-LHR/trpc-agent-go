@@ -24,14 +24,13 @@ import (
 
 // reducer reduces the AG-UI track events into message snapshots.
 type reducer struct {
-	appName                string
-	userID                 string
-	texts                  map[string]*textState
-	reasonings             map[string]*reasoningState
-	reasoningEncryptedByID map[string]string
-	lastReasoningChunkID   string
-	toolCalls              map[string]*toolCallState
-	messages               []*aguievents.Message
+	appName              string
+	userID               string
+	texts                map[string]*textState
+	reasonings           map[string]*reasoningState
+	lastReasoningChunkID string
+	toolCalls            map[string]*toolCallState
+	messages             []*aguievents.Message
 }
 
 // textPhase is the phase of the text message.
@@ -107,13 +106,12 @@ func Reduce(appName, userID string, events []session.TrackEvent) ([]aguievents.M
 // new creates a new reducer.
 func new(appName, userID string) *reducer {
 	return &reducer{
-		appName:                appName,
-		userID:                 userID,
-		texts:                  make(map[string]*textState),
-		reasonings:             make(map[string]*reasoningState),
-		reasoningEncryptedByID: make(map[string]string),
-		toolCalls:              make(map[string]*toolCallState),
-		messages:               make([]*aguievents.Message, 0),
+		appName:    appName,
+		userID:     userID,
+		texts:      make(map[string]*textState),
+		reasonings: make(map[string]*reasoningState),
+		toolCalls:  make(map[string]*toolCallState),
+		messages:   make([]*aguievents.Message, 0),
 	}
 }
 
@@ -361,9 +359,6 @@ func (r *reducer) handleReasoningMessageStart(e *aguievents.ReasoningMessageStar
 		Role: types.RoleReasoning,
 		Name: name,
 	}
-	if encrypted, ok := r.reasoningEncryptedByID[e.MessageID]; ok {
-		msg.EncryptedValue = encrypted
-	}
 	r.messages = append(r.messages, msg)
 	r.reasonings[e.MessageID] = &reasoningState{
 		role:  role,
@@ -397,9 +392,6 @@ func (r *reducer) handleReasoningEnd(e *aguievents.ReasoningMessageEndEvent) err
 	state.phase = reasoningEnded
 	text := strings.Clone(state.content.String())
 	r.messages[state.index].Content = &text
-	if encrypted, ok := r.reasoningEncryptedByID[e.MessageID]; ok {
-		r.messages[state.index].EncryptedValue = encrypted
-	}
 	return nil
 }
 
@@ -430,9 +422,6 @@ func (r *reducer) handleReasoningChunk(e *aguievents.ReasoningMessageChunkEvent)
 		Role: types.RoleReasoning,
 		Name: r.appName,
 	}
-	if encrypted, ok := r.reasoningEncryptedByID[messageID]; ok {
-		msg.EncryptedValue = encrypted
-	}
 	r.messages = append(r.messages, msg)
 	r.reasonings[messageID] = &reasoningState{
 		role:  string(model.RoleAssistant),
@@ -456,13 +445,25 @@ func (r *reducer) handleReasoningEncryptedValue(e *aguievents.ReasoningEncrypted
 	if e.Subtype != aguievents.ReasoningEncryptedValueSubtypeMessage {
 		return nil
 	}
-	r.reasoningEncryptedByID[e.EntityID] = e.EncryptedValue
 	state, ok := r.reasonings[e.EntityID]
 	if !ok {
+		msg := &aguievents.Message{
+			ID:             e.EntityID,
+			Role:           types.RoleReasoning,
+			Name:           r.appName,
+			EncryptedValue: e.EncryptedValue,
+		}
+		r.messages = append(r.messages, msg)
+		r.reasonings[e.EntityID] = &reasoningState{
+			role:  string(model.RoleAssistant),
+			name:  r.appName,
+			phase: reasoningEnded,
+			index: len(r.messages) - 1,
+		}
 		return nil
 	}
 	if state.index < 0 || state.index >= len(r.messages) {
-		return nil
+		return fmt.Errorf("reasoning encrypted value missing target message: %s", e.EntityID)
 	}
 	r.messages[state.index].EncryptedValue = e.EncryptedValue
 	return nil

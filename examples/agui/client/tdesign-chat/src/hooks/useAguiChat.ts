@@ -307,6 +307,24 @@ function restoreFromMessagesSnapshot(evt: AguiSseEvent): {
 
     if (role === "assistant") {
       const content = typeof msg?.content === "string" ? msg.content : formatStructured(msg?.content);
+      const rawMessageId = typeof msg?.id === "string" ? msg.id : "";
+      if (rawMessageId.startsWith("reasoning_")) {
+        const thinkingId = reasoningUiMessageId(rawMessageId);
+        if (content.trim()) {
+          uiMessages.push({
+            id: thinkingId,
+            role: "assistant",
+            kind: "thinking",
+            title: "Thinking",
+            content,
+            status: "complete",
+            timestamp,
+          });
+          messageIndexById.set(thinkingId, uiMessages.length - 1);
+        }
+        activeThinkingIndex = null;
+        continue;
+      }
       if (getActiveReportSession()?.status === "open") {
         if (content.trim()) {
           appendReportContent(content);

@@ -963,6 +963,154 @@ func TestTranslateReasoningSuppressed(t *testing.T) {
 	assert.Empty(t, tr.lastReasoningMessageID)
 }
 
+func TestTranslateReasoningStreamEndsOnToolCall(t *testing.T) {
+	tr := newTranslatorImplForTest(t)
+	if tr == nil {
+		return
+	}
+	first := &model.Response{
+		ID:     "msg-1",
+		Object: model.ObjectTypeChatCompletionChunk,
+		Choices: []model.Choice{{
+			Delta: model.Message{Role: model.RoleAssistant, ReasoningContent: "think"},
+		}},
+		IsPartial: true,
+	}
+	events, err := tr.Translate(context.Background(), &agentevent.Event{Response: first})
+	assert.NoError(t, err)
+	assert.Len(t, events, 3)
+	assert.True(t, tr.receivingReasoning)
+
+	toolCallRsp := &model.Response{
+		ID:     "msg-1",
+		Object: model.ObjectTypeChatCompletionChunk,
+		Choices: []model.Choice{{
+			Delta: model.Message{
+				Role: model.RoleAssistant,
+				ToolCalls: []model.ToolCall{{
+					ID:   "tool-1",
+					Type: "function",
+					Function: model.FunctionDefinitionParam{
+						Name:      "tool",
+						Arguments: []byte(`{}`),
+					},
+				}},
+			},
+		}},
+		IsPartial: true,
+	}
+	events, err = tr.Translate(context.Background(), &agentevent.Event{Response: toolCallRsp})
+	assert.NoError(t, err)
+	assert.GreaterOrEqual(t, len(events), 2)
+	assert.IsType(t, (*aguievents.ReasoningMessageEndEvent)(nil), events[0])
+	assert.IsType(t, (*aguievents.ReasoningEndEvent)(nil), events[1])
+	assert.False(t, tr.receivingReasoning)
+}
+
+func TestTranslateReasoningStreamEndsOnFinishReason(t *testing.T) {
+	tr := newTranslatorImplForTest(t)
+	if tr == nil {
+		return
+	}
+	first := &model.Response{
+		ID:     "msg-1",
+		Object: model.ObjectTypeChatCompletionChunk,
+		Choices: []model.Choice{{
+			Delta: model.Message{Role: model.RoleAssistant, ReasoningContent: "think"},
+		}},
+		IsPartial: true,
+	}
+	_, err := tr.Translate(context.Background(), &agentevent.Event{Response: first})
+	assert.NoError(t, err)
+	assert.True(t, tr.receivingReasoning)
+
+	reason := "stop"
+	finishRsp := &model.Response{
+		ID:     "msg-1",
+		Object: model.ObjectTypeChatCompletionChunk,
+		Choices: []model.Choice{{
+			Delta:        model.Message{Role: model.RoleAssistant},
+			FinishReason: &reason,
+		}},
+		IsPartial: true,
+	}
+	events, err := tr.Translate(context.Background(), &agentevent.Event{Response: finishRsp})
+	assert.NoError(t, err)
+	assert.Len(t, events, 2)
+	assert.IsType(t, (*aguievents.ReasoningMessageEndEvent)(nil), events[0])
+	assert.IsType(t, (*aguievents.ReasoningEndEvent)(nil), events[1])
+	assert.False(t, tr.receivingReasoning)
+}
+
+func TestTranslateReasoningStreamClosesOnIDChange(t *testing.T) {
+	tr := newTranslatorImplForTest(t)
+	if tr == nil {
+		return
+	}
+	first := &model.Response{
+		ID:     "msg-1",
+		Object: model.ObjectTypeChatCompletionChunk,
+		Choices: []model.Choice{{
+			Delta: model.Message{Role: model.RoleAssistant, ReasoningContent: "think"},
+		}},
+		IsPartial: true,
+	}
+	_, err := tr.Translate(context.Background(), &agentevent.Event{Response: first})
+	assert.NoError(t, err)
+	assert.True(t, tr.receivingReasoning)
+	assert.Equal(t, reasoningMessageID("msg-1"), tr.lastReasoningMessageID)
+
+	next := &model.Response{
+		ID:     "msg-2",
+		Object: model.ObjectTypeChatCompletionChunk,
+		Choices: []model.Choice{{
+			Delta: model.Message{Role: model.RoleAssistant, ReasoningContent: "new"},
+		}},
+		IsPartial: true,
+	}
+	events, err := tr.Translate(context.Background(), &agentevent.Event{Response: next})
+	assert.NoError(t, err)
+	assert.Len(t, events, 5)
+	assert.IsType(t, (*aguievents.ReasoningMessageEndEvent)(nil), events[0])
+	assert.IsType(t, (*aguievents.ReasoningEndEvent)(nil), events[1])
+	assert.IsType(t, (*aguievents.ReasoningStartEvent)(nil), events[2])
+	assert.IsType(t, (*aguievents.ReasoningMessageStartEvent)(nil), events[3])
+	assert.IsType(t, (*aguievents.ReasoningMessageContentEvent)(nil), events[4])
+	assert.True(t, tr.receivingReasoning)
+	assert.Equal(t, reasoningMessageID("msg-2"), tr.lastReasoningMessageID)
+}
+
+func TestTranslateRunnerCompletionClosesReasoningStream(t *testing.T) {
+	tr := newTranslatorImplForTest(t)
+	if tr == nil {
+		return
+	}
+	first := &model.Response{
+		ID:     "msg-1",
+		Object: model.ObjectTypeChatCompletionChunk,
+		Choices: []model.Choice{{
+			Delta: model.Message{Role: model.RoleAssistant, ReasoningContent: "think"},
+		}},
+		IsPartial: true,
+	}
+	_, err := tr.Translate(context.Background(), &agentevent.Event{Response: first})
+	assert.NoError(t, err)
+	assert.True(t, tr.receivingReasoning)
+
+	runCompletionRsp := &model.Response{
+		ID:     "msg-1",
+		Object: model.ObjectTypeRunnerCompletion,
+		Done:   true,
+	}
+	events, err := tr.Translate(context.Background(), &agentevent.Event{Response: runCompletionRsp})
+	assert.NoError(t, err)
+	assert.Len(t, events, 3)
+	assert.IsType(t, (*aguievents.ReasoningMessageEndEvent)(nil), events[0])
+	assert.IsType(t, (*aguievents.ReasoningEndEvent)(nil), events[1])
+	assert.IsType(t, (*aguievents.RunFinishedEvent)(nil), events[2])
+	assert.False(t, tr.receivingReasoning)
+}
+
 func TestFormatToolCallArguments(t *testing.T) {
 	assert.Equal(t, "", formatToolCallArguments(nil))
 	assert.Equal(t, "", formatToolCallArguments([]byte{}))
