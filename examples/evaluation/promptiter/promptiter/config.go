@@ -77,11 +77,11 @@ func DefaultConfig() Config {
 		SchemaPath: filepath.Join(".", "schemas", "output_schema.json"),
 		// Prompt templates.
 		PromptsDir:                   basePrompts,
-		TargetPromptPath:             filepath.Join(basePrompts, "target", "prompt_v1_0.md"),
+		TargetPromptPath:             filepath.Join(basePrompts, "target", "target_prompt_v1_0.md"),
 		TeacherPromptPath:            filepath.Join(basePrompts, "teacher.md"),
 		JudgePromptPath:              filepath.Join(basePrompts, "judge_critic.md"),
 		GradientAggregatorPromptPath: filepath.Join(basePrompts, "gradient_aggregator.md"),
-		PromptOptimizerPromptPath:    filepath.Join(basePrompts, "prompt_optimizer.md"),
+		PromptOptimizerPromptPath:    filepath.Join(basePrompts, "optimizer.md"),
 		// Candidate model.
 		CandidateModel: ModelConfig{
 			ProviderName: "openai",

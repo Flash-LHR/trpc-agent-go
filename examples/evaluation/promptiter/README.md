@@ -83,18 +83,18 @@ promptiter/
     output_schema.json
   prompts/
     target/
-      prompt_v1_0.md
+      target_prompt_v1_0.md
     teacher.md
     judge_critic.md
     gradient_aggregator.md
-    prompt_optimizer.md
+    optimizer.md
 ```
 
 In this example, each eval case `userContent.content` is a **JSON string** representing the match state. The loop pre-validates that it can be parsed into a JSON object.
 
 ## Prompt Format
 
-The optimized prompt (`prompts/target/prompt_v1_0.md`) is a Markdown document split into stable sections:
+The optimized prompt (`prompts/target/target_prompt_v1_0.md`) is a Markdown document split into stable sections:
 
 ```md
 ## role
