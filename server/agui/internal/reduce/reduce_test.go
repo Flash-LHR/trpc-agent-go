@@ -372,10 +372,43 @@ func TestReduceReasoningMessageChunkUsesPreviousID(t *testing.T) {
 	assert.Equal(t, "ab", content)
 }
 
+func TestReduceReasoningMessageChunkEmptyDeltaClosesMessage(t *testing.T) {
+	messageID := "reasoning-msg-1"
+	first := "a"
+	end := ""
+	after := "b"
+
+	start := aguievents.NewReasoningMessageChunkEvent(&messageID, &first)
+	close := aguievents.NewReasoningMessageChunkEvent(&messageID, &end)
+	next := aguievents.NewReasoningMessageChunkEvent(&messageID, &after)
+
+	msgs, err := Reduce(testAppName, testUserID, trackEventsFrom(start, close, next))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reasoning message chunk after end: reasoning-msg-1")
+	require.Len(t, msgs, 1)
+	content, ok := msgs[0].ContentString()
+	require.True(t, ok)
+	assert.Equal(t, "a", content)
+}
+
 func TestReduceReasoningMessageChunkRequiresIDInitially(t *testing.T) {
 	delta := "chunk"
 	chunk := aguievents.NewReasoningMessageChunkEvent(nil, &delta)
 	assertReduceError(t, trackEventsFrom(chunk), "reasoning message chunk missing id")
+}
+
+func TestReduceReasoningMessageChunkClearsContextOnEnd(t *testing.T) {
+	messageID := "reasoning-msg-1"
+	delta := "a"
+	next := "b"
+
+	events := trackEventsFrom(
+		aguievents.NewReasoningMessageStartEvent(messageID, "assistant"),
+		aguievents.NewReasoningMessageChunkEvent(&messageID, &delta),
+		aguievents.NewReasoningMessageEndEvent(messageID),
+		aguievents.NewReasoningMessageChunkEvent(nil, &next),
+	)
+	assertReduceError(t, events, "reasoning message chunk missing id")
 }
 
 func TestReduceReasoningMessageChunkAllowsNilDelta(t *testing.T) {

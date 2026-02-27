@@ -392,6 +392,9 @@ func (r *reducer) handleReasoningEnd(e *aguievents.ReasoningMessageEndEvent) err
 	state.phase = reasoningEnded
 	text := strings.Clone(state.content.String())
 	r.messages[state.index].Content = &text
+	if r.lastReasoningChunkID == e.MessageID {
+		r.lastReasoningChunkID = ""
+	}
 	return nil
 }
 
@@ -411,9 +414,21 @@ func (r *reducer) handleReasoningChunk(e *aguievents.ReasoningMessageChunkEvent)
 		if state.phase != reasoningReceiving {
 			return fmt.Errorf("reasoning message chunk after end: %s", messageID)
 		}
-		if e.Delta != nil {
-			state.content.WriteString(*e.Delta)
+		if e.Delta == nil {
+			return nil
 		}
+		if *e.Delta == "" {
+			state.phase = reasoningEnded
+			if r.lastReasoningChunkID == messageID {
+				r.lastReasoningChunkID = ""
+			}
+			if state.content.Len() > 0 {
+				text := strings.Clone(state.content.String())
+				r.messages[state.index].Content = &text
+			}
+			return nil
+		}
+		state.content.WriteString(*e.Delta)
 		return nil
 	}
 
@@ -430,7 +445,14 @@ func (r *reducer) handleReasoningChunk(e *aguievents.ReasoningMessageChunkEvent)
 		index: len(r.messages) - 1,
 	}
 	if e.Delta != nil {
-		r.reasonings[messageID].content.WriteString(*e.Delta)
+		if *e.Delta == "" {
+			r.reasonings[messageID].phase = reasoningEnded
+			if r.lastReasoningChunkID == messageID {
+				r.lastReasoningChunkID = ""
+			}
+		} else {
+			r.reasonings[messageID].content.WriteString(*e.Delta)
+		}
 	}
 	return nil
 }

@@ -1042,8 +1042,50 @@ export function useAguiChat(config: AguiChatConfig) {
         });
         return;
       }
+      if (type === "REASONING_MESSAGE_CHUNK") {
+        const delta = typeof evt.delta === "string" ? evt.delta : undefined;
+        // Treat an explicit empty delta as a close signal for the current reasoning message.
+        if (delta === "") {
+          activeReasoningIdsRef.current.delete(thinkingId);
+          if (lastReasoningMessageIdRef.current === messageId) {
+            lastReasoningMessageIdRef.current = "";
+          }
+          if (!messageIndexByIdRef.current.has(thinkingId)) {
+            return;
+          }
+          upsertMessage(thinkingId, (msg) => {
+            return {
+              id: thinkingId,
+              role: "assistant",
+              kind: "thinking",
+              title: msg?.title ?? "Thinking",
+              content: msg?.content ?? "",
+              status: "complete",
+              timestamp: msg?.timestamp ?? timestamp,
+            };
+          });
+          return;
+        }
+        if (!delta) {
+          return;
+        }
+        activeReasoningIdsRef.current.add(thinkingId);
+        upsertMessage(thinkingId, (msg) => {
+          const prev = msg?.content ?? "";
+          return {
+            id: thinkingId,
+            role: "assistant",
+            kind: "thinking",
+            title: msg?.title ?? "Thinking",
+            content: prev + delta,
+            status: "streaming",
+            timestamp: msg?.timestamp ?? timestamp,
+          };
+        });
+        return;
+      }
       // Append reasoning delta to the UI message.
-      if (type === "REASONING_MESSAGE_CONTENT" || type === "REASONING_MESSAGE_CHUNK") {
+      if (type === "REASONING_MESSAGE_CONTENT") {
         const delta = typeof evt.delta === "string" ? evt.delta : "";
         if (!delta) {
           return;
