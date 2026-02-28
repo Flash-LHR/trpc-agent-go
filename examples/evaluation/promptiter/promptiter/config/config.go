@@ -6,7 +6,7 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
-package promptiter
+package config
 
 import (
 	"errors"
@@ -42,6 +42,8 @@ type Config struct {
 	OutputDir string
 	// SchemaPath is the output JSON schema file path.
 	SchemaPath string
+	// JudgeOutputSchemaPath is the JSON schema used for the judge structured output.
+	JudgeOutputSchemaPath string
 	// AggregatedGradientSchemaPath is the JSON schema used for the aggregated gradient output.
 	AggregatedGradientSchemaPath string
 	// PromptsDir holds prompt templates for the loop agents.
@@ -77,6 +79,7 @@ func DefaultConfig() Config {
 		DataDir:                      filepath.Join(".", "data"),
 		OutputDir:                    filepath.Join(".", "output"),
 		SchemaPath:                   filepath.Join(".", "schemas", "output_schema.json"),
+		JudgeOutputSchemaPath:        filepath.Join(".", "schemas", "judge_output_schema.json"),
 		AggregatedGradientSchemaPath: filepath.Join(".", "schemas", "aggregated_gradient_schema.json"),
 		// Prompt templates.
 		PromptsDir:                   basePrompts,
@@ -143,6 +146,9 @@ func (c Config) Validate() error {
 	}
 	if c.SchemaPath == "" {
 		return errors.New("schema path is empty")
+	}
+	if c.JudgeOutputSchemaPath == "" {
+		return errors.New("judge output schema path is empty")
 	}
 	if c.AggregatedGradientSchemaPath == "" {
 		return errors.New("aggregated gradient schema path is empty")

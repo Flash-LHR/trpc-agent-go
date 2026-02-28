@@ -6,7 +6,7 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
-package evaluators
+package jsonschema
 
 import (
 	"context"
@@ -23,13 +23,13 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/status"
 )
 
-// jsonSchemaValidEvaluator validates the final response against a JSON Schema.
-type jsonSchemaValidEvaluator struct {
+// jsonSchemaEvaluator validates the final response against a JSON Schema.
+type jsonSchemaEvaluator struct {
 	schema *jsonschema.Schema
 }
 
-// NewJSONSchemaValid creates a new evaluator that validates against the schema at schemaPath.
-func NewJSONSchemaValid(schemaPath string) (evaluator.Evaluator, error) {
+// New creates a new evaluator that validates against the schema at schemaPath.
+func New(schemaPath string) (evaluator.Evaluator, error) {
 	if schemaPath == "" {
 		return nil, errors.New("schema path is empty")
 	}
@@ -37,29 +37,30 @@ func NewJSONSchemaValid(schemaPath string) (evaluator.Evaluator, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read schema: %w", err)
 	}
+	resourceName := "schema.json"
 	compiler := jsonschema.NewCompiler()
-	if err := compiler.AddResource("schema.json", strings.NewReader(string(b))); err != nil {
+	if err := compiler.AddResource(resourceName, strings.NewReader(string(b))); err != nil {
 		return nil, fmt.Errorf("add schema resource: %w", err)
 	}
-	s, err := compiler.Compile("schema.json")
+	s, err := compiler.Compile(resourceName)
 	if err != nil {
 		return nil, fmt.Errorf("compile schema: %w", err)
 	}
-	return &jsonSchemaValidEvaluator{schema: s}, nil
+	return &jsonSchemaEvaluator{schema: s}, nil
 }
 
 // Name returns the metric name for this evaluator.
-func (e *jsonSchemaValidEvaluator) Name() string {
-	return "json_schema_valid"
+func (e *jsonSchemaEvaluator) Name() string {
+	return "json_schema"
 }
 
 // Description describes what this evaluator checks.
-func (e *jsonSchemaValidEvaluator) Description() string {
+func (e *jsonSchemaEvaluator) Description() string {
 	return "Validates that the final response is a single JSON object matching the configured schema"
 }
 
 // Evaluate validates each invocation final response with the configured JSON schema.
-func (e *jsonSchemaValidEvaluator) Evaluate(ctx context.Context, actuals, expecteds []*evalset.Invocation,
+func (e *jsonSchemaEvaluator) Evaluate(ctx context.Context, actuals, expecteds []*evalset.Invocation,
 	evalMetric *metric.EvalMetric) (*evaluator.EvaluateResult, error) {
 	if e.schema == nil {
 		return nil, errors.New("schema is nil")
@@ -76,7 +77,7 @@ func (e *jsonSchemaValidEvaluator) Evaluate(ctx context.Context, actuals, expect
 	for i := range actuals {
 		actual := actuals[i]
 		expected := expecteds[i]
-		score, reason := e.validateOne(actual)
+		score, reason := e.validateSchema(actual)
 		st := statusForScore(score, evalMetric.Threshold)
 		perInvocation = append(perInvocation, &evaluator.PerInvocationResult{
 			ActualInvocation:   actual,
@@ -101,7 +102,7 @@ func (e *jsonSchemaValidEvaluator) Evaluate(ctx context.Context, actuals, expect
 	}, nil
 }
 
-func (e *jsonSchemaValidEvaluator) validateOne(actual *evalset.Invocation) (float64, string) {
+func (e *jsonSchemaEvaluator) validateSchema(actual *evalset.Invocation) (float64, string) {
 	if actual == nil || actual.FinalResponse == nil {
 		return 0.0, "Missing final response."
 	}

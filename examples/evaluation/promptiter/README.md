@@ -6,25 +6,22 @@ This example demonstrates a minimal, end-to-end **prompt iteration loop**:
 2. **Evaluation**:
    - `json_schema_valid`: deterministic JSON Schema validation.
    - `llm_rubric_critic`: an LLM judge with a rubric that emits `issues[]`.
-3. **Gradient aggregation**: deduplicate and map issues to prompt sections.
-4. **Prompt optimization**: an optimizer agent edits `prompt.md` precisely via `tool/file`.
+3. **Gradient aggregation**: deduplicate issues into an aggregated gradient JSON.
+4. **Prompt optimization**: an optimizer agent edits `prompt_after.md` precisely via `tool/file`.
 5. **Iterate** for up to `-iters` rounds, or stop early when all metrics pass.
 
-The optimizer is sandboxed to the `output/` directory and only edits `output/iter_XXXX/prompt.md` (not the source prompt under `prompts/`).
+The optimizer is sandboxed to the `output/` directory and only edits `output/iter_XXXX/prompt_after.md` (not the source prompt under `prompts/`).
 
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DEEPSEEK_API_KEY` | API key for DeepSeek (used when `-candidate-model` starts with `deepseek`) | `` |
-| `DEEPSEEK_BASE_URL` | DeepSeek OpenAI-compatible base URL | `https://api.deepseek.com` |
 | `OPENAI_API_KEY` | API key for OpenAI-compatible models (teacher/aggregator/optimizer/judge) | `` |
 | `OPENAI_BASE_URL` | OpenAI-compatible base URL | `https://api.openai.com/v1` |
 
 Notes:
 
-- By default, the candidate model is `deepseek-v3.2` (via the `openai` provider) and will read `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL`.
-- The teacher/aggregator/optimizer models default to `gpt-5.2` and will read `OPENAI_API_KEY` / `OPENAI_BASE_URL`.
+- All loop agents use the `openai` provider and will read `OPENAI_API_KEY` / `OPENAI_BASE_URL`.
 - The `llm_rubric_critic` judge model is configured in the metrics JSON with `${OPENAI_API_KEY}` / `${OPENAI_BASE_URL}` placeholders.
 
 ## Configuration Flags
@@ -45,7 +42,6 @@ Notes:
 ```bash
 cd trpc-agent-go/examples/evaluation/promptiter
 
-export DEEPSEEK_API_KEY="..."
 export OPENAI_API_KEY="..."
 
 go run . -iters 3
@@ -81,6 +77,7 @@ promptiter/
       sportscaster_basic.metrics.json
   schemas/
     output_schema.json
+    judge_output_schema.json
     aggregated_gradient_schema.json
   prompts/
     target/
@@ -95,7 +92,7 @@ In this example, each eval case `userContent.content` is a **JSON string** repre
 
 ## Prompt Format
 
-The optimized prompt (`prompts/target/target_prompt_v1_0.md`) is a Markdown document split into stable sections:
+The optimized prompt (`prompts/target/target_prompt_v1_0.md`) is a Markdown document, typically split into sections:
 
 ```md
 ## role
@@ -105,7 +102,7 @@ The optimized prompt (`prompts/target/target_prompt_v1_0.md`) is a Markdown docu
 ...
 ```
 
-The optimizer is required to keep section ids stable (the loop validates this) and only edit section bodies.
+The optimizer is instructed to keep `## <section_id>` headings stable and only edit section bodies.
 
 ## Output
 
@@ -115,17 +112,16 @@ Iteration artifacts are written under `-out-dir`:
 output/
   iter_0001/
     prompt_before.md
-    prompt.md
     prompt_after.md
-    evalsets/
-      <evalset_id>/
-        evalset_result.json
     aggregated_gradient.json
     optimizer_changes.json
   iter_0002/
   ...
+  evalresult/
+    <app_name>/
+      <eval_set_result_id>.evalset_result.json
 ```
 
-- `aggregated_gradient.json`: aggregated `issues[]` plus a `by_section` mapping that points to the target prompt sections.
-- `optimizer_changes.json`: section ids changed by the optimizer (derived from a before/after diff).
-- `evalsets/<evalset_id>/evalset_result.json`: raw `EvalSetResult` produced by `evaluation.AgentEvaluator` (includes per-case traces and per-metric details).
+- `aggregated_gradient.json`: aggregated `issues[]` (deduplicated prompt issues) plus optional `notes` for the optimizer.
+- `optimizer_changes.json`: optimizer change metadata (currently only `changed_sections`, reserved for future diffs).
+- `evalresult/<app_name>/<eval_set_result_id>.evalset_result.json`: raw `EvalSetResult` produced by `evaluation.AgentEvaluator` (includes per-case traces and per-metric details).

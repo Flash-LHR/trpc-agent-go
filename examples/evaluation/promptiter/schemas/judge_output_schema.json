@@ -3,9 +3,38 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "rubrics",
     "issues"
   ],
   "properties": {
+    "rubrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "verdict",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "yes",
+              "no"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "issues": {
       "type": "array",
       "items": {
@@ -15,8 +44,7 @@
           "severity",
           "key",
           "summary",
-          "action",
-          "cases"
+          "action"
         ],
         "properties": {
           "severity": {
@@ -37,18 +65,9 @@
           "action": {
             "type": "string",
             "minLength": 1
-          },
-          "cases": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
           }
         }
       }
-    },
-    "notes": {
-      "type": "string"
     }
   }
 }

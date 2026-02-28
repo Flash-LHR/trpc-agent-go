@@ -13,16 +13,36 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/google/uuid"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/model/provider"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/file"
 )
 
-// Optimizer edits prompt.md in-place via the file toolset.
+// Config defines an optimizer agent configuration.
+type Config struct {
+	// ProviderName is the provider registry name used by provider.Model.
+	ProviderName string
+	// ModelName is the model identifier passed to the provider.
+	ModelName string
+	// BaseURL is the optional OpenAI-compatible endpoint base URL.
+	BaseURL string
+	// APIKey is the API key used by the provider.
+	APIKey string
+	// Generation controls sampling and token limits for the model.
+	Generation model.GenerationConfig
+	// InstructionPath is the instruction file that guides prompt edits.
+	InstructionPath string
+	// BaseDir is the file tool sandbox root for all optimizer operations.
+	BaseDir string
+}
+
+// Optimizer edits prompt_after.md in-place via the file toolset.
 type Optimizer struct {
 	runner      runner.Runner
 	fileToolSet tool.ToolSet
@@ -30,26 +50,41 @@ type Optimizer struct {
 
 // New creates a new optimizer using the provided model and instruction file.
 // File tools are scoped to baseDir to avoid touching source code.
-func New(m model.Model, gen model.GenerationConfig, instructionPath string, baseDir string) (*Optimizer, error) {
-	if m == nil {
-		return nil, errors.New("model is nil")
+func New(cfg Config) (*Optimizer, error) {
+	if strings.TrimSpace(cfg.ProviderName) == "" {
+		return nil, errors.New("provider name is empty")
 	}
-	if instructionPath == "" {
+	if strings.TrimSpace(cfg.ModelName) == "" {
+		return nil, errors.New("model name is empty")
+	}
+	if cfg.InstructionPath == "" {
 		return nil, errors.New("instruction path is empty")
 	}
-	if baseDir == "" {
+	if cfg.BaseDir == "" {
 		return nil, errors.New("base dir is empty")
 	}
-	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.BaseDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create base dir: %w", err)
 	}
-	b, err := os.ReadFile(instructionPath)
+	b, err := os.ReadFile(cfg.InstructionPath)
 	if err != nil {
 		return nil, fmt.Errorf("read optimizer instruction: %w", err)
 	}
+	opts := make([]provider.Option, 0, 3)
+	if strings.TrimSpace(cfg.APIKey) != "" {
+		opts = append(opts, provider.WithAPIKey(cfg.APIKey))
+	}
+	if strings.TrimSpace(cfg.BaseURL) != "" {
+		opts = append(opts, provider.WithBaseURL(cfg.BaseURL))
+	}
+	m, err := provider.Model(cfg.ProviderName, cfg.ModelName, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("create model: %w", err)
+	}
+	gen := cfg.Generation
 	gen.Stream = false
 	fileToolSet, err := file.NewToolSet(
-		file.WithBaseDir(baseDir),
+		file.WithBaseDir(cfg.BaseDir),
 		file.WithName("file"),
 	)
 	if err != nil {

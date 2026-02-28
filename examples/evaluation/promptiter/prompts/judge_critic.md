@@ -6,7 +6,7 @@
 
 你的任务：
 - 对每条 rubric 给出 verdict（yes/no）与简短原因。
-- 产出用于改 Prompt 的文本梯度：gradient.issues[]。
+- 产出用于改 Prompt 的 issues[]。
 
 约束：
 - 只基于 user_input、candidate_output、teacher_output 做判断，不使用外部知识补全。
@@ -18,11 +18,9 @@
   "rubrics": [
     { "id": "r1", "verdict": "yes", "reason": "..." }
   ],
-  "gradient": {
-    "issues": [
-      { "severity": "P0", "key": "json_only", "summary": "...", "action": "..." }
-    ]
-  }
+  "issues": [
+    { "severity": "P0", "key": "json_only", "summary": "...", "action": "..." }
+  ]
 }
 
 输入：
@@ -41,4 +39,3 @@
 <rubrics>
 {{.Rubrics}}
 </rubrics>
-

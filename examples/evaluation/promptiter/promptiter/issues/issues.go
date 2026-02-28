@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	metricJSONSchemaValid = "json_schema_valid"
-	metricLLMRubricCritic = "llm_rubric_critic"
+	metricJSONSchema = "json_schema"
+	metricLLMCritic  = "llm_critic"
 )
 
 // ExtractFromCaseResult extracts normalized issues from a single eval case result.
@@ -51,7 +51,7 @@ func ExtractFromCaseResult(evalSetID string, caseResult *evalresult.EvalCaseResu
 				continue
 			}
 			switch metricResult.MetricName {
-			case metricJSONSchemaValid:
+			case metricJSONSchema:
 				if metricResult.Score >= metricResult.Threshold {
 					continue
 				}
@@ -70,7 +70,7 @@ func ExtractFromCaseResult(evalSetID string, caseResult *evalresult.EvalCaseResu
 					EvalCaseID: caseResult.EvalID,
 					MetricName: metricResult.MetricName,
 				})
-			case metricLLMRubricCritic:
+			case metricLLMCritic:
 				judgeJSON := strings.TrimSpace(metricResult.Details.Reason)
 				if judgeJSON == "" {
 					out = append(out, IssueRecord{
@@ -78,7 +78,7 @@ func ExtractFromCaseResult(evalSetID string, caseResult *evalresult.EvalCaseResu
 							Severity: SeverityP0,
 							Key:      "judge_empty_reason",
 							Summary:  "Judge returned empty reason.",
-							Action:   "检查 judge_critic 提示词，确保输出严格 JSON，并包含 gradient.issues[]。",
+							Action:   "检查 judge_critic 提示词，确保输出严格 JSON，并包含 issues[]。",
 						},
 						EvalSetID:  evalSetID,
 						EvalCaseID: caseResult.EvalID,
@@ -101,7 +101,7 @@ func ExtractFromCaseResult(evalSetID string, caseResult *evalresult.EvalCaseResu
 					})
 					continue
 				}
-				for _, iss := range parsed.Gradient.Issues {
+				for _, iss := range parsed.Issues {
 					normalized := normalizeIssue(iss)
 					out = append(out, IssueRecord{
 						Issue:      normalized,

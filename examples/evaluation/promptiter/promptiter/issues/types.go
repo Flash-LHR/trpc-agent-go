@@ -32,8 +32,8 @@ type Issue struct {
 
 // IssueRecord attaches an issue to a specific eval case and metric.
 type IssueRecord struct {
-	// Issue carries the normalized issue details.
-	Issue
+	// Issue contains the normalized issue details.
+	Issue Issue `json:"issue,omitempty"`
 	// EvalSetID is the eval set identifier where the issue is observed.
 	EvalSetID string `json:"eval_set_id,omitempty"`
 	// EvalCaseID is the eval case identifier where the issue is observed.
@@ -46,11 +46,8 @@ type IssueRecord struct {
 type JudgeOutput struct {
 	// Rubrics contains per-rubric verdicts produced by the judge.
 	Rubrics []JudgeRubric `json:"rubrics,omitempty"`
-	// Gradient contains prompt issues extracted by the judge.
-	Gradient struct {
-		// Issues are normalized prompt issues suggested by the judge.
-		Issues []Issue `json:"issues,omitempty"`
-	} `json:"gradient,omitempty"`
+	// Issues are normalized prompt issues suggested by the judge.
+	Issues []Issue `json:"issues,omitempty"`
 }
 
 // JudgeRubric captures per-rubric verdict details.
@@ -67,8 +64,6 @@ type JudgeRubric struct {
 type AggregatedGradient struct {
 	// Issues is a deduplicated list of aggregated issues.
 	Issues []AggregatedIssue `json:"issues,omitempty"`
-	// BySection maps issue keys to the target prompt section ids.
-	BySection map[string][]string `json:"by_section,omitempty"`
 	// Notes contains optional global guidance for the optimizer.
 	Notes string `json:"notes,omitempty"`
 }
