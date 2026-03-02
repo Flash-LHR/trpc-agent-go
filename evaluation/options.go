@@ -20,6 +20,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/metric"
 	metricinmemory "trpc.group/trpc-go/trpc-agent-go/evaluation/metric/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/service"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
 )
 
 // defaultNumRuns is the default number of runs.
@@ -32,6 +33,7 @@ type options struct {
 	metricManager                     metric.Manager
 	registry                          registry.Registry
 	evalService                       service.Service
+	expectedRunner                    runner.Runner
 	callbacks                         *service.Callbacks
 	numRuns                           int
 	evalCaseParallelism               int
@@ -101,6 +103,13 @@ func WithEvaluationService(s service.Service) Option {
 func WithCallbacks(c *service.Callbacks) Option {
 	return func(o *options) {
 		o.callbacks = c
+	}
+}
+
+// WithExpectedRunner sets the runner used to generate dynamic expected outputs.
+func WithExpectedRunner(r runner.Runner) Option {
+	return func(o *options) {
+		o.expectedRunner = r
 	}
 }
 
