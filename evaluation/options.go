@@ -35,6 +35,7 @@ type options struct {
 	evalService                       service.Service
 	expectedRunner                    runner.Runner
 	callbacks                         *service.Callbacks
+	judgeRunner                       runner.Runner
 	numRuns                           int
 	evalCaseParallelism               int
 	evalCaseParallelInferenceEnabled  bool
@@ -110,6 +111,13 @@ func WithCallbacks(c *service.Callbacks) Option {
 func WithExpectedRunner(r runner.Runner) Option {
 	return func(o *options) {
 		o.expectedRunner = r
+	}
+}
+
+// WithJudgeRunner injects a judge runner for all LLM judge evaluators.
+func WithJudgeRunner(judge runner.Runner) Option {
+	return func(o *options) {
+		o.judgeRunner = judge
 	}
 }
 
