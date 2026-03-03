@@ -46,6 +46,7 @@ nav:
       - Event: event.md
       - Evaluation: evaluation.md
   - Server:
+    - Gateway: gateway.md
     - AG-UI: agui.md
     - A2A: a2a.md
   - Observability: observability.md
@@ -78,7 +79,7 @@ plugins:
                 - Runner: runner.md
                 - Model: model.md
                 - Callbacks: callbacks.md
-                - 插件: plugin.md
+                - Plugins: plugin.md
                 - Memory: memory.md
                 - Artifact: artifact.md
                 - Skill: skill.md
@@ -105,6 +106,7 @@ plugins:
                 - Event: event.md
                 - Evaluation: evaluation.md
             - 服务:
+              - Gateway: gateway.md
               - AG-UI: agui.md
               - A2A: a2a.md
             - 可观测: observability.md

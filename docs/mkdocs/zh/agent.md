@@ -271,10 +271,12 @@ if err != nil {
   - `TimelineFilterAll`: 包含历史消息以及当前请求中所生成的消息
   - `TimelineFilterCurrentRequest`: 仅包含当前请求 (一次 runner.Run 为一次请求) 中所生成的消息
   - `TimelineFilterCurrentInvocation`: 仅包含当前 invocation 上下文中生成的消息
-- `WithMessageBranchFilterMode`: 分支维度可见性控制（用于控制对其他 agent 生成消息的可见性）
-  - `BranchFilterModePrefix`: 通过 Event.FilterKey 与 Invocation.eventFilterKey 做前缀匹配
-  - `BranchFilterModeAll`: 所有 agent 的均消息
-  - `BranchFilterModeExact`: 仅自己生成的消息可见
+- `WithMessageBranchFilterMode`: 按 FilterKey 层级控制可见性
+  - `BranchFilterModePrefix`（默认）：层级匹配（祖先/自己/子孙都算匹配）
+  - `BranchFilterModeSubtree`：仅包含当前 key 及其子孙（不含父级，更适合严格隔离）
+  - `BranchFilterModeExact`：仅包含
+    `Event.FilterKey == Invocation.eventFilterKey`
+  - `BranchFilterModeAll`：忽略 FilterKey，包含全部消息
   
 ```go
 llmAgent := llmagent.New(
@@ -295,9 +297,11 @@ llmAgent := llmagent.New(
     // 分支维度过滤条件
     // 默认值：llmagent.BranchFilterModePrefix
     // 可选值：
-    //  - llmagent.BranchFilterModeAll: 包含所有 agent 的消息，当前 agent 与模型交互时，如需将所有 agent 生成的有效内容消息同步给模型时可设置该值
-    //  - llmagent.BranchFilterModePrefix: 通过 Event.FilterKey 与 Invocation.eventFilterKey 做前缀匹配过滤消息，期望将与当前 agent 以及相关上下游 agent 生成的消息传递给模型时，可设置该值
-    //  - llmagent.BranchFilterModeExact: 通过 Event.FilterKey==Invocation.eventFilterKey 过滤消息，当前 agent 与模型交互时，仅需使用当前 agent 生成的消息时可设置该值
+    //  - llmagent.BranchFilterModePrefix: 层级匹配（祖先/自己/子孙都算匹配）
+    //  - llmagent.BranchFilterModeSubtree: 仅包含当前 key 及其子孙（不含父级）
+    //  - llmagent.BranchFilterModeExact: 仅包含
+    //    Event.FilterKey == Invocation.eventFilterKey
+    //  - llmagent.BranchFilterModeAll: 忽略 FilterKey，包含全部消息
     llmagent.WithMessageBranchFilterMode(llmagent.BranchFilterModePrefix),
 )
 ```
@@ -362,6 +366,28 @@ coordinator := llmagent.New(
 
 - 这些选项不会改变真实的委托/切换逻辑，只影响“对外可见的提示文本”或“是否注入默认占位消息”。
 - 转移提示事件统一以 `Response.Object == "agent.transfer"` 输出；如需在 UI 层隐藏系统级提示，可直接过滤该对象类型的事件。
+
+### 工具后提示词注入（Post-tool Prompt）
+
+当模型调用工具时，工具输出会以 `role=tool` 消息追加到对话中。某些模型在看到工具结果后，可能会输出“基于工具结果……”这类元说明，或暴露内部过程。
+
+为了让工具调用后的回复更自然，LLMAgent 会在检测到工具结果时，向系统消息注入一段“工具后（post-tool）”动态提示词。
+
+- 默认：开启，使用框架内置提示词。
+- 自定义注入文本：`llmagent.WithPostToolPrompt("...")`。
+- 完全禁用注入：`llmagent.WithEnablePostToolPrompt(false)`。
+
+示例：
+
+```go
+agent := llmagent.New(
+  "assistant",
+  llmagent.WithModel(modelInstance),
+  llmagent.WithTools([]tool.Tool{myTool}),
+  // 禁用框架默认的工具后提示词注入。
+  llmagent.WithEnablePostToolPrompt(false),
+)
+```
 
 ### 处理事件流
 

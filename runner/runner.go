@@ -363,14 +363,20 @@ func (r *runner) Run(
 		return nil, fmt.Errorf("select agent: %w", err)
 	}
 
+	eventFilterKey := r.appName
+	if ro.EventFilterKey != "" {
+		eventFilterKey = ro.EventFilterKey
+	}
+
 	invocation := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
+		agent.WithInvocationSessionService(r.sessionService),
 		agent.WithInvocationMessage(message),
 		agent.WithInvocationAgent(ag),
 		agent.WithInvocationRunOptions(ro),
 		agent.WithInvocationMemoryService(r.memoryService),
 		agent.WithInvocationArtifactService(r.artifactService),
-		agent.WithInvocationEventFilterKey(r.appName),
+		agent.WithInvocationEventFilterKey(eventFilterKey),
 		agent.WithInvocationPlugins(r.pluginManager),
 	)
 
@@ -758,7 +764,7 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 	r.recordEmittedAssistantResponseID(loop, agentEvent)
 
 	// Append qualifying events to session and trigger summarization.
-	r.handleEventPersistence(ctx, loop.sess, agentEvent)
+	r.handleEventPersistence(ctx, loop.invocation, loop.sess, agentEvent)
 
 	// Capture graph-level completion snapshot for final event.
 	if isGraphCompletionEvent(agentEvent) {
@@ -912,6 +918,7 @@ func (r *runner) handleFlushRequest(ctx context.Context, loop *eventLoopContext,
 // asynchronous summarization.
 func (r *runner) handleEventPersistence(
 	ctx context.Context,
+	invocation *agent.Invocation,
 	sess *session.Session,
 	agentEvent *event.Event,
 ) {
@@ -940,13 +947,33 @@ func (r *runner) handleEventPersistence(
 		return
 	}
 
-	// Trigger summarization only after final assistant responses.
-	// Skip user messages, tool calls, and tool results to ensure summary
-	// always contains complete Q&A pairs (including tool call round-trips).
+	// Skip user messages, tool call events, and invalid content.
+	// These should not trigger summarization.
 	if agentEvent.IsUserMessage() ||
 		agentEvent.IsToolCallResponse() ||
-		agentEvent.IsToolResultResponse() ||
 		!agentEvent.IsValidContent() {
+		return
+	}
+
+	// Trigger summary check after tool results to handle long tool call
+	// sequences (ReAct loops). The existing ShouldSummarize checker
+	// (event count / token threshold) decides whether to actually run.
+	// Also trigger after final assistant text responses as before.
+	// Skip if the event explicitly opts out of summarization.
+	if agentEvent.Actions != nil &&
+		agentEvent.Actions.SkipSummarization {
+		return
+	}
+
+	// When sync intra-run summary is active for this
+	// invocation, the flow already summarises between LLM
+	// iterations. Skip redundant async enqueue for intermediate
+	// tool-result events but still allow the final assistant
+	// response to trigger an async job so the session summary
+	// is up-to-date at turn end.
+	if syncSummaryIntraRun, ok := agent.GetStateValue[bool](
+		invocation, agent.SyncSummaryIntraRunStateKey,
+	); ok && syncSummaryIntraRun && agentEvent.IsToolResultResponse() {
 		return
 	}
 

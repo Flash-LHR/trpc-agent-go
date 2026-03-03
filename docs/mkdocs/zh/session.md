@@ -16,10 +16,10 @@ Session 用于管理当前会话的上下文，隔离维度为 `<appName, userID
 - **会话摘要**：使用 LLM 自动压缩长对话历史，在保留关键上下文的同时显著降低 token 消耗
 - **事件限制**：控制每个会话存储的最大事件数量，防止内存溢出
 - **TTL 管理**：支持会话数据的自动过期清理
-- **多存储后端**：支持内存、Redis、PostgreSQL、MySQL 存储
+- **多存储后端**：支持内存、SQLite、Redis、PostgreSQL、MySQL、ClickHouse 存储
 - **并发安全**：内置读写锁保证并发访问安全
 - **自动管理**：集成 Runner 后自动处理会话创建、加载和更新
-- **软删除支持**：PostgreSQL/MySQL 支持软删除，数据可恢复
+- **软删除支持**：PostgreSQL/MySQL/SQLite 支持软删除，数据可恢复
 
 ## 快速开始
 
@@ -27,7 +27,7 @@ Session 用于管理当前会话的上下文，隔离维度为 `<appName, userID
 
 tRPC-Agent-Go 的会话管理通过 `runner.WithSessionService` 集成到 Runner 中，Runner 会自动处理会话的创建、加载、更新和持久化。
 
-**支持的存储后端：** 内存（Memory）、Redis、PostgreSQL、MySQL、ClickHouse
+**支持的存储后端：** 内存（Memory）、SQLite、Redis、PostgreSQL、MySQL、ClickHouse
 
 **默认行为：** 如果不配置 `runner.WithSessionService`，Runner 会默认使用内存存储（Memory），数据在进程重启后会丢失。
 
@@ -355,6 +355,50 @@ agent := llmagent.New(
 - 默认格式设计为与大多数模型和使用场景兼容
 - 当使用 `WithAddSessionSummary(false)` 时，格式化器**不会生效**
 
+#### 同步摘要刷新（SyncSummaryIntraRun）
+
+默认情况下，会话摘要由后台工作线程在工具调用结果事件后异步生成。这意味着 LLM 可用的摘要可能滞后于当前对话状态。如果需要在同一轮次内的每次 LLM 调用前确保摘要是最新的，可以启用同步摘要刷新。
+
+**适用场景：**
+
+- 长工具调用链（ReAct 循环），中间上下文很重要
+- 需要 LLM 始终看到最新摘要的场景
+- 需要最小化摘要延迟的场景
+
+**配置示例：**
+
+```go
+agent := llmagent.New(
+    "my-agent",
+    llmagent.WithModel(modelInstance),
+    llmagent.WithAddSessionSummary(true),
+    llmagent.WithSyncSummaryIntraRun(true), // 启用同步摘要刷新
+)
+```
+
+**工作机制：**
+
+启用 `SyncSummaryIntraRun` 后：
+
+1. **首次 LLM 调用**：从会话加载摘要（可能为空或过期）
+2. **迭代之间**：在每次后续 LLM 调用前同步刷新摘要
+3. **最终响应**：仍会触发异步摘要入队，确保会话摘要完整
+
+框架会自动跳过同一轮次内中间工具结果事件的冗余异步摘要入队，避免重复工作，同时确保最终摘要是完整的。
+
+**行为对比：**
+
+| 模式 | 摘要时机 | 延迟 | 资源消耗 |
+|------|---------|------|---------|
+| 异步（默认） | 后台工作线程 | 可能滞后 | 每次迭代较低 |
+| 同步轮内 | 每次 LLM 调用前 | 始终最新 | 较高（同步） |
+
+**重要注意事项：**
+
+- `SyncSummaryIntraRun` 需要启用 `AddSessionSummary`
+- 同步摘要刷新会增加每次 LLM 迭代的延迟
+- 对于大多数场景，异步摘要（默认）已足够
+
 **重要提示：** 启用 `WithAddSessionSummary(true)` 时，`WithMaxHistoryRuns` 参数将被忽略，摘要后的所有事件都会完整保留。
 
 详细配置和高级用法请参见 [会话摘要](#会话摘要) 章节。
@@ -413,16 +457,18 @@ sessionService := inmemory.NewSessionService(
 | ---------- | -------------------------- | -------- |
 | 内存存储   | 定期扫描 + 访问时检查      | 是       |
 | Redis 存储 | Redis 原生 TTL             | 是       |
+| SQLite     | 定期扫描（软删除或硬删除） | 是       |
 | PostgreSQL | 定期扫描（软删除或硬删除） | 是       |
 | MySQL      | 定期扫描（软删除或硬删除） | 是       |
 
 ## 存储后端对比
 
-tRPC-Agent-Go 提供五种会话存储后端，满足不同场景需求：
+tRPC-Agent-Go 提供六种会话存储后端，满足不同场景需求：
 
 | 存储类型   | 适用场景           |
 | ---------- | ------------------ |
 | 内存存储   | 开发测试、小规模   |
+| SQLite     | 本地持久化、单机   |
 | Redis 存储 | 生产环境、分布式   |
 | PostgreSQL | 生产环境、复杂查询 |
 | MySQL      | 生产环境、复杂查询 |
@@ -496,6 +542,61 @@ sessionService := inmemory.NewSessionService(
     inmemory.WithSummaryJobTimeout(60*time.Second),
 )
 ```
+
+## SQLite 存储
+
+SQLite 是一种嵌入式数据库，数据保存在单个文件中，适合：
+
+- 本地开发和 Demo（不需要额外部署数据库）
+- 单机部署但希望进程重启后仍保留会话数据
+- 轻量级 CLI/小服务的持久化
+
+### 依赖与构建要求
+
+该后端使用 `github.com/mattn/go-sqlite3` 驱动，需要开启 CGO（需要 C 编译器）。
+
+### 基础配置示例
+
+```go
+import (
+    "database/sql"
+    "time"
+
+    _ "github.com/mattn/go-sqlite3"
+    sessionsqlite "trpc.group/trpc-go/trpc-agent-go/session/sqlite"
+)
+
+db, err := sql.Open("sqlite3", "file:sessions.db?_busy_timeout=5000")
+if err != nil {
+    // handle error
+}
+
+sessionService, err := sessionsqlite.NewService(
+    db,
+    sessionsqlite.WithSessionEventLimit(1000),
+    sessionsqlite.WithSessionTTL(30*time.Minute),
+    sessionsqlite.WithSoftDelete(true),
+)
+if err != nil {
+    // handle error
+}
+defer sessionService.Close()
+```
+
+**注意事项**：
+
+- `NewService` 接收 `*sql.DB`。Session Service 会在 `Close()` 时关闭该 DB，避免重复关闭。
+- 如果单机并发较高，可以考虑在 DSN 中开启 WAL（例如 `_journal_mode=WAL`）并设置 `_busy_timeout`。
+
+### 配置选项
+
+- TTL 与清理：`WithSessionTTL`、`WithAppStateTTL`、`WithUserStateTTL`、`WithCleanupInterval`
+- 保留策略：`WithSessionEventLimit`
+- 异步持久化：`WithEnableAsyncPersist`、`WithAsyncPersisterNum`
+- 软删除：`WithSoftDelete`（默认开启）
+- 摘要：`WithSummarizer`、`WithAsyncSummaryNum`、`WithSummaryQueueSize`、`WithSummaryJobTimeout`
+- DDL/命名：`WithSkipDBInit`、`WithTablePrefix`
+- Hooks：`WithAppendEventHook`、`WithGetSessionHook`
 
 ## Redis 存储
 
@@ -1248,7 +1349,7 @@ COMMENT 'User states table';
 - **AppendEventHook**：事件写入前的拦截/修改/终止。可用于内容安全、审计打标（如写入 `violation=<word>`），或直接阻断存储。关于 filterKey 的赋值请见下文“会话摘要 / FilterKey 与 AppendEventHook”。
 - **GetSessionHook**：会话读取后的拦截/修改/过滤。可用来剔除带特定标签的事件，或动态补充返回的 Session 状态。
 - **责任链执行**：Hook 通过 `next()` 形成链式调用，可提前返回以短路后续逻辑，错误会向上传递。
-- **跨后端一致**：内存、Redis、MySQL、PostgreSQL 实现已统一接入 Hook，构造服务时注入 Hook 切片即可。
+- **跨后端一致**：内存、SQLite、Redis、MySQL、PostgreSQL 实现已统一接入 Hook，构造服务时注入 Hook 切片即可。
 - **示例**：见 `examples/session/hook`（[代码](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/session/hook)）
 
 ### 直接使用 Session Service API
@@ -2048,6 +2149,54 @@ if found {
 
 要实现这个功能，需要为事件设置 `FilterKey` 字段来标识事件类型。
 
+#### FilterKey、EventFilterKey 与 BranchFilterMode（先搞懂再用）
+
+很多同学第一次接触 FilterKey 会觉得难理解，主要原因是它同时参与两类能力：
+
+1. **会话摘要**：用某个 filterKey 生成/读取摘要（`CreateSessionSummary`、
+   `GetSessionSummaryText` + `WithSummaryFilterKey`）。
+2. **历史可见性**：构建下一次 Prompt 时，决定“哪些历史事件会被放进上下文”
+   （`WithMessageBranchFilterMode`）。
+
+你可以把 `FilterKey` 当成一个**分层路径**（像文件路径一样）：
+
+- `my-app/user-messages`
+- `my-app/tool-calls`
+- `my-app/auth/role_admin`
+
+`/` 是分隔符，因此这些 key 会形成一棵“树”：
+
+```text
+my-app
+├── user-messages
+├── tool-calls
+└── auth
+    ├── role_admin
+    └── role_viewer
+```
+
+这里还有一个容易混淆的概念：`EventFilterKey`。
+
+- `Event.FilterKey`：每条事件自带的 key（你可以在 `AppendEventHook` 里设置）。
+- `Invocation.eventFilterKey`：本次运行的“视图 key”，用于筛选历史事件；可通过
+  `agent.WithEventFilterKey(...)` 在 `runner.Run(...)` 时设置。
+
+当框架把历史事件注入到 Prompt 时，会用 `WithMessageBranchFilterMode` 选择匹配
+规则：
+
+| 模式 | 直觉解释 | 会包含哪些事件（相对当前 EventFilterKey） |
+|------|----------|------------------------------------------|
+| `prefix`（默认） | **同一条祖先链都算** | 祖先、自己、子孙 |
+| `subtree` | **只看当前子树** | 自己、子孙（不含祖先） |
+| `exact` | **必须完全相等** | 仅自己 |
+| `all` | **不做隔离** | 全部 |
+
+**注意：** 为了兼容旧行为，当 `EventFilterKey==""` 或 `Event.FilterKey==""` 时，
+框架会把它当作“匹配所有”，因此这些模式都会倾向于包含更多历史。
+
+> 小结：FilterKey 不只是“分类标签”，它更像“会话视图/作用域”。想做权限隔离时，
+> 一定要同时考虑匹配模式（尤其是 `prefix` vs `subtree`）以及摘要注入行为。
+
 #### 使用 AppendEventHook 设置 FilterKey
 
 推荐使用 `AppendEventHook` 在事件写入前自动设置 `FilterKey`：
@@ -2056,7 +2205,7 @@ if found {
 sessionService := inmemory.NewSessionService(
     inmemory.WithAppendEventHook(func(ctx *session.AppendEventContext, next func() error) error {
         // 根据事件作者自动分类
-        prefix := "my-app/"  // 必须添加 appName 前缀
+        prefix := "my-app/"  // 推荐：以 appName 作为根前缀
         switch ctx.Event.Author {
         case "user":
             ctx.Event.FilterKey = prefix + "user-messages"
@@ -2086,9 +2235,14 @@ userSummary, found := sessionService.GetSessionSummaryText(
 
 #### FilterKey 前缀规范
 
-**⚠️ 重要：FilterKey 必须添加 `appName + "/"` 前缀。**
+**强烈推荐：让 FilterKey 以 `appName/` 开头（或等于 `appName`）。**
 
-**原因：** Runner 在过滤事件时使用 `appName + "/"` 作为过滤前缀，如果 FilterKey 没有这个前缀，事件会被过滤掉，导致：
+**原因：**
+
+- Runner 默认会把本次运行的 `EventFilterKey` 设为 `appName`（除非你显式传入
+  `agent.WithEventFilterKey(...)`）。
+- 历史注入与摘要都依赖“层级匹配”：如果你的事件 `FilterKey` 不在 `appName` 这棵树
+  下，那么在默认配置下它很可能不会进入 Prompt，进而导致：
 
 - LLM 看不到历史对话，可能重复触发工具调用
 - 摘要内容不完整，丢失重要上下文
@@ -2103,7 +2257,11 @@ evt.FilterKey = "my-app/user-messages"
 evt.FilterKey = "user-messages"
 ```
 
-**技术细节：** 框架使用前缀匹配机制（`strings.HasPrefix`）来判断事件是否应该被包含在上下文中。详见 `ContentRequestProcessor` 的过滤逻辑。
+**技术细节：**
+
+- `prefix` 模式使用 `event.Event.Filter(filterKey)` 做层级匹配：只要两者存在祖先/
+  后代关系就算匹配（基于 `/` 分隔符的前缀判断）。
+- `subtree` 模式只包含“当前 key 及其子孙”，不包含父级（更适合严格隔离）。
 
 #### 完整示例
 
@@ -2111,6 +2269,97 @@ evt.FilterKey = "user-messages"
 
 - [examples/session/hook](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/session/hook) - Hook 基础用法
 - [examples/summary/filterkey](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/summary/filterkey) - 按 FilterKey 生成摘要
+
+### 权限变更与历史隔离（避免“旧权限答案复用”）
+
+很多业务会把**权限校验**放在 `BeforeToolCallback` 里：模型要调用工具 → 回调里校验权限 → 通过才执行工具。
+
+这在“工具确实被调用”的情况下是可靠的，但会遇到一个容易被忽略的问题：
+
+- 同一个 session 里，用户问过一次问题（当时有权限），工具返回了结果并写入了历史。
+- 后来用户权限被撤销/变更，但仍在同一个 session 里再次问同样的问题。
+- 模型可能**直接根据历史消息作答**，不再触发工具调用。
+- 这时你的 `BeforeToolCallback` **不会执行**，从而出现“旧权限结果被复用”的风险。
+
+要从根上解决，关键点不是“让模型一定调用工具”，而是：
+
+1. **工具层仍然做权限校验**（防线 1）。
+2. **Prompt 构建时不要把旧权限下的敏感历史放进上下文**（防线 2）。
+
+下面给出两种常见做法。
+
+#### 方案 A：权限变更时切换会话（最简单）
+
+当检测到权限发生变化（角色变了、权限版本号变了等）时，直接使用新的 `sessionID`，
+或在该次请求中禁用历史注入（只保留本轮消息和本轮工具回合上下文）。
+
+优点：简单直接，最不容易出错。  
+缺点：会丢失旧会话上下文（这是安全设计下常见的权衡）。
+
+#### 方案 B：用 FilterKey 给“同一 session”做权限视图隔离（推荐）
+
+核心思路：把“权限快照”当成一个**会话视图（view）**，写入 FilterKey。
+
+- 权限快照未变化：继续使用相同的 FilterKey，历史可复用。
+- 权限快照变化：切换到新的 FilterKey，旧视图下的历史不会进入上下文。
+
+**第 1 步：Run 时传入 EventFilterKey**
+
+Runner 支持在每次 `Run` 时指定本次请求使用的 FilterKey 前缀：
+
+```go
+appName := "my-app"
+viewKey := "auth/role_admin" // 示例：用角色/权限版本构造
+filterKey := appName + "/" + viewKey
+
+events, err := app.Run(
+    ctx,
+    userID,
+    sessionID,
+    msg,
+    agent.WithEventFilterKey(filterKey),
+)
+_ = events
+_ = err
+```
+
+你只需要保证：当权限发生变化时，`viewKey` 也跟着变化即可。
+
+**第 2 步：使用 Subtree 分支过滤模式（避免继承父级 FilterKey）**
+
+如果你的历史里曾经写入过更“粗”的 FilterKey（比如仅 `my-app`），
+那么在默认的 Prefix 模式下，`my-app` 可能会被视为 `my-app/auth/...` 的父级而被包含进来。
+
+此时可以把 Agent 的消息分支过滤模式设置为 `subtree`：
+
+```go
+ag := llmagent.New(
+    "assistant",
+    llmagent.WithMessageBranchFilterMode(llmagent.BranchFilterModeSubtree),
+)
+_ = ag
+```
+
+`subtree` 的语义是：只包含“当前 FilterKey 本身及其子节点”的事件，不包含父级。
+这对“权限视图隔离”非常重要。
+
+**补充：Session Summary 与 subtree**
+
+如果你启用了 `WithAddSessionSummary(true)`，框架会把会话摘要注入到 system 消息。
+需要注意：当前摘要生成按 `event.Filter` 的层级匹配规则过滤事件，
+这会把**父级 FilterKey** 的事件也算作“匹配”（例如 `my-app` 会匹配
+`my-app/auth/...`）。因此在“权限视图隔离”场景下，如果历史里存在父级事件，
+摘要可能仍会把父级内容带入上下文，从而削弱隔离效果。
+
+对需要严格隔离的场景，建议：
+
+- 保持 `AddSessionSummary=false`（默认）；
+- 或在权限变更时切换 `sessionID`（方案 A）；
+- 或确保不会写入父级 FilterKey 的敏感事件。
+
+**注意：这不是替代权限校验。**  
+你仍然需要在工具执行层做真实的鉴权（例如在 `BeforeToolCallback` 或工具实现内部），
+FilterKey 视图隔离只是为了避免模型在 Prompt 里看到不该看到的历史。
 
 ### 性能考虑
 

@@ -33,6 +33,13 @@ import (
 const (
 	// BranchFilterModePrefix Prefix matching pattern
 	BranchFilterModePrefix = "prefix"
+	// BranchFilterModeSubtree includes only events whose FilterKey is the
+	// same as the current filter key or is a descendant of it.
+	//
+	// Unlike BranchFilterModePrefix, it does not include ancestor FilterKeys.
+	// This is useful for isolating history across independent scopes
+	// (e.g., permission/tenant views) within the same session.
+	BranchFilterModeSubtree = "subtree"
 	// BranchFilterModeAll include all
 	BranchFilterModeAll = "all"
 	// BranchFilterModeExact exact match
@@ -112,7 +119,9 @@ type ContentOption func(*ContentRequestProcessor)
 // WithBranchFilterMode sets how to include content from session events.
 func WithBranchFilterMode(mode string) ContentOption {
 	return func(p *ContentRequestProcessor) {
-		if mode != BranchFilterModeAll && mode != BranchFilterModeExact {
+		if mode != BranchFilterModeAll &&
+			mode != BranchFilterModeExact &&
+			mode != BranchFilterModeSubtree {
 			mode = BranchFilterModePrefix
 		}
 		p.BranchFilterMode = mode
@@ -200,6 +209,14 @@ func WithSummaryFormatter(formatter func(summary string) string) ContentOption {
 const (
 	mergedUserSeparator = "\n\n"
 	contextPrefix       = "For context:"
+
+	contentHasSessionSummaryStateKey = "processor:content:has_session_summary"
+)
+
+const (
+	attachedFilesAnnotationPrefix = "Attached files"
+	attachedFileNameFallbackFmt   = "upload_%d"
+	attachedFilesMaxPreview       = 20
 )
 
 // NewContentRequestProcessor creates a new content request processor.
@@ -296,6 +313,10 @@ func (p *ContentRequestProcessor) ProcessRequest(
 		}
 
 		if summaryMsg != nil {
+			invocation.SetState(
+				contentHasSessionSummaryStateKey,
+				true,
+			)
 			// Insert summary as a separate system message after the last
 			// system message to keep stable instructions cacheable.
 			systemMsgIndex := findLastSystemMessageIndex(req.Messages)
@@ -321,7 +342,8 @@ func (p *ContentRequestProcessor) ProcessRequest(
 	}
 
 	if model.HasPayload(invocation.Message) && needToAddInvocationMessage {
-		req.Messages = append(req.Messages, invocation.Message)
+		msg := annotateUserMessageWithAttachedFiles(invocation.Message)
+		req.Messages = append(req.Messages, msg)
 		log.DebugfContext(
 			ctx,
 			"Content request processor: added invocation message with "+
@@ -506,7 +528,106 @@ func (p *ContentRequestProcessor) getIncrementMessages(inv *agent.Invocation, si
 	if !p.AddSessionSummary && p.MaxHistoryRuns > 0 {
 		messages = applyMaxHistoryRuns(messages, p.MaxHistoryRuns)
 	}
+	messages = annotateUserMessagesWithAttachedFiles(messages)
 	return messages
+}
+
+func annotateUserMessagesWithAttachedFiles(
+	messages []model.Message,
+) []model.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	for i := range messages {
+		messages[i] = annotateUserMessageWithAttachedFiles(messages[i])
+	}
+	return messages
+}
+
+func annotateUserMessageWithAttachedFiles(
+	msg model.Message,
+) model.Message {
+	if msg.Role != model.RoleUser && msg.Role != "" {
+		return msg
+	}
+	if len(msg.ContentParts) == 0 {
+		return msg
+	}
+	if hasAttachedFilesAnnotation(msg.ContentParts) {
+		return msg
+	}
+	text := buildAttachedFilesAnnotationText(msg.ContentParts)
+	if text == "" {
+		return msg
+	}
+	annotation := model.ContentPart{
+		Type: model.ContentTypeText,
+		Text: &text,
+	}
+	parts := make([]model.ContentPart, 0, len(msg.ContentParts)+1)
+	parts = append(parts, annotation)
+	parts = append(parts, msg.ContentParts...)
+	msg.ContentParts = parts
+	return msg
+}
+
+func hasAttachedFilesAnnotation(parts []model.ContentPart) bool {
+	for _, part := range parts {
+		if part.Type != model.ContentTypeText || part.Text == nil {
+			continue
+		}
+		if strings.HasPrefix(
+			strings.TrimSpace(*part.Text),
+			attachedFilesAnnotationPrefix,
+		) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildAttachedFilesAnnotationText(
+	parts []model.ContentPart,
+) string {
+	names, count := fileNamesForAnnotation(parts)
+	if count == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(
+		&b,
+		"%s (%d): ",
+		attachedFilesAnnotationPrefix,
+		count,
+	)
+	b.WriteString(strings.Join(names, ", "))
+	if count > len(names) {
+		fmt.Fprintf(&b, " (+%d more)", count-len(names))
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+func fileNamesForAnnotation(
+	parts []model.ContentPart,
+) ([]string, int) {
+	names := make([]string, 0, len(parts))
+	count := 0
+	for _, part := range parts {
+		if part.Type != model.ContentTypeFile || part.File == nil {
+			continue
+		}
+		count++
+		if len(names) >= attachedFilesMaxPreview {
+			continue
+		}
+		name := strings.TrimSpace(part.File.Name)
+		if name == "" {
+			name = fmt.Sprintf(attachedFileNameFallbackFmt, count)
+		}
+		names = append(names, name)
+	}
+	return names, count
 }
 
 // applyMaxHistoryRuns trims messages to at most maxRuns entries from the tail.
@@ -656,6 +777,7 @@ func (p *ContentRequestProcessor) getCurrentInvocationMessages(inv *agent.Invoca
 	}
 
 	messages = p.mergeUserMessages(messages)
+	messages = annotateUserMessagesWithAttachedFiles(messages)
 	return messages
 }
 
@@ -742,52 +864,116 @@ func (p *ContentRequestProcessor) mergeUserMessages(
 	return merged
 }
 
+// shouldIncludeEvent decides whether an event should be included in the model
+// request and whether that event should be treated as the invocation message.
+//
+// The second return value (isInvocationMessage) is intentionally strict: only
+// exact invocation-message matches return true. Current-invocation event
+// protection may still include an event, but returns false for this flag to
+// avoid conflating inclusion with strict message equality.
 func (p *ContentRequestProcessor) shouldIncludeEvent(evt event.Event, inv *agent.Invocation, filter string,
 	isZeroTime bool, since time.Time) (bool, bool) {
-	if evt.Response == nil || evt.IsPartial || !evt.IsValidContent() {
+	// Fast reject malformed, partial, or empty-content events.
+	if !isEventEligibleForInclusion(evt) {
 		return false, false
 	}
-
-	// check is invocation message
-	if inv.RunOptions.RequestID == evt.RequestID &&
-		len(evt.Choices) > 0 &&
-		invocationMessageEqual(inv.Message, evt.Choices[0].Message) {
+	// Exact invocation message match keeps existing semantics.
+	if isStrictInvocationMessage(evt, inv) {
 		return true, true
 	}
-
+	// When a summary exists (!isZeroTime), it may exclude events that belong
+	// to the current invocation by timestamp. Protect all events from the
+	// current invocation so the model retains tool-call context across
+	// intra-run iterations and keeps the original user message during
+	// mid-turn async summary. This guard runs only when a summary is active;
+	// otherwise normal timeline/branch filtering applies unmodified.
+	if !isZeroTime && isCurrentInvocationEvent(evt, inv) {
+		return true, false
+	}
 	// Use strict After so events stamped exactly at summary UpdatedAt are
 	// treated as already summarized and not re-sent.
 	if !isZeroTime && !evt.Timestamp.After(since) {
 		return false, false
 	}
+	if !p.passTimelineFilter(evt, inv) {
+		return false, false
+	}
+	if !p.passBranchFilter(evt, filter) {
+		return false, false
+	}
+	return true, false
+}
 
-	// Check timeline filter
+// isEventEligibleForInclusion checks basic event validity before expensive
+// filtering logic runs.
+func isEventEligibleForInclusion(evt event.Event) bool {
+	return evt.Response != nil && !evt.IsPartial && evt.IsValidContent()
+}
+
+// isStrictInvocationMessage checks whether the event exactly matches the
+// current invocation message, including content equality semantics.
+func isStrictInvocationMessage(evt event.Event, inv *agent.Invocation) bool {
+	return inv.RunOptions.RequestID == evt.RequestID &&
+		len(evt.Choices) > 0 &&
+		invocationMessageEqual(inv.Message, evt.Choices[0].Message)
+}
+
+// isCurrentInvocationEvent keeps events that belong to the current
+// invocation even when summary UpdatedAt would exclude them by timestamp.
+//
+// This protects two scenarios:
+//  1. Async mid-turn summary: the user message is preserved so the model
+//     always sees the original request.
+//  2. Intra-run synchronous summary: assistant and tool-result messages
+//     produced in earlier iterations of the same run are preserved so the
+//     model retains tool-call context across iterations.
+//
+// RequestID + InvocationID matching avoids preserving unrelated events
+// from other invocations that may share the same request scope.
+func isCurrentInvocationEvent(evt event.Event, inv *agent.Invocation) bool {
+	return inv.RunOptions.RequestID != "" &&
+		inv.RunOptions.RequestID == evt.RequestID &&
+		inv.InvocationID != "" &&
+		inv.InvocationID == evt.InvocationID &&
+		len(evt.Choices) > 0
+}
+
+// passTimelineFilter applies request/invocation timeline constraints.
+func (p *ContentRequestProcessor) passTimelineFilter(evt event.Event, inv *agent.Invocation) bool {
 	switch p.TimelineFilterMode {
 	case TimelineFilterCurrentRequest:
-		if inv.RunOptions.RequestID != evt.RequestID {
-			return false, false
-		}
+		return inv.RunOptions.RequestID == evt.RequestID
 	case TimelineFilterCurrentInvocation:
-		if evt.InvocationID != inv.InvocationID {
-			return false, false
-		}
+		return evt.InvocationID == inv.InvocationID
 	default:
+		return true
 	}
+}
 
-	// Check branch filter
+// passBranchFilter applies branch-scoping constraints.
+func (p *ContentRequestProcessor) passBranchFilter(evt event.Event, filter string) bool {
 	switch p.BranchFilterMode {
 	case BranchFilterModeExact:
-		if evt.FilterKey != filter {
-			return false, false
-		}
+		return evt.FilterKey == filter
 	case BranchFilterModePrefix:
-		if !evt.Filter(filter) {
-			return false, false
-		}
+		return evt.Filter(filter)
+	case BranchFilterModeSubtree:
+		return filterSubtree(evt.FilterKey, filter)
 	default:
+		return true
 	}
+}
 
-	return true, false
+func filterSubtree(eventFilterKey, filterKey string) bool {
+	if filterKey == "" || eventFilterKey == "" {
+		return true
+	}
+	if eventFilterKey == filterKey {
+		return true
+	}
+	filterKey += agent.EventFilterKeyDelimiter
+	eventFilterKey += agent.EventFilterKeyDelimiter
+	return strings.HasPrefix(eventFilterKey, filterKey)
 }
 
 func invocationMessageEqual(invMsg model.Message, evtMsg model.Message) bool {
@@ -835,54 +1021,76 @@ func (p *ContentRequestProcessor) convertForeignEvent(evt *event.Event) event.Ev
 	convertedEvent.Author = "user"
 
 	// Build content parts for context.
-	var contentParts []string
+	var contents []string
+	var contentParts []model.ContentPart
 	if p.AddContextPrefix {
-		contentParts = append(contentParts, contextPrefix)
+		prefix := contextPrefix
+		contents = append(contents, contextPrefix)
+		contentParts = append(contentParts, model.ContentPart{
+			Type: model.ContentTypeText,
+			Text: &prefix,
+		})
 	}
 
 	for _, choice := range evt.Choices {
+		if len(choice.Message.ContentParts) > 0 {
+			if p.AddContextPrefix {
+				prefix := fmt.Sprintf("[%s] said:", evt.Author)
+				contentParts = append(contentParts, model.ContentPart{
+					Type: model.ContentTypeText,
+					Text: &prefix,
+				})
+			}
+			contentParts = append(contentParts, choice.Message.ContentParts...)
+		}
+
 		if choice.Message.Content != "" {
 			if p.AddContextPrefix {
-				contentParts = append(contentParts,
-					fmt.Sprintf("[%s] said: %s", evt.Author, choice.Message.Content))
+				contents = append(contents, fmt.Sprintf("[%s] said: %s", evt.Author, choice.Message.Content))
 			} else {
 				// When prefix is disabled, pass the content directly.
-				contentParts = append(contentParts, choice.Message.Content)
+				contents = append(contents, choice.Message.Content)
 			}
 		} else if len(choice.Message.ToolCalls) > 0 {
 			for _, toolCall := range choice.Message.ToolCalls {
 				if p.AddContextPrefix {
-					contentParts = append(contentParts,
+					contents = append(contents,
 						fmt.Sprintf("[%s] called tool `%s` with parameters: %s",
 							evt.Author, toolCall.Function.Name, string(toolCall.Function.Arguments)))
 				} else {
 					// When prefix is disabled, pass tool call info directly.
-					contentParts = append(contentParts,
+					contents = append(contents,
 						fmt.Sprintf("Tool `%s` called with parameters: %s",
 							toolCall.Function.Name, string(toolCall.Function.Arguments)))
 				}
 			}
 		} else if choice.Message.ToolID != "" {
 			if p.AddContextPrefix {
-				contentParts = append(contentParts,
+				contents = append(contents,
 					fmt.Sprintf("[%s] `%s` tool returned result: %s",
 						evt.Author, choice.Message.ToolID, choice.Message.Content))
 			} else {
 				// When prefix is disabled, pass tool result directly.
-				contentParts = append(contentParts, choice.Message.Content)
+				contents = append(contents, choice.Message.Content)
 			}
 		}
 	}
 
 	// Set the converted message.
-	if len(contentParts) > 0 {
+	if len(contents) > 0 || len(contentParts) > 0 {
+		msg := model.Message{
+			Role: model.RoleUser,
+		}
+		if len(contents) > 0 {
+			msg.Content = strings.Join(contents, " ")
+		}
+		if len(contentParts) > 0 {
+			msg.ContentParts = contentParts
+		}
 		convertedEvent.Response.Choices = []model.Choice{
 			{
-				Index: 0,
-				Message: model.Message{
-					Role:    model.RoleUser,
-					Content: strings.Join(contentParts, " "),
-				},
+				Index:   0,
+				Message: msg,
 			},
 		}
 	}

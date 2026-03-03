@@ -172,8 +172,9 @@ func New(name string, opts ...Option) *LLMAgent {
 
 	// Create flow with the provided processors and options.
 	flowOpts := llmflow.Options{
-		ChannelBufferSize: options.ChannelBufferSize,
-		ModelCallbacks:    options.ModelCallbacks,
+		ChannelBufferSize:   options.ChannelBufferSize,
+		ModelCallbacks:      options.ModelCallbacks,
+		SyncSummaryIntraRun: options.SyncSummaryIntraRun,
 	}
 
 	a.flow = llmflow.New(
@@ -259,6 +260,14 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 			skillsOpts,
 			processor.WithSkillLoadMode(options.SkillLoadMode),
 		)
+		if options.MaxLoadedSkills > 0 {
+			skillsOpts = append(
+				skillsOpts,
+				processor.WithMaxLoadedSkills(
+					options.MaxLoadedSkills,
+				),
+			)
+		}
 		if options.SkillsLoadedContentInToolResults {
 			skillsOpts = append(
 				skillsOpts,
@@ -311,16 +320,27 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 
 func appendPostToolProcessor(options *Options, requestProcessors []flow.RequestProcessor) []flow.RequestProcessor {
 	var postToolOpts []processor.PostToolOption
-	if options.PostToolPrompt != "" {
-		postToolOpts = append(postToolOpts,
-			processor.WithPostToolPrompt(options.PostToolPrompt))
+	if options.postToolPromptEnabled != nil &&
+		!*options.postToolPromptEnabled {
+		// PostToolRequestProcessor treats an empty prompt as "disabled".
+		// Keep the processor registered, but skip prompt injection.
+		postToolOpts = append(
+			postToolOpts,
+			processor.WithPostToolPrompt(""),
+		)
+	} else if options.PostToolPrompt != "" {
+		postToolOpts = append(
+			postToolOpts,
+			processor.WithPostToolPrompt(options.PostToolPrompt),
+		)
 	}
 	postToolProcessor := processor.NewPostToolRequestProcessor(postToolOpts...)
 	return append(requestProcessors, postToolProcessor)
 }
 
 func appendSkillsToolResultProcessor(options *Options, requestProcessors []flow.RequestProcessor) []flow.RequestProcessor {
-	if options.skillsRepository == nil || !options.SkillsLoadedContentInToolResults {
+	if options.skillsRepository == nil ||
+		!options.SkillsLoadedContentInToolResults {
 		return requestProcessors
 	}
 	skillsToolResultProcessor :=
@@ -328,6 +348,9 @@ func appendSkillsToolResultProcessor(options *Options, requestProcessors []flow.
 			options.skillsRepository,
 			processor.WithSkillsToolResultLoadMode(
 				options.SkillLoadMode,
+			),
+			processor.WithSkipSkillsFallbackOnSessionSummary(
+				options.SkipSkillsFallbackOnSessionSummary,
 			),
 		)
 	return append(requestProcessors, skillsToolResultProcessor)
@@ -491,6 +514,11 @@ func registerTools(options *Options) ([]tool.Tool, map[string]bool) {
 				toolskill.WithDeniedCommands(
 					options.skillRunDeniedCommands...,
 				),
+			)
+		}
+		if options.skillRunForceSaveArtifacts {
+			runOpts = append(runOpts,
+				toolskill.WithForceSaveArtifacts(true),
 			)
 		}
 		allTools = append(allTools, toolskill.NewRunTool(
@@ -741,7 +769,21 @@ func (a *LLMAgent) Info() agent.Info {
 // under the caller's read lock. It always returns a fresh slice so
 // callers can safely use it after releasing the lock without data
 // races.
+//
+// This variant is used by methods that don't accept a context (for
+// example, Tools()). It uses context.Background() when refreshing tools
+// from ToolSets.
 func (a *LLMAgent) getAllToolsLocked() []tool.Tool {
+	return a.getAllToolsLockedWithContext(context.Background())
+}
+
+func (a *LLMAgent) getAllToolsLockedWithContext(
+	ctx context.Context,
+) []tool.Tool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	base := make([]tool.Tool, len(a.tools))
 	copy(base, a.tools)
 
@@ -749,8 +791,6 @@ func (a *LLMAgent) getAllToolsLocked() []tool.Tool {
 	// on each call to keep ToolSet-provided tools in sync with their
 	// underlying dynamic source (for example, MCP ListTools).
 	if a.option.RefreshToolSetsOnRun && len(a.option.ToolSets) > 0 {
-		ctx := context.Background()
-
 		dynamic := make([]tool.Tool, 0)
 		for _, toolSet := range a.option.ToolSets {
 			namedToolSet := itool.NewNamedToolSet(toolSet)
@@ -875,7 +915,7 @@ func (a *LLMAgent) UserTools() []tool.Tool {
 // function.
 func (a *LLMAgent) FilterTools(ctx context.Context) []tool.Tool {
 	a.mu.RLock()
-	tools := a.getAllToolsLocked()
+	tools := a.getAllToolsLockedWithContext(ctx)
 	userToolNames := make(map[string]bool, len(a.userToolNames))
 	for name, isUser := range a.userToolNames {
 		userToolNames[name] = isUser

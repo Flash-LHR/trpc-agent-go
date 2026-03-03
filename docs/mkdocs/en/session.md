@@ -16,10 +16,10 @@ Within the same conversation, it allows for seamless transitions between multipl
 - **Session Summary**: Automatically compress long conversation history using LLM while preserving key context and significantly reducing token consumption
 - **Event Limiting**: Control maximum number of events stored per session to prevent memory overflow
 - **TTL Management**: Support automatic expiration and cleanup of session data
-- **Multiple Storage Backends**: Support Memory, Redis, PostgreSQL, MySQL, ClickHouse storage
+- **Multiple Storage Backends**: Support Memory, SQLite, Redis, PostgreSQL, MySQL, ClickHouse storage
 - **Concurrency Safety**: Built-in read-write locks ensure safe concurrent access
 - **Automatic Management**: Automatically handle session creation, loading, and updates after Runner integration
-- **Soft Delete Support**: PostgreSQL/MySQL support soft delete with data recovery capability
+- **Soft Delete Support**: PostgreSQL/MySQL/SQLite support soft delete with data recovery capability
 
 ## Quick Start
 
@@ -27,7 +27,7 @@ Within the same conversation, it allows for seamless transitions between multipl
 
 tRPC-Agent-Go's session management integrates with Runner through `runner.WithSessionService`. Runner automatically handles session creation, loading, updates, and persistence.
 
-**Supported Storage Backends:** Memory, Redis, PostgreSQL, MySQL, ClickHouse
+**Supported Storage Backends:** Memory, SQLite, Redis, PostgreSQL, MySQL, ClickHouse
 
 **Default Behavior:** If `runner.WithSessionService` is not configured, Runner defaults to using memory storage (Memory), and data will be lost after process restarts.
 
@@ -348,6 +348,50 @@ agent := llmagent.New(
 - The default format is designed to be compatible with most models and use cases
 - When `WithAddSessionSummary(false)` is used, the formatter is **never invoked**
 
+#### Synchronous Summary Refresh (SyncSummaryIntraRun)
+
+By default, session summaries are generated asynchronously by background workers after tool-result events. This means the summary available to the LLM may lag behind the current conversation state. For scenarios where you need the summary to be up-to-date before each LLM call within a single run, you can enable synchronous summary refresh.
+
+**When to Use:**
+
+- Long tool-call chains (ReAct loops) where intermediate context is important
+- Scenarios requiring the LLM to always see the most recent summary
+- When summary latency must be minimized
+
+**Configuration:**
+
+```go
+agent := llmagent.New(
+    "my-agent",
+    llmagent.WithModel(modelInstance),
+    llmagent.WithAddSessionSummary(true),
+    llmagent.WithSyncSummaryIntraRun(true), // Enable sync summary refresh
+)
+```
+
+**How it Works:**
+
+When `SyncSummaryIntraRun` is enabled:
+
+1. **First LLM call**: Summary is loaded from session (may be stale or empty)
+2. **Between iterations**: Summary is synchronously refreshed before each subsequent LLM call
+3. **Final response**: Still triggers async summary enqueue to ensure session is up-to-date
+
+The framework automatically skips redundant async summary enqueue for intermediate tool-result events during the same run, avoiding duplicate work while ensuring the final summary is always complete.
+
+**Behavior Comparison:**
+
+| Mode | Summary Timing | Latency | Resource Usage |
+|------|---------------|---------|----------------|
+| Async (default) | Background worker | May lag | Lower per-iteration |
+| Sync Intra-Run | Before each LLM call | Always current | Higher (synchronous) |
+
+**Important Notes:**
+
+- `SyncSummaryIntraRun` requires `AddSessionSummary` to be enabled
+- Synchronous summary refresh adds latency to each LLM iteration
+- For most use cases, async summary (default) is sufficient
+
 **Important Note:** When `WithAddSessionSummary(true)` is enabled, the `WithMaxHistoryRuns` parameter is ignored, and all events after the summary are fully retained.
 
 For detailed configuration and advanced usage, see the [Session Summary](#session-summary) section.
@@ -406,16 +450,18 @@ sessionService := inmemory.NewSessionService(
 | ------------ | ---------------------------------------------- | ------------ |
 | Memory       | Periodic scanning + access-time checking       | Yes          |
 | Redis        | Redis native TTL                               | Yes          |
+| SQLite       | Periodic scanning (soft delete or hard delete) | Yes          |
 | PostgreSQL   | Periodic scanning (soft delete or hard delete) | Yes          |
 | MySQL        | Periodic scanning (soft delete or hard delete) | Yes          |
 
 ## Storage Backend Comparison
 
-tRPC-Agent-Go provides five session storage backends to meet different scenario requirements:
+tRPC-Agent-Go provides six session storage backends to meet different scenario requirements:
 
 | Storage Type | Use Case                         |
 | ------------ | -------------------------------- |
 | Memory       | Development/testing, small-scale |
+| SQLite       | Local persistence, single-node   |
 | Redis        | Production, distributed          |
 | PostgreSQL   | Production, complex queries      |
 | MySQL        | Production, complex queries      |
@@ -489,6 +535,66 @@ sessionService := inmemory.NewSessionService(
     inmemory.WithSummaryJobTimeout(60*time.Second),
 )
 ```
+
+## SQLite Storage
+
+SQLite is an embedded database stored in a single file. It is a good fit for:
+
+- Local development and demos (no external database needed)
+- Single-node deployments that still want persistence across restarts
+- Lightweight persistence for CLI tools or small services
+
+### Requirements
+
+This backend uses the `github.com/mattn/go-sqlite3` driver, which requires CGO
+(a C compiler). Make sure your environment can build CGO code.
+
+### Basic Configuration Example
+
+```go
+import (
+    "database/sql"
+    "time"
+
+    _ "github.com/mattn/go-sqlite3"
+    sessionsqlite "trpc.group/trpc-go/trpc-agent-go/session/sqlite"
+)
+
+db, err := sql.Open("sqlite3", "file:sessions.db?_busy_timeout=5000")
+if err != nil {
+    // handle error
+}
+
+sessionService, err := sessionsqlite.NewService(
+    db,
+    sessionsqlite.WithSessionEventLimit(1000),
+    sessionsqlite.WithSessionTTL(30*time.Minute),
+    sessionsqlite.WithSoftDelete(true),
+)
+if err != nil {
+    // handle error
+}
+defer sessionService.Close()
+```
+
+**Notes**:
+
+- `NewService` accepts a `*sql.DB`. The session service owns the DB and will
+  close it in `Close()`. Do not close the DB twice.
+- For better concurrency on a single machine, consider enabling WAL mode
+  (e.g. `_journal_mode=WAL`) and setting `_busy_timeout` in your DSN.
+
+### Configuration Options
+
+- **TTL and cleanup**: `WithSessionTTL`, `WithAppStateTTL`, `WithUserStateTTL`,
+  `WithCleanupInterval`
+- **Retention**: `WithSessionEventLimit`
+- **Persistence**: `WithEnableAsyncPersist`, `WithAsyncPersisterNum`
+- **Soft delete**: `WithSoftDelete` (default is enabled)
+- **Summaries**: `WithSummarizer`, `WithAsyncSummaryNum`, `WithSummaryQueueSize`,
+  `WithSummaryJobTimeout`
+- **Schema/DDL**: `WithSkipDBInit`, `WithTablePrefix`
+- **Hooks**: `WithAppendEventHook`, `WithGetSessionHook`
 
 ## Redis Storage
 
@@ -1265,7 +1371,7 @@ COMMENT 'User states table';
 - **AppendEventHook**: Intercept/modify/abort events before they are stored. Useful for content safety or auditing (e.g., tagging `violation=<word>`), or short-circuiting persistence. For filterKey usage, see the “Session Summarization / FilterKey with AppendEventHook” section below.
 - **GetSessionHook**: Intercept/modify/filter sessions after they are read. Useful for removing tagged events or dynamically augmenting the returned session state.
 - **Chain-of-responsibility**: Hooks call `next()` to continue; returning early short-circuits later hooks, and errors bubble up.
-- **Backend parity**: Memory, Redis, MySQL, and PostgreSQL share the same hook interface—inject hook slices when constructing the service.
+- **Backend parity**: Memory, SQLite, Redis, MySQL, and PostgreSQL share the same hook interface—inject hook slices when constructing the service.
 - **Example**: See `examples/session/hook` ([code](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/session/hook))
 
 ### Direct Use of Session Service API
@@ -1983,6 +2089,59 @@ In real-world applications, you may want to generate separate summaries for diff
 
 To achieve this, you need to set the `FilterKey` field on events to identify their type.
 
+#### FilterKey, EventFilterKey, and BranchFilterMode (read this first)
+
+FilterKey often feels confusing at first because it participates in **two**
+different capabilities:
+
+1. **Session summaries**: generate/retrieve a summary for a given filterKey
+   (`CreateSessionSummary`, `GetSessionSummaryText` + `WithSummaryFilterKey`).
+2. **History visibility**: when building the next prompt, decide which historical
+   events are allowed to be injected into context (`WithMessageBranchFilterMode`).
+
+Think of `FilterKey` as a **hierarchical path** (like a file path):
+
+- `my-app/user-messages`
+- `my-app/tool-calls`
+- `my-app/auth/role_admin`
+
+`/` is the delimiter, so keys form a tree:
+
+```text
+my-app
+├── user-messages
+├── tool-calls
+└── auth
+    ├── role_admin
+    └── role_viewer
+```
+
+Another concept you will see is `EventFilterKey`:
+
+- `Event.FilterKey`: the key stored on each event (you can set it in
+  `AppendEventHook`).
+- `Invocation.eventFilterKey`: the “view key” for the current run; it is used
+  to filter historical events and can be set via `agent.WithEventFilterKey(...)`
+  when calling `runner.Run(...)`.
+
+When the framework injects history into the prompt, `WithMessageBranchFilterMode`
+controls the matching rule:
+
+| Mode | Intuition | Which events are included (relative to EventFilterKey) |
+|------|----------|---------------------------------------------------------|
+| `prefix` (default) | **Same ancestry chain counts** | ancestors, self, descendants |
+| `subtree` | **Only this subtree** | self, descendants (no ancestors) |
+| `exact` | **Must be identical** | self only |
+| `all` | **No isolation** | everything |
+
+**Note:** for backward compatibility, if `EventFilterKey==""` or
+`Event.FilterKey==""`, the framework treats it as “match all”, so these modes
+will tend to include more history.
+
+> Summary: FilterKey is not only a “category label” — it is also a “session view
+> / scope key”. For authorization isolation, always consider the match mode
+> (especially `prefix` vs `subtree`) and summary injection behavior.
+
 #### Setting FilterKey with AppendEventHook
 
 The recommended approach is to use `AppendEventHook` to automatically set `FilterKey` before events are persisted:
@@ -1991,7 +2150,7 @@ The recommended approach is to use `AppendEventHook` to automatically set `Filte
 sessionService := inmemory.NewSessionService(
     inmemory.WithAppendEventHook(func(ctx *session.AppendEventContext, next func() error) error {
         // Auto-categorize by event author
-        prefix := "my-app/"  // Must add appName prefix
+        prefix := "my-app/"  // Recommended: use appName as the root prefix
         switch ctx.Event.Author {
         case "user":
             ctx.Event.FilterKey = prefix + "user-messages"
@@ -2021,9 +2180,16 @@ userSummary, found := sessionService.GetSessionSummaryText(
 
 #### FilterKey Prefix Convention
 
-**⚠️ Important: FilterKey must include the `appName + "/"` prefix.**
+**Strongly recommended: make your FilterKey start with `appName/` (or equal to
+`appName`).**
 
-**Why:** The Runner uses `appName + "/"` as the filter prefix when filtering events. If your FilterKey lacks this prefix, events will be filtered out, causing:
+**Why:**
+
+- By default, the Runner sets the current run's `EventFilterKey` to `appName`
+  (unless you explicitly pass `agent.WithEventFilterKey(...)`).
+- Both history injection and summaries rely on hierarchical matching. If your
+  event `FilterKey` is not under the `appName` tree, it will likely be excluded
+  from the prompt under default settings, causing:
 
 - LLM cannot see conversation history, may repeatedly trigger tool calls
 - Summary content is incomplete, losing important context
@@ -2038,7 +2204,12 @@ evt.FilterKey = "my-app/user-messages"
 evt.FilterKey = "user-messages"
 ```
 
-**Technical Details:** The framework uses prefix matching (`strings.HasPrefix`) to determine which events should be included in the context. See `ContentRequestProcessor` filtering logic for details.
+**Technical Details:**
+
+- `prefix` mode uses `event.Event.Filter(filterKey)` hierarchical matching:
+  ancestor/self/descendant all count as “match” (based on `/` path prefixes).
+- `subtree` mode only includes “self and descendants” (no ancestors), which is
+  better for strict isolation.
 
 #### Complete Examples
 
@@ -2046,6 +2217,84 @@ See the following examples for complete FilterKey usage scenarios:
 
 - [examples/session/hook](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/session/hook) - Hook basics
 - [examples/summary/filterkey](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/summary/filterkey) - Summarizing by FilterKey
+
+### Permission Changes and History Isolation
+
+Many applications enforce authorization in `BeforeToolCallback`: when the model
+calls a tool, you validate the user's permissions and only execute the tool if
+allowed.
+
+This is correct *when a tool is actually called*, but there is a common pitfall:
+
+- In the same session, the user asks a question when they had permission.
+- The tool result (and the assistant answer) is persisted into session history.
+- Later, the user's permission is revoked/changed, and the user asks the same
+  question again.
+- The model may answer **directly from history** and skip calling the tool.
+- Your `BeforeToolCallback` does **not** run, so old privileged information can
+  be reused.
+
+To address this, keep tool-level authorization (defense in depth) and also
+control what history is included in the prompt.
+
+#### Option A: Start a new session (simplest)
+
+When permission changes, switch to a new `sessionID` (or disable history
+injection for that request). This is the least error-prone approach, but it
+trades off some conversation continuity for safety.
+
+#### Option B: Use FilterKey as a "permission view" (recommended)
+
+Treat a permission snapshot/version as a **session view** and encode it into
+the event FilterKey prefix:
+
+```go
+appName := "my-app"
+viewKey := "auth/role_admin" // example: role / permission version
+filterKey := appName + "/" + viewKey
+
+events, err := app.Run(
+    ctx,
+    userID,
+    sessionID,
+    msg,
+    agent.WithEventFilterKey(filterKey),
+)
+_ = events
+_ = err
+```
+
+When permissions change, change `viewKey`. Old-view events won't be included in
+the prompt, so the model can't reuse them.
+
+If you previously wrote coarse FilterKeys (for example just `my-app`), configure
+the agent to use `subtree` branch filtering to avoid inheriting parent keys:
+
+```go
+ag := llmagent.New(
+    "assistant",
+    llmagent.WithMessageBranchFilterMode(llmagent.BranchFilterModeSubtree),
+)
+_ = ag
+```
+
+**Note: Session Summary and `subtree`**
+
+If you enable `WithAddSessionSummary(true)`, the framework injects the session
+summary as a system message. Be aware that summary generation currently filters
+events using `event.Filter`'s hierarchical matching rules, which also treat
+**ancestor FilterKeys** as matching (for example, `my-app` matches
+`my-app/auth/...`).
+
+In “permission view isolation” scenarios, if your session history contains
+ancestor events, the injected summary may still pull ancestor content into the
+prompt and weaken isolation.
+
+For strict isolation, consider:
+
+- Keep `AddSessionSummary=false` (default).
+- Switch `sessionID` when permissions change (Option A).
+- Avoid persisting sensitive events under ancestor FilterKeys.
 
 ### Performance Considerations
 

@@ -34,6 +34,9 @@ const (
 
 	// BranchFilterModePrefix Prefix matching pattern
 	BranchFilterModePrefix = processor.BranchFilterModePrefix
+	// BranchFilterModeSubtree includes only events whose FilterKey is the
+	// same as the current filter key or is a descendant of it.
+	BranchFilterModeSubtree = processor.BranchFilterModeSubtree
 	// BranchFilterModeAll include all
 	BranchFilterModeAll = processor.BranchFilterModeAll
 	// BranchFilterModeExact exact match
@@ -111,6 +114,8 @@ var (
 		PreloadMemory: 0,
 
 		SkillLoadMode: SkillLoadModeTurn,
+
+		SkipSkillsFallbackOnSessionSummary: true,
 	}
 )
 
@@ -202,6 +207,12 @@ type Options struct {
 	// AddSessionSummary controls whether to prepend the current branch summary
 	// as a system message when available (default: false).
 	AddSessionSummary bool
+	// SyncSummaryIntraRun controls whether to refresh session summary
+	// synchronously between LLM loop iterations inside the same run.
+	// When false (default), summary refresh happens asynchronously and
+	// may lag behind the current iteration. This option does not affect
+	// cross-run async summary behavior.
+	SyncSummaryIntraRun bool
 	// MaxHistoryRuns sets the maximum number of history messages when AddSessionSummary is false.
 	// When 0 (default), no limit is applied.
 	MaxHistoryRuns int
@@ -259,6 +270,15 @@ type Options struct {
 	// available in the system prompt.
 	SkillLoadMode string
 
+	// MaxLoadedSkills caps how many skills remain "loaded" in session
+	// state at the same time.
+	//
+	// When > 0, only the most-recently loaded skills are kept, and older
+	// loaded skills are offloaded (cleared) from session state.
+	//
+	// When <= 0, no cap is applied (default behavior).
+	MaxLoadedSkills int
+
 	// SkillsLoadedContentInToolResults controls where loaded skill bodies
 	// and selected docs are materialized.
 	//
@@ -270,6 +290,13 @@ type Options struct {
 	// system prompt more stable for prompt caching.
 	SkillsLoadedContentInToolResults bool
 
+	// SkipSkillsFallbackOnSessionSummary controls whether the framework
+	// skips the "Loaded skill context" system-message fallback when a
+	// session summary is present in the request.
+	//
+	// Default: true.
+	SkipSkillsFallbackOnSessionSummary bool
+
 	// skillsRepository enables agent skills when non-nil.
 	skillsRepository skill.Repository
 	// skillsToolingGuidance overrides the built-in skills guidance block.
@@ -277,9 +304,13 @@ type Options struct {
 	// skillRunAllowedCommands restricts skill_run to allowlisted commands.
 	skillRunAllowedCommands []string
 	// skillRunDeniedCommands rejects denylisted commands for skill_run.
-	skillRunDeniedCommands    []string
-	messageTimelineFilterMode string
-	messageBranchFilterMode   string
+	skillRunDeniedCommands []string
+
+	// skillRunForceSaveArtifacts forces skill_run to persist collected
+	// outputs via the artifact service when possible.
+	skillRunForceSaveArtifacts bool
+	messageTimelineFilterMode  string
+	messageBranchFilterMode    string
 
 	// ReasoningContentMode controls how reasoning_content is handled in
 	// multi-turn conversations. This is particularly important for DeepSeek
@@ -294,10 +325,20 @@ type Options struct {
 	// When < 0, all memories are loaded.
 	PreloadMemory int
 
+	// postToolPromptEnabled controls whether the post-tool dynamic prompt
+	// injection is enabled. When nil (default), injection is enabled to
+	// preserve existing behavior.
+	postToolPromptEnabled *bool
+
 	// PostToolPrompt overrides the default dynamic prompt injected when
-	// tool results are detected. When empty, the built-in default prompt
-	// from processor.DefaultPostToolPrompt is used. Set to a non-empty
-	// string to customize the guidance given to the model after tool calls.
+	// tool results are detected.
+	//
+	// When empty (default), the built-in default prompt is used.
+	// To disable prompt injection entirely, use
+	// WithEnablePostToolPrompt(false).
+	//
+	// Set to a non-empty string to customize the guidance given to the
+	// model after tool calls.
 	PostToolPrompt string
 }
 
@@ -456,6 +497,16 @@ func WithSkillLoadMode(mode string) Option {
 	}
 }
 
+// WithMaxLoadedSkills caps how many skills remain "loaded" in session
+// state at the same time.
+//
+// When max <= 0, no cap is applied (default behavior).
+func WithMaxLoadedSkills(max int) Option {
+	return func(opts *Options) {
+		opts.MaxLoadedSkills = max
+	}
+}
+
 // WithSkillsLoadedContentInToolResults enables an alternative injection
 // mode where loaded skill bodies/docs are materialized into tool result
 // messages (skill_load / skill_select_docs) instead of being appended
@@ -463,6 +514,19 @@ func WithSkillLoadMode(mode string) Option {
 func WithSkillsLoadedContentInToolResults(enable bool) Option {
 	return func(opts *Options) {
 		opts.SkillsLoadedContentInToolResults = enable
+	}
+}
+
+// WithSkipSkillsFallbackOnSessionSummary controls whether the agent
+// skips the "Loaded skill context" system-message fallback when a session
+// summary is present in the request.
+//
+// Default: true.
+func WithSkipSkillsFallbackOnSessionSummary(
+	skip bool,
+) Option {
+	return func(opts *Options) {
+		opts.SkipSkillsFallbackOnSessionSummary = skip
 	}
 }
 
@@ -499,6 +563,14 @@ func WithSkillRunDeniedCommands(cmds ...string) Option {
 		opts.skillRunDeniedCommands = append(
 			[]string(nil), cmds...,
 		)
+	}
+}
+
+// WithSkillRunForceSaveArtifacts forces skill_run to persist collected
+// outputs via the artifact service when possible.
+func WithSkillRunForceSaveArtifacts(enable bool) Option {
+	return func(opts *Options) {
+		opts.skillRunForceSaveArtifacts = enable
 	}
 }
 
@@ -695,6 +767,16 @@ func WithAddSessionSummary(addSummary bool) Option {
 	}
 }
 
+// WithSyncSummaryIntraRun enables synchronous summary refresh between LLM loop
+// iterations in the same run. When enabled, the summary is updated before each
+// LLM call within a run, ensuring the model sees the most recent summary.
+// When disabled (default), summary refresh happens asynchronously.
+func WithSyncSummaryIntraRun(enable bool) Option {
+	return func(opts *Options) {
+		opts.SyncSummaryIntraRun = enable
+	}
+}
+
 // WithMaxHistoryRuns sets the maximum number of history messages when AddSessionSummary is false.
 // When 0 (default), no limit is applied.
 func WithMaxHistoryRuns(maxRuns int) Option {
@@ -835,6 +917,8 @@ func WithPreloadMemory(limit int) Option {
 // WithPostToolPrompt overrides the default dynamic prompt injected when tool
 // results are detected in the conversation. The default prompt guides the
 // model to synthesize results naturally without meta-commentary.
+// To disable post-tool prompt injection entirely, use
+// WithEnablePostToolPrompt(false).
 //
 // Example usage:
 //
@@ -842,6 +926,15 @@ func WithPreloadMemory(limit int) Option {
 func WithPostToolPrompt(prompt string) Option {
 	return func(opts *Options) {
 		opts.PostToolPrompt = prompt
+	}
+}
+
+// WithEnablePostToolPrompt enables or disables post-tool prompt injection.
+// When disabled, no prompt is injected after tool results, even if a custom
+// PostToolPrompt is configured.
+func WithEnablePostToolPrompt(enable bool) Option {
+	return func(opts *Options) {
+		opts.postToolPromptEnabled = &enable
 	}
 }
 

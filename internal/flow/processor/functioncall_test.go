@@ -2116,7 +2116,7 @@ func (d *deltaTool) Declaration() *tool.Declaration {
 func (d *deltaTool) Call(ctx context.Context, _ []byte) (any, error) {
 	return "ok", nil
 }
-func (d *deltaTool) StateDelta(_ []byte, _ []byte) map[string][]byte {
+func (d *deltaTool) StateDelta(_ string, _ []byte, _ []byte) map[string][]byte {
 	return map[string][]byte{"x": []byte("y")}
 }
 
@@ -2130,7 +2130,7 @@ func (e *errorDeltaTool) Call(_ context.Context, _ []byte) (any, error) {
 	return nil, errors.New("boom")
 }
 
-func (e *errorDeltaTool) StateDelta(_ []byte, _ []byte) map[string][]byte {
+func (e *errorDeltaTool) StateDelta(_ string, _ []byte, _ []byte) map[string][]byte {
 	return map[string][]byte{"x": []byte("y")}
 }
 
@@ -3644,4 +3644,58 @@ func TestExecuteSingleToolCallSequential_SetsTransferTag(t *testing.T) {
 	require.NotNil(t, evt)
 	require.Equal(t, event.TransferTag, evt.Tag)
 	require.Equal(t, transfer.TransferToolName, evt.Response.Choices[0].Message.ToolName)
+}
+
+// mockMetaGetter is a test type that implements the GetMeta interface.
+type mockMetaGetter struct {
+	meta map[string]any
+}
+
+func (m *mockMetaGetter) GetMeta() map[string]any {
+	return m.meta
+}
+
+// mockNonMetaGetter is a test type that does not implement GetMeta.
+type mockNonMetaGetter struct {
+	value string
+}
+
+func TestExtractMetaFromResult_Nil(t *testing.T) {
+	meta := extractMetaFromResult(nil)
+	assert.Nil(t, meta)
+}
+
+func TestExtractMetaFromResult_NonMetaGetter(t *testing.T) {
+	// Test with a type that does not implement GetMeta
+	result := &mockNonMetaGetter{value: "test"}
+	meta := extractMetaFromResult(result)
+	assert.Nil(t, meta)
+}
+
+func TestExtractMetaFromResult_WithMetaGetter(t *testing.T) {
+	// Test with a type that implements GetMeta
+	expectedMeta := map[string]any{
+		"tokenCount": 42,
+		"model":      "gpt-4",
+	}
+	result := &mockMetaGetter{meta: expectedMeta}
+	meta := extractMetaFromResult(result)
+	assert.NotNil(t, meta)
+	assert.Equal(t, expectedMeta["tokenCount"], meta["tokenCount"])
+	assert.Equal(t, expectedMeta["model"], meta["model"])
+}
+
+func TestExtractMetaFromResult_WithNilMeta(t *testing.T) {
+	// Test with a MetaGetter that returns nil meta
+	result := &mockMetaGetter{meta: nil}
+	meta := extractMetaFromResult(result)
+	assert.Nil(t, meta)
+}
+
+func TestExtractMetaFromResult_WithEmptyMeta(t *testing.T) {
+	// Test with a MetaGetter that returns empty map
+	result := &mockMetaGetter{meta: map[string]any{}}
+	meta := extractMetaFromResult(result)
+	assert.NotNil(t, meta)
+	assert.Empty(t, meta)
 }
