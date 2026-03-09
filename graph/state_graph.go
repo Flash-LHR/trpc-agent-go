@@ -3444,22 +3444,22 @@ func traceProcessedModelResponse(
 }
 
 type modelResponseProcessor struct {
-	ctx                           context.Context
-	config                        modelExecutionConfig
-	invocation                    *agent.Invocation
-	tracker                       *itelemetry.ChatMetricsTracker
-	timingInfo                    *model.TimingInfo
-	partialUsageFallback          *model.Usage
-	tap                           *modelDeltaStreamTap
-	reusableEvents                []event.Event
-	reusableEventIdx              int
-	author                        string
-	fastResponsePath              bool
-	partialEventIDsDisabled       bool
+	ctx                            context.Context
+	config                         modelExecutionConfig
+	invocation                     *agent.Invocation
+	tracker                        *itelemetry.ChatMetricsTracker
+	timingInfo                     *model.TimingInfo
+	partialUsageFallback           *model.Usage
+	tap                            *modelDeltaStreamTap
+	reusableEvents                 []event.Event
+	reusableEventIdx               int
+	author                         string
+	fastResponsePath               bool
+	partialEventIDsDisabled        bool
 	partialEventTimestampsDisabled bool
-	lastEvent                     *event.Event
-	finalResponse                 *model.Response
-	toolCalls                     []model.ToolCall
+	lastEvent                      *event.Event
+	finalResponse                  *model.Response
+	toolCalls                      []model.ToolCall
 }
 
 func newModelResponseProcessor(
