@@ -3443,6 +3443,176 @@ func traceProcessedModelResponse(
 	})
 }
 
+type modelResponseProcessor struct {
+	ctx                           context.Context
+	config                        modelExecutionConfig
+	invocation                    *agent.Invocation
+	tracker                       *itelemetry.ChatMetricsTracker
+	timingInfo                    *model.TimingInfo
+	partialUsageFallback          *model.Usage
+	tap                           *modelDeltaStreamTap
+	reusableEvents                []event.Event
+	reusableEventIdx              int
+	author                        string
+	fastResponsePath              bool
+	partialEventIDsDisabled       bool
+	partialEventTimestampsDisabled bool
+	lastEvent                     *event.Event
+	finalResponse                 *model.Response
+	toolCalls                     []model.ToolCall
+}
+
+func newModelResponseProcessor(
+	ctx context.Context,
+	config modelExecutionConfig,
+	invocation *agent.Invocation,
+	runErr *error,
+) *modelResponseProcessor {
+	p := &modelResponseProcessor{
+		ctx:        ctx,
+		config:     config,
+		invocation: invocation,
+		tap:        newModelDeltaStreamTap(config.DeltaStream),
+	}
+
+	usageTrackingDisabled := invocation != nil && invocation.RunOptions.DisableResponseUsageTracking
+	if !usageTrackingDisabled {
+		p.timingInfo = invocation.GetOrCreateTimingInfo()
+		p.tracker = itelemetry.NewChatMetricsTracker(
+			ctx,
+			invocation,
+			config.Request,
+			p.timingInfo,
+			nil,
+			runErr,
+		)
+	}
+
+	p.author = config.NodeID
+	if p.author == "" && config.LLMModel != nil {
+		p.author = config.LLMModel.Info().Name
+	}
+
+	needAfterCallbacks := hasAfterModelCallbacks(invocation, config.ModelCallbacks)
+	jsonRepairEnabled := invocation != nil &&
+		jsonrepair.IsToolCallArgumentsJSONRepairEnabled(invocation)
+	p.partialEventIDsDisabled = invocation != nil && invocation.RunOptions.DisablePartialEventIDs
+	p.partialEventTimestampsDisabled = invocation != nil &&
+		invocation.RunOptions.DisablePartialEventTimestamps
+	emitFinalModelResponses := invocation != nil && invocation.RunOptions.GraphEmitFinalModelResponses
+	p.fastResponsePath = config.EventChan != nil &&
+		!needAfterCallbacks &&
+		!jsonRepairEnabled &&
+		invocation != nil &&
+		p.partialEventIDsDisabled &&
+		p.partialEventTimestampsDisabled &&
+		!emitFinalModelResponses
+
+	return p
+}
+
+func (p *modelResponseProcessor) close() {
+	if p == nil || p.tracker == nil {
+		return
+	}
+	p.tracker.RecordMetrics()()
+}
+
+func (p *modelResponseProcessor) consume(stream modelResponseStream) error {
+	if stream.Ch != nil && cap(stream.Ch) > 0 {
+		p.reusableEvents = make([]event.Event, cap(stream.Ch))
+	}
+	if stream.Ch != nil {
+		for response := range stream.Ch {
+			ok, err := p.handleResponse(response)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+		}
+		return nil
+	}
+
+	var streamErr error
+	stream.Seq(func(response *model.Response) bool {
+		ok, err := p.handleResponse(response)
+		if err != nil {
+			streamErr = err
+			return false
+		}
+		return ok
+	})
+	return streamErr
+}
+
+func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool, error) {
+	if response == nil {
+		return true, nil
+	}
+
+	p.tap.WriteDelta(response)
+	applyModelResponseTracking(response, p.tracker, p.timingInfo, &p.partialUsageFallback)
+
+	p.toolCalls = collectToolCallsFromResponse(p.toolCalls, response)
+	p.finalResponse = response
+
+	reusableEvent := nextReusableModelEvent(p.reusableEvents, &p.reusableEventIdx)
+	if p.fastResponsePath {
+		lastEvent, err := emitFastModelResponseEvent(
+			p.ctx,
+			p.invocation,
+			p.config,
+			response,
+			p.author,
+			p.partialEventIDsDisabled,
+			p.partialEventTimestampsDisabled,
+			reusableEvent,
+		)
+		p.lastEvent = lastEvent
+		if err != nil {
+			return false, err
+		}
+	} else {
+		var err error
+		p.ctx, p.lastEvent, err = processModelResponse(p.ctx, modelResponseConfig{
+			Response:       response,
+			ModelCallbacks: p.config.ModelCallbacks,
+			EventChan:      p.config.EventChan,
+			InvocationID:   p.config.InvocationID,
+			SessionID:      p.config.SessionID,
+			LLMModel:       p.config.LLMModel,
+			Request:        p.config.Request,
+			Span:           p.config.Span,
+			NodeID:         p.config.NodeID,
+		})
+		if err != nil {
+			return false, err
+		}
+	}
+
+	traceProcessedModelResponse(
+		p.config.Span,
+		p.tracker,
+		p.invocation,
+		p.config.Request,
+		response,
+		p.lastEvent,
+	)
+	return true, nil
+}
+
+func (p *modelResponseProcessor) finalize() (*model.Response, error) {
+	finalResponse, err := validateFinalModelResponse(p.config.Span, p.finalResponse)
+	if err != nil {
+		return nil, err
+	}
+	mergeToolCallsIntoFinalResponse(finalResponse, p.toolCalls)
+	p.tap.WriteFinalIfNoDelta(finalResponse)
+	return finalResponse, nil
+}
+
 // executeModelAndProcessResponses runs the model call and handles response-side
 // behavior such as streaming, callbacks, response events, telemetry, and final
 // response assembly. DisableModelExecutionEvents only controls the model
@@ -3468,125 +3638,17 @@ func executeModelAndProcessResponses(ctx context.Context, config modelExecutionC
 		)
 	}
 
-	usageTrackingDisabled := invocation != nil && invocation.RunOptions.DisableResponseUsageTracking
-	emitFinalModelResponses := invocation != nil && invocation.RunOptions.GraphEmitFinalModelResponses
+	processor := newModelResponseProcessor(ctx, config, invocation, &err)
+	defer processor.close()
 
-	var lastEvent *event.Event
-	var tracker *itelemetry.ChatMetricsTracker
-	var timingInfo *model.TimingInfo
-	var partialUsageFallback *model.Usage
-	if !usageTrackingDisabled {
-		timingInfo = invocation.GetOrCreateTimingInfo()
-		tracker = itelemetry.NewChatMetricsTracker(ctx, invocation, config.Request, timingInfo, nil, &err)
-		defer tracker.RecordMetrics()()
-	}
-
-	tap := newModelDeltaStreamTap(config.DeltaStream)
-
-	var finalResponse *model.Response
-	var toolCalls []model.ToolCall
-	reusableEventCap := 0
-	if stream.Ch != nil {
-		reusableEventCap = cap(stream.Ch)
-	}
-	var reusableEvents []event.Event
-	if reusableEventCap > 0 {
-		reusableEvents = make([]event.Event, reusableEventCap)
-	}
-	reusableEventIdx := 0
-
-	author := config.NodeID
-	if author == "" && config.LLMModel != nil {
-		author = config.LLMModel.Info().Name
-	}
-	needAfterCallbacks := hasAfterModelCallbacks(invocation, config.ModelCallbacks)
-	jsonRepairEnabled := invocation != nil &&
-		jsonrepair.IsToolCallArgumentsJSONRepairEnabled(invocation)
-	partialEventIDsDisabled := invocation != nil && invocation.RunOptions.DisablePartialEventIDs
-	partialEventTimestampsDisabled := invocation != nil && invocation.RunOptions.DisablePartialEventTimestamps
-	emitEnabled := config.EventChan != nil
-	fastResponsePath := emitEnabled &&
-		!needAfterCallbacks &&
-		!jsonRepairEnabled &&
-		invocation != nil &&
-		partialEventIDsDisabled &&
-		partialEventTimestampsDisabled &&
-		!emitFinalModelResponses
-
-	handleModelResponse := func(response *model.Response) bool {
-		if response == nil {
-			return true
-		}
-
-		tap.WriteDelta(response)
-		applyModelResponseTracking(response, tracker, timingInfo, &partialUsageFallback)
-
-		toolCalls = collectToolCallsFromResponse(toolCalls, response)
-		finalResponse = response
-
-		reusableEvent := nextReusableModelEvent(reusableEvents, &reusableEventIdx)
-		if fastResponsePath {
-			lastEvent, err = emitFastModelResponseEvent(
-				ctx,
-				invocation,
-				config,
-				response,
-				author,
-				partialEventIDsDisabled,
-				partialEventTimestampsDisabled,
-				reusableEvent,
-			)
-		} else {
-			ctx, lastEvent, err = processModelResponse(ctx, modelResponseConfig{
-				Response:       response,
-				ModelCallbacks: config.ModelCallbacks,
-				EventChan:      config.EventChan,
-				InvocationID:   config.InvocationID,
-				SessionID:      config.SessionID,
-				LLMModel:       config.LLMModel,
-				Request:        config.Request,
-				Span:           config.Span,
-				NodeID:         config.NodeID,
-			})
-		}
-		if err != nil {
-			return false
-		}
-
-		traceProcessedModelResponse(
-			config.Span,
-			tracker,
-			invocation,
-			config.Request,
-			response,
-			lastEvent,
-		)
-		return true
-	}
-
-	if stream.Ch != nil {
-		for response := range stream.Ch {
-			if !handleModelResponse(response) {
-				break
-			}
-		}
-	} else if stream.Seq != nil {
-		stream.Seq(func(response *model.Response) bool {
-			return handleModelResponse(response)
-		})
+	if err := processor.consume(stream); err != nil {
+		return nil, err
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	finalResponse, err = validateFinalModelResponse(config.Span, finalResponse)
-	if err != nil {
-		return nil, err
-	}
-	mergeToolCallsIntoFinalResponse(finalResponse, toolCalls)
-
-	tap.WriteFinalIfNoDelta(finalResponse)
-	return finalResponse, nil
+	return processor.finalize()
 }
 
 // executeModelWithEvents preserves the previous helper name for existing
