@@ -43,6 +43,45 @@ func deepCopyAny(value any) any {
 
 // deepCopyFastPath handles common JSON-friendly types without reflection.
 func deepCopyFastPath(value any) (any, bool) {
+	if out, ok := deepCopyPrimitiveFastPath(value); ok {
+		return out, true
+	}
+	switch v := value.(type) {
+	case map[string]any:
+		return deepCopyMapStringAny(v), true
+	case map[string][]byte:
+		return deepCopyMapStringBytes(v), true
+	case []any:
+		return deepCopySliceAny(v), true
+	case []string:
+		return cloneSlice(v), true
+	case []int:
+		return cloneSlice(v), true
+	case []float64:
+		return cloneSlice(v), true
+	case []byte:
+		return cloneSlice(v), true
+	case []model.Message:
+		return deepCopyModelMessages(v), true
+	case MessageOp:
+		op, ok := deepCopyMessageOp(v)
+		if !ok {
+			return nil, false
+		}
+		return op, true
+	case []MessageOp:
+		out, ok := deepCopyMessageOps(v)
+		if !ok {
+			return nil, false
+		}
+		return out, true
+	case time.Time:
+		return v, true
+	}
+	return nil, false
+}
+
+func deepCopyPrimitiveFastPath(value any) (any, bool) {
 	switch v := value.(type) {
 	case nil:
 		return nil, true
@@ -82,85 +121,53 @@ func deepCopyFastPath(value any) (any, bool) {
 		return v, true
 	case time.Duration:
 		return v, true
-	case map[string]any:
-		if v == nil {
-			return map[string]any(nil), true
-		}
-		copied := make(map[string]any, len(v))
-		for k, vv := range v {
-			copied[k] = deepCopyAny(vv)
-		}
-		return copied, true
-	case map[string][]byte:
-		if v == nil {
-			return map[string][]byte(nil), true
-		}
-		copied := make(map[string][]byte, len(v))
-		for k, b := range v {
-			if b == nil {
-				copied[k] = nil
-				continue
-			}
-			out := make([]byte, len(b))
-			copy(out, b)
-			copied[k] = out
-		}
-		return copied, true
-	case []any:
-		if v == nil {
-			return []any(nil), true
-		}
-		copied := make([]any, len(v))
-		for i := range v {
-			copied[i] = deepCopyAny(v[i])
-		}
-		return copied, true
-	case []string:
-		if v == nil {
-			return []string(nil), true
-		}
-		copied := make([]string, len(v))
-		copy(copied, v)
-		return copied, true
-	case []int:
-		if v == nil {
-			return []int(nil), true
-		}
-		copied := make([]int, len(v))
-		copy(copied, v)
-		return copied, true
-	case []float64:
-		if v == nil {
-			return []float64(nil), true
-		}
-		copied := make([]float64, len(v))
-		copy(copied, v)
-		return copied, true
-	case []byte:
-		if v == nil {
-			return []byte(nil), true
-		}
-		copied := make([]byte, len(v))
-		copy(copied, v)
-		return copied, true
-	case []model.Message:
-		return deepCopyModelMessages(v), true
-	case MessageOp:
-		op, ok := deepCopyMessageOp(v)
-		if !ok {
-			return nil, false
-		}
-		return op, true
-	case []MessageOp:
-		out, ok := deepCopyMessageOps(v)
-		if !ok {
-			return nil, false
-		}
-		return out, true
 	case time.Time:
 		return v, true
+	default:
+		return nil, false
 	}
-	return nil, false
+}
+
+func deepCopyMapStringAny(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	copied := make(map[string]any, len(in))
+	for k, v := range in {
+		copied[k] = deepCopyAny(v)
+	}
+	return copied
+}
+
+func deepCopyMapStringBytes(in map[string][]byte) map[string][]byte {
+	if in == nil {
+		return nil
+	}
+	copied := make(map[string][]byte, len(in))
+	for k, v := range in {
+		copied[k] = cloneSlice(v)
+	}
+	return copied
+}
+
+func deepCopySliceAny(in []any) []any {
+	if in == nil {
+		return nil
+	}
+	copied := make([]any, len(in))
+	for i := range in {
+		copied[i] = deepCopyAny(in[i])
+	}
+	return copied
+}
+
+func cloneSlice[T any](in []T) []T {
+	if in == nil {
+		return nil
+	}
+	out := make([]T, len(in))
+	copy(out, in)
+	return out
 }
 
 func deepCopyMessageOps(in []MessageOp) ([]MessageOp, bool) {

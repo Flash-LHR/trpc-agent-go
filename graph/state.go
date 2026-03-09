@@ -649,157 +649,136 @@ func MessageReducer(existing, update any) any {
 	case nil:
 		return existingMsgs
 	case model.Message:
-		out := make([]model.Message, len(existingMsgs)+1)
-		copy(out, existingMsgs)
-		out[len(existingMsgs)] = x
-		return out
+		return appendOwnedMessage(existingMsgs, x)
 	case []model.Message:
-		if len(x) == 0 {
-			return existingMsgs
-		}
-		out := make([]model.Message, len(existingMsgs)+len(x))
-		copy(out, existingMsgs)
-		copy(out[len(existingMsgs):], x)
-		return out
+		return appendOwnedMessages(existingMsgs, x)
 	case AppendMessages:
-		if len(x.Items) == 0 {
-			return existingMsgs
-		}
-		out := make([]model.Message, len(existingMsgs)+len(x.Items))
-		copy(out, existingMsgs)
-		copy(out[len(existingMsgs):], x.Items)
-		return out
+		return appendOwnedMessages(existingMsgs, x.Items)
 	case ReplaceLastUser:
-		// Work on a copy to avoid mutating the existing slice which may be shared
-		// by other goroutines.
-		out := make([]model.Message, len(existingMsgs))
-		copy(out, existingMsgs)
-		for i := len(out) - 1; i >= 0; i-- {
-			if out[i].Role != model.RoleUser {
-				continue
-			}
-			// Replace the content while preserving other fields.
-			out[i] = model.Message{
-				Role:             model.RoleUser,
-				Content:          x.Content,
-				ContentParts:     out[i].ContentParts,
-				ToolID:           out[i].ToolID,
-				ToolName:         out[i].ToolName,
-				ToolCalls:        out[i].ToolCalls,
-				ReasoningContent: out[i].ReasoningContent,
-			}
-			return out
-		}
-		// No user message found; append a new one.
-		out2 := make([]model.Message, len(out)+1)
-		copy(out2, out)
-		out2[len(out)] = model.NewUserMessage(x.Content)
-		return out2
+		return replaceLastUserOwned(existingMsgs, x.Content)
 	case RemoveAllMessages:
 		return nil
 	case MessageOp:
-		// Common ops are handled above; fall back to the generic interface for
-		// any custom implementations.
-		out := make([]model.Message, len(existingMsgs))
-		copy(out, existingMsgs)
-		out = x.Apply(out)
-		// Ensure the returned slice doesn't retain extra capacity which could
-		// allow in-place appends to mutate previously-shared backing arrays.
-		if cap(out) != len(out) {
-			out = append([]model.Message(nil), out...)
-		}
-		return out
+		return applyGenericMessageOp(existingMsgs, x)
 	case []MessageOp:
-		// Fast path: only AppendMessages ops (and nils). This is common for
-		// streaming workflows and allows a single allocation.
-		onlyAppend := true
-		totalAppend := 0
-		for _, op := range x {
-			switch v := op.(type) {
-			case nil:
-				continue
-			case AppendMessages:
-				totalAppend += len(v.Items)
-			default:
-				onlyAppend = false
-			}
-		}
-		if onlyAppend {
-			if totalAppend == 0 {
-				return existingMsgs
-			}
-			out := make([]model.Message, len(existingMsgs)+totalAppend)
-			copy(out, existingMsgs)
-			pos := len(existingMsgs)
-			for _, op := range x {
-				v, ok := op.(AppendMessages)
-				if !ok || len(v.Items) == 0 {
-					continue
-				}
-				copy(out[pos:], v.Items)
-				pos += len(v.Items)
-			}
-			return out
-		}
-
-		// Generic path: apply each op to an owned slice to prevent mutating
-		// shared backing arrays.
-		out := make([]model.Message, len(existingMsgs))
-		copy(out, existingMsgs)
-		for _, op := range x {
-			switch v := op.(type) {
-			case nil:
-				continue
-			case AppendMessages:
-				if len(v.Items) == 0 {
-					continue
-				}
-				next := make([]model.Message, len(out)+len(v.Items))
-				copy(next, out)
-				copy(next[len(out):], v.Items)
-				out = next
-			case ReplaceLastUser:
-				// Replace in place on the owned slice. Append if no user message exists.
-				replaced := false
-				for i := len(out) - 1; i >= 0; i-- {
-					if out[i].Role != model.RoleUser {
-						continue
-					}
-					out[i] = model.Message{
-						Role:             model.RoleUser,
-						Content:          v.Content,
-						ContentParts:     out[i].ContentParts,
-						ToolID:           out[i].ToolID,
-						ToolName:         out[i].ToolName,
-						ToolCalls:        out[i].ToolCalls,
-						ReasoningContent: out[i].ReasoningContent,
-					}
-					replaced = true
-					break
-				}
-				if !replaced {
-					next := make([]model.Message, len(out)+1)
-					copy(next, out)
-					next[len(out)] = model.NewUserMessage(v.Content)
-					out = next
-				} else if cap(out) != len(out) {
-					// Keep capacity tightly bounded to avoid future in-place appends
-					// mutating shared backing arrays after this reducer returns.
-					out = append([]model.Message(nil), out...)
-				}
-			case RemoveAllMessages:
-				out = nil
-			default:
-				// Unknown/custom op: apply on the owned slice, then tighten capacity.
-				out = v.Apply(out)
-				if cap(out) != len(out) {
-					out = append([]model.Message(nil), out...)
-				}
-			}
-		}
-		return out
+		return applyMessageOps(existingMsgs, x)
 	default:
 		// Fallback to default behavior for unsupported types
 		return update
 	}
+}
+
+func appendOwnedMessage(existing []model.Message, msg model.Message) []model.Message {
+	out := make([]model.Message, len(existing)+1)
+	copy(out, existing)
+	out[len(existing)] = msg
+	return out
+}
+
+func appendOwnedMessages(existing, updates []model.Message) []model.Message {
+	if len(updates) == 0 {
+		return existing
+	}
+	out := make([]model.Message, len(existing)+len(updates))
+	copy(out, existing)
+	copy(out[len(existing):], updates)
+	return out
+}
+
+func replaceLastUserOwned(existing []model.Message, content string) []model.Message {
+	out := append([]model.Message(nil), existing...)
+	for i := len(out) - 1; i >= 0; i-- {
+		if out[i].Role != model.RoleUser {
+			continue
+		}
+		out[i] = replaceUserMessageContent(out[i], content)
+		return out
+	}
+	return appendOwnedMessage(out, model.NewUserMessage(content))
+}
+
+func replaceUserMessageContent(msg model.Message, content string) model.Message {
+	return model.Message{
+		Role:             model.RoleUser,
+		Content:          content,
+		ContentParts:     msg.ContentParts,
+		ToolID:           msg.ToolID,
+		ToolName:         msg.ToolName,
+		ToolCalls:        msg.ToolCalls,
+		ReasoningContent: msg.ReasoningContent,
+	}
+}
+
+func applyGenericMessageOp(existing []model.Message, op MessageOp) []model.Message {
+	out := append([]model.Message(nil), existing...)
+	out = op.Apply(out)
+	if cap(out) != len(out) {
+		out = append([]model.Message(nil), out...)
+	}
+	return out
+}
+
+func applyMessageOps(existing []model.Message, ops []MessageOp) []model.Message {
+	if out, ok := fastAppendMessageOps(existing, ops); ok {
+		return out
+	}
+
+	out := append([]model.Message(nil), existing...)
+	for _, op := range ops {
+		out = applyOwnedMessageOp(out, op)
+	}
+	return out
+}
+
+func fastAppendMessageOps(existing []model.Message, ops []MessageOp) ([]model.Message, bool) {
+	totalAppend := 0
+	for _, op := range ops {
+		switch v := op.(type) {
+		case nil:
+			continue
+		case AppendMessages:
+			totalAppend += len(v.Items)
+		default:
+			return nil, false
+		}
+	}
+	if totalAppend == 0 {
+		return existing, true
+	}
+	out := make([]model.Message, len(existing)+totalAppend)
+	copy(out, existing)
+	pos := len(existing)
+	for _, op := range ops {
+		appendOp, ok := op.(AppendMessages)
+		if !ok || len(appendOp.Items) == 0 {
+			continue
+		}
+		copy(out[pos:], appendOp.Items)
+		pos += len(appendOp.Items)
+	}
+	return out, true
+}
+
+func applyOwnedMessageOp(out []model.Message, op MessageOp) []model.Message {
+	switch v := op.(type) {
+	case nil:
+		return out
+	case AppendMessages:
+		return appendOwnedMessages(out, v.Items)
+	case ReplaceLastUser:
+		replaced := replaceLastUserOwned(out, v.Content)
+		return tightenMessageCapacity(replaced)
+	case RemoveAllMessages:
+		return nil
+	default:
+		updated := v.Apply(out)
+		return tightenMessageCapacity(updated)
+	}
+}
+
+func tightenMessageCapacity(out []model.Message) []model.Message {
+	if cap(out) == len(out) {
+		return out
+	}
+	return append([]model.Message(nil), out...)
 }
