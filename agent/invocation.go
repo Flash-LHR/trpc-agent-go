@@ -109,9 +109,8 @@ type Invocation struct {
 	// ArtifactService is the service for managing artifacts.
 	ArtifactService artifact.Service
 
-	// noticeChannels is used to signal when events are written to the session.
-	noticeChannels map[string]chan any
-	noticeMu       *sync.Mutex
+	// notice is used to signal when events are written to the session.
+	notice *noticeState
 
 	// eventFilterKey is used to filter events for flow or agent
 	eventFilterKey string
@@ -157,6 +156,53 @@ type Invocation struct {
 	// in this invocation. This is used together with MaxToolIterations
 	// to guard against unbounded tool_call -> LLM -> tool_call loops.
 	toolIterationCount int
+}
+
+type noticeState struct {
+	mu       sync.Mutex
+	channels map[string]chan any
+}
+
+// noticeStateSentinel marks an invocation as properly initialized (created via
+// NewInvocation/Clone) without allocating a per-invocation noticeState unless
+// it's actually used.
+var noticeStateSentinel = &noticeState{}
+
+func (inv *Invocation) ensureNotice() *noticeState {
+	if inv == nil {
+		return nil
+	}
+	// Preserve the previous contract: invocations that are not created via
+	// NewInvocation/Clone have a nil notice state and notice operations should
+	// fail loudly to surface misuse.
+	if inv.notice == nil {
+		return nil
+	}
+	if inv.notice != noticeStateSentinel {
+		return inv.notice
+	}
+
+	// Preserve Clone semantics: clones share the same notice state.
+	if inv.parent != nil {
+		ns := inv.parent.ensureNotice()
+		if ns == nil {
+			return nil
+		}
+		inv.stateMu.Lock()
+		if inv.notice == noticeStateSentinel {
+			inv.notice = ns
+		}
+		inv.stateMu.Unlock()
+		return ns
+	}
+
+	inv.stateMu.Lock()
+	if inv.notice == noticeStateSentinel {
+		inv.notice = &noticeState{}
+	}
+	ns := inv.notice
+	inv.stateMu.Unlock()
+	return ns
 }
 
 // DefaultWaitNoticeTimeoutErr is the default error returned when a wait notice times out.
@@ -315,6 +361,71 @@ func WithStreamMode(modes ...StreamMode) RunOption {
 				break
 			}
 		}
+	}
+}
+
+// WithDisableResponseUsageTracking disables attaching usage and timing info to streaming responses.
+func WithDisableResponseUsageTracking(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableResponseUsageTracking = disable
+	}
+}
+
+// WithDisableTracing disables creating OpenTelemetry spans for this run.
+func WithDisableTracing(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableTracing = disable
+	}
+}
+
+// WithDisableModelExecutionEvents disables emitting model execution events for this run.
+func WithDisableModelExecutionEvents(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableModelExecutionEvents = disable
+	}
+}
+
+// WithDisableEventInjection disables injecting invocation metadata into emitted events.
+func WithDisableEventInjection(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableEventInjection = disable
+	}
+}
+
+// WithDisablePartialEventIDs disables generating IDs for partial response events.
+func WithDisablePartialEventIDs(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisablePartialEventIDs = disable
+	}
+}
+
+// WithDisablePartialEventTimestamps disables generating timestamps for partial response events.
+func WithDisablePartialEventTimestamps(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisablePartialEventTimestamps = disable
+	}
+}
+
+// WithDisableGraphCompletionEvent disables emitting the final graph completion event.
+func WithDisableGraphCompletionEvent(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableGraphCompletionEvent = disable
+	}
+}
+
+// WithDisableGraphExecutorEvents disables emitting graph executor lifecycle events.
+func WithDisableGraphExecutorEvents(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableGraphExecutorEvents = disable
+	}
+}
+
+// WithEventChannelBufferSize overrides the event channel buffer size for this run.
+//
+// When size <= 0, the flow default is used.
+func WithEventChannelBufferSize(size int) RunOption {
+	return func(opts *RunOptions) {
+		opts.EventChannelBufferSize = size
 	}
 }
 
@@ -620,6 +731,35 @@ type RunOptions struct {
 	// filtering and preserve the existing behavior.
 	StreamModes []StreamMode
 
+	// DisableResponseUsageTracking disables attaching usage and timing info to streaming responses.
+	DisableResponseUsageTracking bool
+
+	// DisableTracing disables creating OpenTelemetry spans for this run.
+	DisableTracing bool
+
+	// DisableModelExecutionEvents disables emitting model execution start/complete events.
+	DisableModelExecutionEvents bool
+
+	// DisableEventInjection disables injecting invocation metadata into emitted events.
+	DisableEventInjection bool
+
+	// DisablePartialEventIDs disables generating IDs for partial response events.
+	DisablePartialEventIDs bool
+
+	// DisablePartialEventTimestamps disables generating timestamps for partial response events.
+	DisablePartialEventTimestamps bool
+
+	// DisableGraphCompletionEvent disables emitting the final graph completion event.
+	DisableGraphCompletionEvent bool
+
+	// DisableGraphExecutorEvents disables emitting graph executor lifecycle events.
+	DisableGraphExecutorEvents bool
+
+	// EventChannelBufferSize overrides the flow's default event channel buffer size for this run.
+	//
+	// When <= 0, the flow uses its configured ChannelBufferSize.
+	EventChannelBufferSize int
+
 	// RequestID is the request id of the request.
 	RequestID string
 
@@ -724,14 +864,17 @@ type RunOptions struct {
 
 // NewInvocation create a new invocation
 func NewInvocation(invocationOpts ...InvocationOptions) *Invocation {
-	inv := &Invocation{
-		InvocationID:   uuid.NewString(),
-		noticeMu:       &sync.Mutex{},
-		noticeChannels: make(map[string]chan any),
-	}
+	inv := &Invocation{}
 
 	for _, opt := range invocationOpts {
 		opt(inv)
+	}
+
+	if inv.InvocationID == "" {
+		inv.InvocationID = uuid.NewString()
+	}
+	if inv.notice == nil {
+		inv.notice = noticeStateSentinel
 	}
 
 	if inv.Branch == "" {
@@ -751,7 +894,6 @@ func (inv *Invocation) Clone(invocationOpts ...InvocationOptions) *Invocation {
 		return nil
 	}
 	newInv := &Invocation{
-		InvocationID:    uuid.NewString(),
 		Session:         inv.Session,
 		SessionService:  inv.SessionService,
 		Message:         inv.Message,
@@ -759,8 +901,7 @@ func (inv *Invocation) Clone(invocationOpts ...InvocationOptions) *Invocation {
 		MemoryService:   inv.MemoryService,
 		ArtifactService: inv.ArtifactService,
 		Plugins:         inv.Plugins,
-		noticeMu:        inv.noticeMu,
-		noticeChannels:  inv.noticeChannels,
+		notice:          inv.notice,
 		eventFilterKey:  inv.eventFilterKey,
 		parent:          inv,
 		state:           inv.cloneState(),
@@ -768,6 +909,13 @@ func (inv *Invocation) Clone(invocationOpts ...InvocationOptions) *Invocation {
 
 	for _, opt := range invocationOpts {
 		opt(newInv)
+	}
+
+	if newInv.InvocationID == "" {
+		newInv.InvocationID = uuid.NewString()
+	}
+	if newInv.notice == nil {
+		newInv.notice = noticeStateSentinel
 	}
 
 	if newInv.Branch != "" {
@@ -846,21 +994,34 @@ func EmitEvent(ctx context.Context, inv *Invocation, ch chan<- *event.Event,
 	if ch == nil || e == nil {
 		return nil
 	}
-	InjectIntoEvent(inv, e)
+	traceEnabled := log.IsTraceEnabled()
+	// Hot-path: when event injection is disabled and trace logging is off, we can
+	// forward directly to the event package to avoid extra bookkeeping.
+	if inv != nil &&
+		inv.RunOptions.DisableEventInjection &&
+		!traceEnabled {
+		return event.EmitEvent(ctx, ch, e)
+	}
+	injectionDisabled := inv != nil && inv.RunOptions.DisableEventInjection
+	if !injectionDisabled {
+		InjectIntoEvent(inv, e)
+	}
 	var agentName, requestID string
 	if inv != nil {
 		agentName = inv.AgentName
 		requestID = inv.RunOptions.RequestID
 	}
-	log.Tracef(
-		"[agent.EmitEvent]queue monitoring:RequestID: %s channel capacity: "+
-			"%d, current length: %d, branch: %s, agent name:%s",
-		requestID,
-		cap(ch),
-		len(ch),
-		e.Branch,
-		agentName,
-	)
+	if traceEnabled {
+		log.Tracef(
+			"[agent.EmitEvent]queue monitoring:RequestID: %s channel capacity: "+
+				"%d, current length: %d, branch: %s, agent name:%s",
+			requestID,
+			cap(ch),
+			len(ch),
+			e.Branch,
+			agentName,
+		)
+	}
 	return event.EmitEvent(ctx, ch, e)
 }
 
@@ -1059,56 +1220,78 @@ func (inv *Invocation) AddNoticeChannelAndWait(ctx context.Context, key string, 
 
 // AddNoticeChannel add a new notice channel
 func (inv *Invocation) AddNoticeChannel(ctx context.Context, key string) chan any {
-	if inv == nil || inv.noticeMu == nil {
+	if inv == nil {
 		log.ErrorContext(
 			ctx,
-			"noticeMu is uninitialized, please use agent.NewInvocation or "+
+			"notice state is uninitialized, please use agent.NewInvocation or "+
 				"Clone method to create Invocation",
 		)
 		return nil
 	}
-	inv.noticeMu.Lock()
-	defer inv.noticeMu.Unlock()
+	notice := inv.ensureNotice()
+	if notice == nil {
+		log.ErrorContext(
+			ctx,
+			"notice state is uninitialized, please use agent.NewInvocation or "+
+				"Clone method to create Invocation",
+		)
+		return nil
+	}
+	notice.mu.Lock()
+	defer notice.mu.Unlock()
 
-	if ch, ok := inv.noticeChannels[key]; ok {
+	if ch, ok := notice.channels[key]; ok {
 		return ch
 	}
 
 	ch := make(chan any)
-	if inv.noticeChannels == nil {
-		inv.noticeChannels = make(map[string]chan any)
+	if notice.channels == nil {
+		notice.channels = make(map[string]chan any)
 	}
-	inv.noticeChannels[key] = ch
+	notice.channels[key] = ch
 
 	return ch
 }
 
 // NotifyCompletion notify completion signal to waiting task
 func (inv *Invocation) NotifyCompletion(ctx context.Context, key string) error {
-	if inv == nil || inv.noticeMu == nil {
+	if inv == nil {
 		log.ErrorContext(
 			ctx,
-			"noticeMu is uninitialized, please use agent.NewInvocation or "+
+			"notice state is uninitialized, please use agent.NewInvocation or "+
 				"Clone method to create Invocation",
 		)
 		return fmt.Errorf(
-			"noticeMu is uninitialized, please use agent.NewInvocation or "+
+			"notice state is uninitialized, please use agent.NewInvocation or "+
 				"Clone method to create Invocation key:%s",
 			key,
 		)
 	}
-	inv.noticeMu.Lock()
-	defer inv.noticeMu.Unlock()
+	notice := inv.ensureNotice()
+	if notice == nil {
+		log.ErrorContext(
+			ctx,
+			"notice state is uninitialized, please use agent.NewInvocation or "+
+				"Clone method to create Invocation",
+		)
+		return fmt.Errorf(
+			"notice state is uninitialized, please use agent.NewInvocation or "+
+				"Clone method to create Invocation key:%s",
+			key,
+		)
+	}
+	notice.mu.Lock()
+	defer notice.mu.Unlock()
 
-	ch, ok := inv.noticeChannels[key]
+	ch, ok := notice.channels[key]
 	// channel not found, create a new one and close it.
 	// May involve notification followed by waiting.
 	if !ok {
 		ch = make(chan any)
-		if inv.noticeChannels == nil {
-			inv.noticeChannels = make(map[string]chan any)
+		if notice.channels == nil {
+			notice.channels = make(map[string]chan any)
 		}
-		inv.noticeChannels[key] = ch
+		notice.channels[key] = ch
 		close(ch)
 		return nil
 	}
@@ -1130,18 +1313,27 @@ func (inv *Invocation) NotifyCompletion(ctx context.Context, key string) error {
 // The 'Invocation' instance created via the NewInvocation method ​​should be disposed​​
 // upon completion to prevent resource leaks.
 func (inv *Invocation) CleanupNotice(ctx context.Context) {
-	if inv == nil || inv.noticeMu == nil {
+	if inv == nil {
 		log.ErrorContext(
 			ctx,
-			"noticeMu is uninitialized, please use agent.NewInvocation or "+
+			"notice state is uninitialized, please use agent.NewInvocation or "+
 				"Clone method to create Invocation",
 		)
 		return
 	}
-	inv.noticeMu.Lock()
-	defer inv.noticeMu.Unlock()
+	notice := inv.ensureNotice()
+	if notice == nil {
+		log.ErrorContext(
+			ctx,
+			"notice state is uninitialized, please use agent.NewInvocation or "+
+				"Clone method to create Invocation",
+		)
+		return
+	}
+	notice.mu.Lock()
+	defer notice.mu.Unlock()
 
-	for _, ch := range inv.noticeChannels {
+	for _, ch := range notice.channels {
 		select {
 		case _, isOpen := <-ch:
 			if isOpen {
@@ -1151,7 +1343,7 @@ func (inv *Invocation) CleanupNotice(ctx context.Context) {
 			close(ch)
 		}
 	}
-	inv.noticeChannels = nil
+	notice.channels = nil
 }
 
 // GetCustomAgentConfig retrieves configuration for a specific custom agent type.

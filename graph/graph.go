@@ -528,7 +528,10 @@ func (g *Graph) getAllChannels() map[string]*channel.Channel {
 func (g *Graph) getTriggerToNodes() map[string][]string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	result := make(map[string][]string)
+	if len(g.triggerToNodes) == 0 {
+		return nil
+	}
+	result := make(map[string][]string, len(g.triggerToNodes))
 	for k, v := range g.triggerToNodes {
 		result[k] = append([]string{}, v...)
 	}

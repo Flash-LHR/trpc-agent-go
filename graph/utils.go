@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"reflect"
 	"time"
+
+	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 var (
@@ -32,44 +34,270 @@ func deepCopyAny(value any) any {
 		return copier.DeepCopy()
 	}
 
-	visited := make(map[uintptr]any)
 	if out, ok := deepCopyFastPath(value); ok {
 		return out
 	}
+	visited := make(map[uintptr]any)
 	return deepCopyReflect(reflect.ValueOf(value), visited)
 }
 
 // deepCopyFastPath handles common JSON-friendly types without reflection.
 func deepCopyFastPath(value any) (any, bool) {
 	switch v := value.(type) {
+	case nil:
+		return nil, true
+	case bool:
+		return v, true
+	case int:
+		return v, true
+	case int8:
+		return v, true
+	case int16:
+		return v, true
+	case int32:
+		return v, true
+	case int64:
+		return v, true
+	case uint:
+		return v, true
+	case uint8:
+		return v, true
+	case uint16:
+		return v, true
+	case uint32:
+		return v, true
+	case uint64:
+		return v, true
+	case uintptr:
+		return v, true
+	case float32:
+		return v, true
+	case float64:
+		return v, true
+	case complex64:
+		return v, true
+	case complex128:
+		return v, true
+	case string:
+		return v, true
+	case time.Duration:
+		return v, true
 	case map[string]any:
+		if v == nil {
+			return nil, true
+		}
 		copied := make(map[string]any, len(v))
 		for k, vv := range v {
 			copied[k] = deepCopyAny(vv)
 		}
 		return copied, true
+	case map[string][]byte:
+		if v == nil {
+			return nil, true
+		}
+		copied := make(map[string][]byte, len(v))
+		for k, b := range v {
+			if b == nil {
+				copied[k] = nil
+				continue
+			}
+			out := make([]byte, len(b))
+			copy(out, b)
+			copied[k] = out
+		}
+		return copied, true
 	case []any:
+		if v == nil {
+			return nil, true
+		}
 		copied := make([]any, len(v))
 		for i := range v {
 			copied[i] = deepCopyAny(v[i])
 		}
 		return copied, true
 	case []string:
+		if v == nil {
+			return nil, true
+		}
 		copied := make([]string, len(v))
 		copy(copied, v)
 		return copied, true
 	case []int:
+		if v == nil {
+			return nil, true
+		}
 		copied := make([]int, len(v))
 		copy(copied, v)
 		return copied, true
 	case []float64:
+		if v == nil {
+			return nil, true
+		}
 		copied := make([]float64, len(v))
 		copy(copied, v)
 		return copied, true
+	case []byte:
+		if v == nil {
+			return nil, true
+		}
+		copied := make([]byte, len(v))
+		copy(copied, v)
+		return copied, true
+	case []model.Message:
+		return deepCopyModelMessages(v), true
+	case MessageOp:
+		op, ok := deepCopyMessageOp(v)
+		if !ok {
+			return nil, false
+		}
+		return op, true
+	case []MessageOp:
+		out, ok := deepCopyMessageOps(v)
+		if !ok {
+			return nil, false
+		}
+		return out, true
 	case time.Time:
 		return v, true
 	}
 	return nil, false
+}
+
+func deepCopyMessageOps(in []MessageOp) ([]MessageOp, bool) {
+	if in == nil {
+		return nil, true
+	}
+	out := make([]MessageOp, len(in))
+	for i, op := range in {
+		if op == nil {
+			continue
+		}
+		copied, ok := deepCopyMessageOp(op)
+		if !ok {
+			return nil, false
+		}
+		out[i] = copied
+	}
+	return out, true
+}
+
+func deepCopyMessageOp(op MessageOp) (MessageOp, bool) {
+	switch v := op.(type) {
+	case AppendMessages:
+		if v.Items != nil {
+			v.Items = deepCopyModelMessages(v.Items)
+		}
+		return v, true
+	case ReplaceLastUser:
+		return v, true
+	case RemoveAllMessages:
+		return v, true
+	default:
+		return nil, false
+	}
+}
+
+func deepCopyModelMessages(in []model.Message) []model.Message {
+	if in == nil {
+		return nil
+	}
+	out := make([]model.Message, len(in))
+	for i := range in {
+		out[i] = in[i]
+		if parts := in[i].ContentParts; parts != nil {
+			out[i].ContentParts = deepCopyModelContentParts(parts)
+		}
+		if calls := in[i].ToolCalls; calls != nil {
+			out[i].ToolCalls = deepCopyModelToolCalls(calls)
+		}
+	}
+	return out
+}
+
+func deepCopyModelContentParts(in []model.ContentPart) []model.ContentPart {
+	if in == nil {
+		return nil
+	}
+	out := make([]model.ContentPart, len(in))
+	for i := range in {
+		out[i] = in[i]
+		if in[i].Text != nil {
+			s := *in[i].Text
+			out[i].Text = &s
+		}
+		if in[i].Image != nil {
+			out[i].Image = deepCopyModelImage(in[i].Image)
+		}
+		if in[i].Audio != nil {
+			out[i].Audio = deepCopyModelAudio(in[i].Audio)
+		}
+		if in[i].File != nil {
+			out[i].File = deepCopyModelFile(in[i].File)
+		}
+	}
+	return out
+}
+
+func deepCopyModelImage(in *model.Image) *model.Image {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.Data != nil {
+		out.Data = make([]byte, len(in.Data))
+		copy(out.Data, in.Data)
+	}
+	return &out
+}
+
+func deepCopyModelAudio(in *model.Audio) *model.Audio {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.Data != nil {
+		out.Data = make([]byte, len(in.Data))
+		copy(out.Data, in.Data)
+	}
+	return &out
+}
+
+func deepCopyModelFile(in *model.File) *model.File {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.Data != nil {
+		out.Data = make([]byte, len(in.Data))
+		copy(out.Data, in.Data)
+	}
+	return &out
+}
+
+func deepCopyModelToolCalls(in []model.ToolCall) []model.ToolCall {
+	if in == nil {
+		return nil
+	}
+	out := make([]model.ToolCall, len(in))
+	for i := range in {
+		out[i] = in[i]
+		if in[i].Index != nil {
+			idx := *in[i].Index
+			out[i].Index = &idx
+		}
+		if args := in[i].Function.Arguments; args != nil {
+			out[i].Function.Arguments = make([]byte, len(args))
+			copy(out[i].Function.Arguments, args)
+		}
+		if extra := in[i].ExtraFields; extra != nil {
+			outExtra := make(map[string]any, len(extra))
+			for k, v := range extra {
+				outExtra[k] = deepCopyAny(v)
+			}
+			out[i].ExtraFields = outExtra
+		}
+	}
+	return out
 }
 
 // deepCopyReflect performs a deep copy using reflection with cycle detection.

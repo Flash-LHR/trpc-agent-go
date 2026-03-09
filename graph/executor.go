@@ -20,10 +20,12 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph/internal/channel"
@@ -266,17 +268,37 @@ func (e *Executor) Execute(
 		return nil, errors.New("invocation is nil")
 	}
 	agent.GetOrCreateStreamHub(invocation)
+
+	eventChanSize := e.channelBufferSize
+	if invocation.RunOptions.EventChannelBufferSize > 0 {
+		eventChanSize = invocation.RunOptions.EventChannelBufferSize
+	}
+
 	startTime := time.Now()
 	// Create event channel.
-	eventChan := make(chan *event.Event, e.channelBufferSize)
-	// Start execution in a goroutine.
+	eventChan := make(chan *event.Event, eventChanSize)
+	// Start execution asynchronously.
 	runCtx := agent.CloneContext(ctx)
 	go func(ctx context.Context) {
-		ctx, span := trace.Tracer.Start(ctx, itelemetry.NewWorkflowSpanName(fmt.Sprintf("execute_graph %s", invocation.AgentName)))
-		workflow := &itelemetry.Workflow{
-			Name:    fmt.Sprintf("execute_graph %s", invocation.AgentName),
-			ID:      invocation.AgentName,
-			Request: initialState.safeClone(),
+		var span oteltrace.Span
+		var workflow *itelemetry.Workflow
+		startedSpan := false
+		if invocation.RunOptions.DisableTracing {
+			span = oteltrace.SpanFromContext(ctx)
+		} else {
+			workflowName := "execute_graph " + invocation.AgentName
+			ctx, span = trace.Tracer.Start(
+				ctx,
+				itelemetry.NewWorkflowSpanName(workflowName),
+			)
+			startedSpan = true
+			if span != nil && span.IsRecording() {
+				workflow = &itelemetry.Workflow{
+					Name:    workflowName,
+					ID:      invocation.AgentName,
+					Request: initialState.safeClone(),
+				}
+			}
 		}
 		defer func() {
 			if r := recover(); r != nil {
@@ -287,14 +309,17 @@ func (e *Executor) Execute(
 					r,
 					string(stack),
 				)
-				workflow.Error = fmt.Errorf("executor panic: %v", r)
+				panicErr := fmt.Errorf("executor panic: %v", r)
+				if workflow != nil {
+					workflow.Error = panicErr
+				}
 				agent.EmitEvent(ctx, invocation, eventChan, NewPregelErrorEvent(
 					WithPregelEventInvocationID(invocation.InvocationID),
 					WithPregelEventStepNumber(-1),
-					WithPregelEventError(workflow.Error.Error()),
+					WithPregelEventError(panicErr.Error()),
 					WithPregelEventResponseError(
 						model.ResponseErrorFromError(
-							workflow.Error,
+							panicErr,
 							model.ErrorTypeFlowError,
 						),
 					),
@@ -302,8 +327,12 @@ func (e *Executor) Execute(
 			}
 			agent.GetOrCreateStreamHub(invocation).CloseAll(ctx.Err())
 			close(eventChan)
-			itelemetry.TraceWorkflow(span, workflow)
-			span.End()
+			if workflow != nil {
+				itelemetry.TraceWorkflow(span, workflow)
+			}
+			if startedSpan && span != nil {
+				span.End()
+			}
 		}()
 		if err := e.executeGraph(ctx, initialState, invocation, eventChan, startTime); err != nil {
 			// Check if this is an interrupt error.
@@ -312,7 +341,9 @@ func (e *Executor) Execute(
 				// The interrupt will be handled by the caller.
 				return
 			}
-			workflow.Error = err
+			if workflow != nil {
+				workflow.Error = err
+			}
 			// Emit error event for other errors.
 			agent.EmitEvent(ctx, invocation, eventChan, NewPregelErrorEvent(
 				WithPregelEventInvocationID(invocation.InvocationID),
@@ -427,7 +458,11 @@ func (e *Executor) executeGraph(
 		return err
 	}
 
-	agent.EmitEvent(ctx, invocation, eventChan, e.buildCompletionEvent(execCtx, startTime, stepsExecuted))
+	if invocation == nil || !invocation.RunOptions.DisableGraphCompletionEvent {
+		if err := agent.EmitEvent(ctx, invocation, eventChan, e.buildCompletionEvent(execCtx, startTime, stepsExecuted)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1694,7 +1729,14 @@ func getConfigKeys(config map[string]any) []string {
 
 // initializeState initializes the execution state with schema defaults.
 func (e *Executor) initializeState(initialState State) State {
-	execState := initialState.Clone()
+	defaultsHint := 0
+	if e.graph.Schema() != nil {
+		defaultsHint = len(e.graph.Schema().Fields)
+	}
+	execState := make(State, len(initialState)+defaultsHint)
+	for k, v := range initialState {
+		execState[k] = v
+	}
 	// Add schema defaults for missing fields.
 	if e.graph.Schema() != nil {
 		for key, field := range e.graph.Schema().Fields {
@@ -1720,7 +1762,7 @@ func (e *Executor) initializeChannels(execCtx *ExecutionContext, state State, up
 		return
 	}
 	for key, val := range state {
-		channelName := fmt.Sprintf("%s%s", ChannelInputPrefix, key)
+		channelName := ChannelInputPrefix + key
 		execCtx.channels.AddChannel(channelName, channel.BehaviorLastValue)
 		if updateChannels {
 			if ch, ok := execCtx.channels.GetChannel(channelName); ok && ch != nil {
@@ -1738,14 +1780,15 @@ func (e *Executor) planStep(ctx context.Context, invocation *agent.Invocation,
 	execCtx *ExecutionContext, step int) ([]*Task, error) {
 	var tasks []*Task
 
-	// Emit planning step event.
-	planEvent := NewPregelStepEvent(
-		WithPregelEventInvocationID(execCtx.InvocationID),
-		WithPregelEventStepNumber(step),
-		WithPregelEventPhase(PregelPhasePlanning),
-		WithPregelEventTaskCount(0),
-	)
-	agent.EmitEvent(ctx, invocation, execCtx.EventChan, planEvent)
+	if execCtx.EventChan != nil && (invocation == nil || !invocation.RunOptions.DisableGraphExecutorEvents) {
+		planEvent := NewPregelStepEvent(
+			WithPregelEventInvocationID(execCtx.InvocationID),
+			WithPregelEventStepNumber(step),
+			WithPregelEventPhase(PregelPhasePlanning),
+			WithPregelEventTaskCount(0),
+		)
+		agent.EmitEvent(ctx, invocation, execCtx.EventChan, planEvent)
+	}
 
 	// Check if we have nodes to execute from a resumed checkpoint stored in state
 	// This needs to be checked regardless of step number when resuming
@@ -1966,7 +2009,7 @@ func (e *Executor) createTask(nodeID string, state State, step int) *Task {
 		Input:    input,
 		Writes:   node.writers,
 		Triggers: node.triggers,
-		TaskID:   fmt.Sprintf("%s-%d", nodeID, step),
+		TaskID:   nodeID + "-" + strconv.Itoa(step),
 		TaskPath: []string{nodeID},
 	}
 }
@@ -2268,6 +2311,12 @@ func (e *Executor) taskInvocationContext(
 // emitExecutionStepEvent emits the execution step event.
 func (e *Executor) emitExecutionStepEvent(ctx context.Context, invocation *agent.Invocation,
 	execCtx *ExecutionContext, tasks []*Task, step int) {
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return
+	}
+	if execCtx == nil || execCtx.EventChan == nil {
+		return
+	}
 	activeNodes := make([]string, len(tasks))
 	for i, task := range tasks {
 		activeNodes[i] = task.NodeID
@@ -2405,14 +2454,16 @@ func (e *Executor) initializeNodeContext(
 	e.emitNodeStartEvent(ctx, invocation, execCtx, t.NodeID, nodeType, step,
 		nodeStart, WithNodeEventAttempt(1), WithNodeEventMaxAttempts(maxAttempts))
 
-	// Create callback context.
-	callbackCtx := e.newNodeCallbackContext(execCtx, t.NodeID, nodeType, step, nodeStart)
-
 	// Build per-task state copy.
 	stateCopy := e.buildTaskStateCopy(execCtx, t)
 
 	// Merge callbacks: global callbacks run first, then per-node callbacks.
 	mergedCallbacks := e.getMergedCallbacks(stateCopy, t.NodeID)
+
+	var callbackCtx *NodeCallbackContext
+	if mergedCallbacks != nil {
+		callbackCtx = e.newNodeCallbackContext(execCtx, t.NodeID, nodeType, step, nodeStart)
+	}
 
 	return &nodeExecutionContext{
 		nodeType:        nodeType,
@@ -3237,6 +3288,9 @@ func (e *Executor) emitNodeStartEvent(
 	startTime time.Time,
 	extra ...NodeEventOption,
 ) {
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return
+	}
 	if execCtx.EventChan == nil {
 		return
 	}
@@ -3517,7 +3571,7 @@ func (e *Executor) enqueueCommands(execCtx *ExecutionContext, t *Task, cmds []*C
 			Input:    mergedState,
 			Writes:   targetWriters,
 			Triggers: targetTriggers,
-			TaskID:   fmt.Sprintf("%s-%d", target, nextStep),
+			TaskID:   target + "-" + strconv.Itoa(nextStep),
 			TaskPath: append([]string{}, t.TaskPath...),
 			Overlay:  nil,
 		}
@@ -3664,6 +3718,7 @@ func (e *Executor) processChannelWrites(ctx context.Context, invocation *agent.I
 	if execCtx == nil || execCtx.channels == nil {
 		return
 	}
+	checkpointingEnabled := e.checkpointSaver != nil
 	for _, write := range writes {
 		ch, ok := execCtx.channels.GetChannel(write.Channel)
 		if !ok || ch == nil {
@@ -3673,15 +3728,17 @@ func (e *Executor) processChannelWrites(ctx context.Context, invocation *agent.I
 
 		// Emit channel update event.
 		e.emitChannelUpdateEvent(ctx, invocation, execCtx, write.Channel, ch.Behavior, e.getTriggeredNodes(write.Channel))
-		// Accumulate into pendingWrites to be saved with the next checkpoint.
-		execCtx.pendingMu.Lock()
-		execCtx.pendingWrites = append(execCtx.pendingWrites, PendingWrite{
-			Channel:  write.Channel,
-			Value:    write.Value,
-			TaskID:   taskID,
-			Sequence: execCtx.seq.Add(1), // Use atomic increment for deterministic replay
-		})
-		execCtx.pendingMu.Unlock()
+		if checkpointingEnabled {
+			// Accumulate into pendingWrites to be saved with the next checkpoint.
+			execCtx.pendingMu.Lock()
+			execCtx.pendingWrites = append(execCtx.pendingWrites, PendingWrite{
+				Channel:  write.Channel,
+				Value:    write.Value,
+				TaskID:   taskID,
+				Sequence: execCtx.seq.Add(1), // Use atomic increment for deterministic replay.
+			})
+			execCtx.pendingMu.Unlock()
+		}
 	}
 }
 
@@ -3726,6 +3783,9 @@ func (e *Executor) emitChannelUpdateEvent(
 	channelType channel.Behavior,
 	triggeredNodes []string,
 ) {
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return
+	}
 	if execCtx.EventChan == nil {
 		return
 	}
@@ -3751,6 +3811,9 @@ func (e *Executor) emitNodeCompleteEvent(
 	startTime time.Time,
 	cacheHit bool,
 ) {
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return
+	}
 	if execCtx.EventChan == nil {
 		return
 	}
@@ -3805,6 +3868,12 @@ func (e *Executor) updateChannels(ctx context.Context, invocation *agent.Invocat
 
 // emitUpdateStepEvent emits the update step event.
 func (e *Executor) emitUpdateStepEvent(ctx context.Context, invocation *agent.Invocation, execCtx *ExecutionContext, step int) {
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return
+	}
+	if execCtx == nil || execCtx.EventChan == nil {
+		return
+	}
 	updatedChannels := e.getUpdatedChannels(execCtx)
 	updateEvent := NewPregelStepEvent(
 		WithPregelEventInvocationID(execCtx.InvocationID),
@@ -3818,6 +3887,9 @@ func (e *Executor) emitUpdateStepEvent(ctx context.Context, invocation *agent.In
 
 // emitStateUpdateEvent emits the state update event.
 func (e *Executor) emitStateUpdateEvent(ctx context.Context, invocation *agent.Invocation, execCtx *ExecutionContext) {
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return
+	}
 	if execCtx.EventChan == nil {
 		return
 	}

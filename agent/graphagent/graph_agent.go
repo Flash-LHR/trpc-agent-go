@@ -17,7 +17,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
@@ -105,7 +104,26 @@ func (ga *GraphAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-
 	// Setup invocation
 	ga.setupInvocation(invocation)
 
-	out := make(chan *event.Event, ga.channelBufferSize)
+	if invocation.RunOptions.DisableTracing && ga.agentCallbacks == nil && !barrier.Enabled(invocation) {
+		initialState := ga.createInitialState(ctx, invocation)
+		eventChan, err := ga.executor.Execute(ctx, initialState, invocation)
+		if err != nil {
+			out := make(chan *event.Event, 1)
+			evt := event.NewErrorEvent(invocation.InvocationID, invocation.AgentName,
+				model.ErrorTypeFlowError, err.Error())
+			if emitErr := agent.EmitEvent(ctx, invocation, out, evt); emitErr != nil {
+				log.Errorf("graphagent: emit error event failed: %v", emitErr)
+			}
+			close(out)
+			return out, nil
+		}
+		return eventChan, nil
+	}
+	outSize := ga.channelBufferSize
+	if invocation.RunOptions.EventChannelBufferSize > 0 {
+		outSize = invocation.RunOptions.EventChannelBufferSize
+	}
+	out := make(chan *event.Event, outSize)
 	runCtx := agent.CloneContext(ctx)
 	go ga.runWithBarrier(runCtx, invocation, out)
 	return out, nil
