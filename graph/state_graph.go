@@ -461,6 +461,13 @@ func (sg *StateGraph) AddNode(id string, function NodeFunc, opts ...Option) *Sta
 	}
 
 	node.Function = func(ctx context.Context, state State) (any, error) {
+		if node.Type == NodeTypeLLM {
+			if invocation, ok := agent.InvocationFromContext(ctx); ok &&
+				invocation != nil && invocation.RunOptions.DisableTracing {
+				return function(ctx, state)
+			}
+		}
+
 		ctx, span := trace.Tracer.Start(ctx, itelemetry.NewWorkflowSpanName(fmt.Sprintf("execute_function_node %s", id)))
 		workflow := &itelemetry.Workflow{Name: fmt.Sprintf("execute_function_node %s", id), ID: id, Request: state.safeClone()}
 		defer func() {
@@ -1011,9 +1018,14 @@ func NewLLMNodeFunc(
 		opt(runner)
 	}
 	return func(ctx context.Context, state State) (any, error) {
-
-		_, span := trace.Tracer.Start(ctx, itelemetry.NewChatSpanName(llmModel.Info().Name))
-		defer span.End()
+		var span oteltrace.Span
+		if invocation, ok := agent.InvocationFromContext(ctx); ok &&
+			invocation != nil && invocation.RunOptions.DisableTracing {
+			span = oteltrace.SpanFromContext(ctx)
+		} else {
+			_, span = trace.Tracer.Start(ctx, itelemetry.NewChatSpanName(llmModel.Info().Name))
+			defer span.End()
+		}
 		result, err := runner.execute(ctx, state, span)
 		if err != nil {
 			span.RecordError(err)
@@ -1601,8 +1613,14 @@ func runModel(
 	llmModel model.Model,
 	request *model.Request,
 ) (context.Context, <-chan *model.Response, error) {
-	ctx, span := trace.Tracer.Start(ctx, "run_model")
-	defer span.End()
+	var span oteltrace.Span
+	if invocation, ok := agent.InvocationFromContext(ctx); ok &&
+		invocation != nil && invocation.RunOptions.DisableTracing {
+		span = oteltrace.SpanFromContext(ctx)
+	} else {
+		ctx, span = trace.Tracer.Start(ctx, "run_model")
+		defer span.End()
+	}
 
 	// Set span attributes for model execution.
 	span.SetAttributes(
@@ -3201,6 +3219,9 @@ func traceChatIfLastEvent(
 		return
 	}
 	tracker.SetLastEvent(lastEvent)
+	if invocation != nil && invocation.RunOptions.DisableTracing {
+		return
+	}
 	itelemetry.TraceChat(span, &itelemetry.TraceChatAttributes{
 		Invocation:       invocation,
 		Request:          req,

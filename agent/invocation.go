@@ -318,6 +318,13 @@ func WithStreamMode(modes ...StreamMode) RunOption {
 	}
 }
 
+// WithDisableTracing disables creating OpenTelemetry spans for this run.
+func WithDisableTracing(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableTracing = disable
+	}
+}
+
 // WithRequestID sets the request id for the RunOptions.
 func WithRequestID(requestID string) RunOption {
 	return func(opts *RunOptions) {
@@ -619,6 +626,9 @@ type RunOptions struct {
 	// When StreamModeEnabled is false, runners should not apply any stream
 	// filtering and preserve the existing behavior.
 	StreamModes []StreamMode
+
+	// DisableTracing disables creating OpenTelemetry spans for this run.
+	DisableTracing bool
 
 	// RequestID is the request id of the request.
 	RequestID string

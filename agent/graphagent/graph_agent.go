@@ -107,6 +107,22 @@ func (ga *GraphAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-
 	// Setup invocation
 	ga.setupInvocation(invocation)
 
+	if invocation.RunOptions.DisableTracing && ga.agentCallbacks == nil && !barrier.Enabled(invocation) {
+		initialState := ga.createInitialState(ctx, invocation)
+		eventChan, err := ga.executor.Execute(ctx, initialState, invocation)
+		if err != nil {
+			out := make(chan *event.Event, 1)
+			evt := event.NewErrorEvent(invocation.InvocationID, invocation.AgentName,
+				model.ErrorTypeFlowError, err.Error())
+			if emitErr := agent.EmitEvent(ctx, invocation, out, evt); emitErr != nil {
+				log.Errorf("graphagent: emit error event failed: %v", emitErr)
+			}
+			close(out)
+			return out, nil
+		}
+		return eventChan, nil
+	}
+
 	out := make(chan *event.Event, ga.channelBufferSize)
 	runCtx := agent.CloneContext(ctx)
 	go ga.runWithBarrier(runCtx, invocation, out)
