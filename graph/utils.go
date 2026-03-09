@@ -82,11 +82,27 @@ func deepCopyFastPath(value any) (any, bool) {
 }
 
 func deepCopyPrimitiveFastPath(value any) (any, bool) {
+	if out, ok := deepCopyNumericFastPath(value); ok {
+		return out, true
+	}
 	switch v := value.(type) {
 	case nil:
 		return nil, true
 	case bool:
 		return v, true
+	case string:
+		return v, true
+	case time.Duration:
+		return v, true
+	case time.Time:
+		return v, true
+	default:
+		return nil, false
+	}
+}
+
+func deepCopyNumericFastPath(value any) (any, bool) {
+	switch v := value.(type) {
 	case int:
 		return v, true
 	case int8:
@@ -116,12 +132,6 @@ func deepCopyPrimitiveFastPath(value any) (any, bool) {
 	case complex64:
 		return v, true
 	case complex128:
-		return v, true
-	case string:
-		return v, true
-	case time.Duration:
-		return v, true
-	case time.Time:
 		return v, true
 	default:
 		return nil, false
