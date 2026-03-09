@@ -318,6 +318,29 @@ func WithStreamMode(modes ...StreamMode) RunOption {
 	}
 }
 
+// WithDisableGraphCompletionEvent disables emitting the final graph completion event.
+func WithDisableGraphCompletionEvent(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableGraphCompletionEvent = disable
+	}
+}
+
+// WithDisableGraphExecutorEvents disables emitting graph executor lifecycle events.
+func WithDisableGraphExecutorEvents(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableGraphExecutorEvents = disable
+	}
+}
+
+// WithEventChannelBufferSize overrides the event channel buffer size for this run.
+//
+// When size <= 0, the flow default is used.
+func WithEventChannelBufferSize(size int) RunOption {
+	return func(opts *RunOptions) {
+		opts.EventChannelBufferSize = size
+	}
+}
+
 // WithRequestID sets the request id for the RunOptions.
 func WithRequestID(requestID string) RunOption {
 	return func(opts *RunOptions) {
@@ -619,6 +642,17 @@ type RunOptions struct {
 	// When StreamModeEnabled is false, runners should not apply any stream
 	// filtering and preserve the existing behavior.
 	StreamModes []StreamMode
+
+	// DisableGraphCompletionEvent disables emitting the final graph completion event.
+	DisableGraphCompletionEvent bool
+
+	// DisableGraphExecutorEvents disables emitting graph executor lifecycle events.
+	DisableGraphExecutorEvents bool
+
+	// EventChannelBufferSize overrides the flow's default event channel buffer size for this run.
+	//
+	// When <= 0, the flow uses its configured ChannelBufferSize.
+	EventChannelBufferSize int
 
 	// RequestID is the request id of the request.
 	RequestID string

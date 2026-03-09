@@ -105,7 +105,11 @@ func (ga *GraphAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-
 	// Setup invocation
 	ga.setupInvocation(invocation)
 
-	out := make(chan *event.Event, ga.channelBufferSize)
+	outSize := ga.channelBufferSize
+	if invocation.RunOptions.EventChannelBufferSize > 0 {
+		outSize = invocation.RunOptions.EventChannelBufferSize
+	}
+	out := make(chan *event.Event, outSize)
 	runCtx := agent.CloneContext(ctx)
 	go ga.runWithBarrier(runCtx, invocation, out)
 	return out, nil
