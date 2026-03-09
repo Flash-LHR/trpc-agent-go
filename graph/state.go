@@ -271,6 +271,15 @@ type StateSchema struct {
 	Fields map[string]StateField
 }
 
+var mergeReducerPtr = reflect.ValueOf(StateReducer(MergeReducer)).Pointer()
+
+func isMergeReducer(reducer StateReducer) bool {
+	if reducer == nil {
+		return false
+	}
+	return reflect.ValueOf(reducer).Pointer() == mergeReducerPtr
+}
+
 // NewStateSchema creates a new state schema.
 func NewStateSchema() *StateSchema {
 	return &StateSchema{
@@ -295,7 +304,10 @@ func (s *StateSchema) AddField(name string, field StateField) *StateSchema {
 func (s *StateSchema) ApplyUpdate(currentState State, update State) State {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := currentState.Clone()
+	result := make(State, len(currentState)+len(update))
+	for k, v := range currentState {
+		result[k] = v
+	}
 	for key, updateValue := range update {
 		field, exists := s.Fields[key]
 		if !exists {
@@ -319,6 +331,13 @@ func (s *StateSchema) ApplyUpdate(currentState State, update State) State {
 		currentValue, hasCurrentValue := result[key]
 		if !hasCurrentValue && field.Default != nil {
 			currentValue = field.Default()
+		}
+
+		// MergeReducer already deep-copies map entries and values, so we can
+		// safely skip the generic deep-copy path here to avoid redundant work.
+		if isMergeReducer(field.Reducer) {
+			result[key] = field.Reducer(currentValue, updateValue)
+			continue
 		}
 
 		if field.DisableDeepCopy {
@@ -454,16 +473,19 @@ func StringSliceReducer(existing, update any) any {
 
 // MergeReducer merges update map into existing map.
 func MergeReducer(existing, update any) any {
-	if existing == nil {
-		existing = make(map[string]any)
-	}
-
 	existingMap, ok1 := existing.(map[string]any)
 	updateMap, ok2 := update.(map[string]any)
 
 	if !ok1 || !ok2 {
 		// Fallback to default behavior; deep copy if composite
 		return deepCopyAny(update)
+	}
+
+	if len(existingMap) == 0 {
+		return deepCopyAny(updateMap)
+	}
+	if len(updateMap) == 0 {
+		return deepCopyAny(existingMap)
 	}
 
 	result := make(map[string]any, len(existingMap)+len(updateMap))
@@ -613,29 +635,169 @@ func decodeMessages(v any) ([]model.Message, error) {
 
 // MessageReducer handles message arrays with ID-based updates and MessageOp support.
 func MessageReducer(existing, update any) any {
+	// Normalize existing to a stable []model.Message value. When existing is nil,
+	// preserve legacy semantics by treating it as an empty (non-nil) slice.
 	if existing == nil {
 		existing = []model.Message{}
 	}
-	existingMsgs, ok1 := existing.([]model.Message)
-	if !ok1 {
+	existingMsgs, ok := existing.([]model.Message)
+	if !ok {
 		return update
 	}
+
 	switch x := update.(type) {
 	case nil:
-		// no-op
 		return existingMsgs
 	case model.Message:
-		return append(existingMsgs, x)
+		out := make([]model.Message, len(existingMsgs)+1)
+		copy(out, existingMsgs)
+		out[len(existingMsgs)] = x
+		return out
 	case []model.Message:
-		return append(existingMsgs, x...)
-	case MessageOp:
-		return x.Apply(existingMsgs)
-	case []MessageOp:
-		result := existingMsgs
-		for _, op := range x {
-			result = op.Apply(result)
+		if len(x) == 0 {
+			return existingMsgs
 		}
-		return result
+		out := make([]model.Message, len(existingMsgs)+len(x))
+		copy(out, existingMsgs)
+		copy(out[len(existingMsgs):], x)
+		return out
+	case AppendMessages:
+		if len(x.Items) == 0 {
+			return existingMsgs
+		}
+		out := make([]model.Message, len(existingMsgs)+len(x.Items))
+		copy(out, existingMsgs)
+		copy(out[len(existingMsgs):], x.Items)
+		return out
+	case ReplaceLastUser:
+		// Work on a copy to avoid mutating the existing slice which may be shared
+		// by other goroutines.
+		out := make([]model.Message, len(existingMsgs))
+		copy(out, existingMsgs)
+		for i := len(out) - 1; i >= 0; i-- {
+			if out[i].Role != model.RoleUser {
+				continue
+			}
+			// Replace the content while preserving other fields.
+			out[i] = model.Message{
+				Role:             model.RoleUser,
+				Content:          x.Content,
+				ContentParts:     out[i].ContentParts,
+				ToolID:           out[i].ToolID,
+				ToolName:         out[i].ToolName,
+				ToolCalls:        out[i].ToolCalls,
+				ReasoningContent: out[i].ReasoningContent,
+			}
+			return out
+		}
+		// No user message found; append a new one.
+		out2 := make([]model.Message, len(out)+1)
+		copy(out2, out)
+		out2[len(out)] = model.NewUserMessage(x.Content)
+		return out2
+	case RemoveAllMessages:
+		return nil
+	case MessageOp:
+		// Common ops are handled above; fall back to the generic interface for
+		// any custom implementations.
+		out := make([]model.Message, len(existingMsgs))
+		copy(out, existingMsgs)
+		out = x.Apply(out)
+		// Ensure the returned slice doesn't retain extra capacity which could
+		// allow in-place appends to mutate previously-shared backing arrays.
+		if cap(out) != len(out) {
+			out = append([]model.Message(nil), out...)
+		}
+		return out
+	case []MessageOp:
+		// Fast path: only AppendMessages ops (and nils). This is common for
+		// streaming workflows and allows a single allocation.
+		onlyAppend := true
+		totalAppend := 0
+		for _, op := range x {
+			switch v := op.(type) {
+			case nil:
+				continue
+			case AppendMessages:
+				totalAppend += len(v.Items)
+			default:
+				onlyAppend = false
+			}
+		}
+		if onlyAppend {
+			if totalAppend == 0 {
+				return existingMsgs
+			}
+			out := make([]model.Message, len(existingMsgs)+totalAppend)
+			copy(out, existingMsgs)
+			pos := len(existingMsgs)
+			for _, op := range x {
+				v, ok := op.(AppendMessages)
+				if !ok || len(v.Items) == 0 {
+					continue
+				}
+				copy(out[pos:], v.Items)
+				pos += len(v.Items)
+			}
+			return out
+		}
+
+		// Generic path: apply each op to an owned slice to prevent mutating
+		// shared backing arrays.
+		out := make([]model.Message, len(existingMsgs))
+		copy(out, existingMsgs)
+		for _, op := range x {
+			switch v := op.(type) {
+			case nil:
+				continue
+			case AppendMessages:
+				if len(v.Items) == 0 {
+					continue
+				}
+				next := make([]model.Message, len(out)+len(v.Items))
+				copy(next, out)
+				copy(next[len(out):], v.Items)
+				out = next
+			case ReplaceLastUser:
+				// Replace in place on the owned slice. Append if no user message exists.
+				replaced := false
+				for i := len(out) - 1; i >= 0; i-- {
+					if out[i].Role != model.RoleUser {
+						continue
+					}
+					out[i] = model.Message{
+						Role:             model.RoleUser,
+						Content:          v.Content,
+						ContentParts:     out[i].ContentParts,
+						ToolID:           out[i].ToolID,
+						ToolName:         out[i].ToolName,
+						ToolCalls:        out[i].ToolCalls,
+						ReasoningContent: out[i].ReasoningContent,
+					}
+					replaced = true
+					break
+				}
+				if !replaced {
+					next := make([]model.Message, len(out)+1)
+					copy(next, out)
+					next[len(out)] = model.NewUserMessage(v.Content)
+					out = next
+				} else if cap(out) != len(out) {
+					// Keep capacity tightly bounded to avoid future in-place appends
+					// mutating shared backing arrays after this reducer returns.
+					out = append([]model.Message(nil), out...)
+				}
+			case RemoveAllMessages:
+				out = nil
+			default:
+				// Unknown/custom op: apply on the owned slice, then tighten capacity.
+				out = v.Apply(out)
+				if cap(out) != len(out) {
+					out = append([]model.Message(nil), out...)
+				}
+			}
+		}
+		return out
 	default:
 		// Fallback to default behavior for unsupported types
 		return update
