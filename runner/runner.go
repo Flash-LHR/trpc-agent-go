@@ -660,21 +660,21 @@ func (r *runner) getOrCreateSession(
 
 // eventLoopContext bundles all channels and state required by the event loop.
 type eventLoopContext struct {
-	sess                                      *session.Session
-	invocation                                *agent.Invocation
-	agentEventCh                              <-chan *event.Event
-	flushChan                                 chan *flush.FlushRequest
-	processedEventCh                          chan *event.Event
-	runHandle                                 *runHandle
-	finalStateDelta                           map[string][]byte
-	finalChoices                              []model.Choice
-	fallbackChoices                           []model.Choice
-	fallbackResponseID                        string
-	fallbackStateDelta                        map[string][]byte
-	finalError                                *model.ResponseError
-	graphCompletionSeen                       bool
-	filteredVisibleCompletionChoicesPersisted bool
-	filteredPersistedAssistantResponseIDs     map[string]struct{}
+	sess                                       *session.Session
+	invocation                                 *agent.Invocation
+	agentEventCh                               <-chan *event.Event
+	flushChan                                  chan *flush.FlushRequest
+	processedEventCh                           chan *event.Event
+	runHandle                                  *runHandle
+	finalStateDelta                            map[string][]byte
+	finalChoices                               []model.Choice
+	fallbackChoices                            []model.Choice
+	fallbackResponseID                         string
+	fallbackStateDelta                         map[string][]byte
+	finalError                                 *model.ResponseError
+	graphCompletionSeen                        bool
+	filteredPersistedAssistantResponseIDs      map[string]struct{}
+	filteredPersistedAssistantChoiceSignatures map[string]struct{}
 	// visibleCompletionChoicesEmitted tracks whether this run already emitted a
 	// caller-visible completion snapshot with assistant text.
 	//
@@ -835,17 +835,23 @@ func (r *runner) recordFilteredPersistedAssistantEvent(
 	if !eventHasAssistantMessageContent(agentEvent) {
 		return
 	}
-	if graph.IsVisibleGraphCompletionEvent(agentEvent) {
-		loop.filteredVisibleCompletionChoicesPersisted = true
-		return
-	}
-	if agentEvent.Response == nil || agentEvent.Response.ID == "" {
+	if agentEvent.Response == nil {
 		return
 	}
 	if loop.filteredPersistedAssistantResponseIDs == nil {
 		loop.filteredPersistedAssistantResponseIDs = make(map[string]struct{})
 	}
-	loop.filteredPersistedAssistantResponseIDs[agentEvent.Response.ID] = struct{}{}
+	if agentEvent.Response.ID != "" {
+		loop.filteredPersistedAssistantResponseIDs[agentEvent.Response.ID] = struct{}{}
+	}
+	signature := assistantChoiceSignature(agentEvent.Response.Choices)
+	if signature == "" {
+		return
+	}
+	if loop.filteredPersistedAssistantChoiceSignatures == nil {
+		loop.filteredPersistedAssistantChoiceSignatures = make(map[string]struct{})
+	}
+	loop.filteredPersistedAssistantChoiceSignatures[signature] = struct{}{}
 }
 
 func (r *runner) recordRunEvent(loop *eventLoopContext) {
@@ -1271,7 +1277,11 @@ func (r *runner) emitRunnerCompletion(ctx context.Context, loop *eventLoopContex
 
 	// Append runner completion event to session.
 	persistRunnerCompletionEvent := runnerCompletionEvent
-	if shouldClearRunnerCompletionChoicesInSession(loop, finalStateDelta) {
+	if shouldClearRunnerCompletionChoicesInSession(
+		loop,
+		finalChoices,
+		finalStateDelta,
+	) {
 		persistRunnerCompletionEvent = runnerCompletionEvent.Clone()
 		if persistRunnerCompletionEvent.Response != nil {
 			persistRunnerCompletionEvent.Response.Choices = nil
@@ -1326,19 +1336,24 @@ func (r *runner) propagateGraphCompletion(
 
 func shouldClearRunnerCompletionChoicesInSession(
 	loop *eventLoopContext,
+	finalChoices []model.Choice,
 	finalStateDelta map[string][]byte,
 ) bool {
 	if loop == nil {
 		return false
 	}
-	if loop.filteredVisibleCompletionChoicesPersisted {
-		return true
-	}
 	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)
-	if finalResponseID == "" {
+	if finalResponseID != "" {
+		_, ok := loop.filteredPersistedAssistantResponseIDs[finalResponseID]
+		if ok {
+			return true
+		}
+	}
+	signature := assistantChoiceSignature(finalChoices)
+	if signature == "" {
 		return false
 	}
-	_, ok := loop.filteredPersistedAssistantResponseIDs[finalResponseID]
+	_, ok := loop.filteredPersistedAssistantChoiceSignatures[signature]
 	return ok
 }
 
@@ -1409,6 +1424,17 @@ func cloneChoices(choices []model.Choice) []model.Choice {
 	var cloned []model.Choice
 	_ = json.Unmarshal(b, &cloned)
 	return cloned
+}
+
+func assistantChoiceSignature(choices []model.Choice) string {
+	if len(choices) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(choices)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 func finalResponseIDFromStateDelta(finalStateDelta map[string][]byte) string {

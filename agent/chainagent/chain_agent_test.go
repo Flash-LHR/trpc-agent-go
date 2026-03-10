@@ -135,6 +135,48 @@ func (m *countingAgent) Run(ctx context.Context, inv *agent.Invocation) (<-chan 
 	return ch, nil
 }
 
+type completionResponseIDAgent struct {
+	name string
+}
+
+func (m *completionResponseIDAgent) Info() agent.Info {
+	return agent.Info{Name: m.name}
+}
+
+func (m *completionResponseIDAgent) SubAgents() []agent.Agent {
+	return nil
+}
+
+func (m *completionResponseIDAgent) FindSubAgent(string) agent.Agent {
+	return nil
+}
+
+func (m *completionResponseIDAgent) Tools() []tool.Tool {
+	return nil
+}
+
+func (m *completionResponseIDAgent) Run(
+	ctx context.Context,
+	inv *agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event, 1)
+	go func() {
+		defer close(ch)
+		evt := graph.NewGraphCompletionEvent(
+			graph.WithCompletionEventInvocationID(inv.InvocationID),
+			graph.WithCompletionEventFinalState(graph.State{
+				graph.StateKeyLastResponse:   "child-final",
+				graph.StateKeyLastResponseID: "resp-1",
+				"child_state":                "child-state",
+			}),
+		)
+		evt.Author = m.name
+		evt.Response.ID = "resp-1"
+		_ = agent.EmitEvent(ctx, inv, ch, evt)
+	}()
+	return ch, nil
+}
+
 func TestChainAgent_Sequential(t *testing.T) {
 	// Track execution order.
 	var executionOrder []string
@@ -791,6 +833,37 @@ func TestChainAgent_DisableGraphCompletionEvent_PreservesVisibleChildResponse(t 
 	require.Len(t, visibleEvent.Response.Choices, 1)
 	require.Equal(t, "child-final", visibleEvent.Response.Choices[0].Message.Content)
 	require.Equal(t, []byte(`"child-final"`), visibleEvent.StateDelta[graph.StateKeyLastResponse])
+	require.Equal(t, []byte(`"child-state"`), visibleEvent.StateDelta["child_state"])
+}
+
+func TestChainAgent_DisableGraphCompletionEvent_DoesNotDedupVisibleChildAgainstRawCompletion(
+	t *testing.T,
+) {
+	child := &completionResponseIDAgent{name: "graph-child"}
+	chainAgent := New(
+		"test-chain",
+		WithSubAgents([]agent.Agent{child}),
+	)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	events, err := chainAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+
+	var visibleEvent *event.Event
+	for evt := range events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if graph.IsVisibleGraphCompletionEvent(evt) {
+			visibleEvent = evt
+		}
+	}
+
+	require.NotNil(t, visibleEvent)
+	require.Len(t, visibleEvent.Response.Choices, 1)
+	require.Equal(t, "child-final", visibleEvent.Response.Choices[0].Message.Content)
+	require.Equal(t, []byte(`"resp-1"`), visibleEvent.StateDelta[graph.StateKeyLastResponseID])
 	require.Equal(t, []byte(`"child-state"`), visibleEvent.StateDelta["child_state"])
 }
 

@@ -198,10 +198,6 @@ func (a *CycleAgent) runSubAgent(
 	visibleCtx := graph.WithoutGraphCompletionCapture(ctx)
 	var emittedAssistantResponseIDs map[string]struct{}
 	for subEvent := range subEventChan {
-		emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
-			emittedAssistantResponseIDs,
-			subEvent,
-		)
 		if subEvent != nil && subEvent.Response != nil && !subEvent.Response.IsPartial {
 			*fullRespEvent = subEvent
 		}
@@ -215,9 +211,19 @@ func (a *CycleAgent) runSubAgent(
 				if err := event.EmitEvent(ctx, eventChan, visibleEvent); err != nil {
 					return true
 				}
+				emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
+					emittedAssistantResponseIDs,
+					visibleEvent,
+				)
 			}
-		} else if err := event.EmitEvent(ctx, eventChan, subEvent); err != nil {
-			return true
+		} else {
+			if err := event.EmitEvent(ctx, eventChan, subEvent); err != nil {
+				return true
+			}
+			emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
+				emittedAssistantResponseIDs,
+				subEvent,
+			)
 		}
 		if escalationEvent != nil && escalationEvent.Error != nil {
 			return true

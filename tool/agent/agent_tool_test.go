@@ -46,6 +46,10 @@ type visibleCompletionThenAfterAgent struct {
 	name string
 }
 
+type assistantThenVisibleStateOnlyCompletionAgent struct {
+	name string
+}
+
 func newGraphAgentWithAfterCallback(
 	t *testing.T,
 	state graph.State,
@@ -146,6 +150,46 @@ func (a *visibleCompletionThenAfterAgent) Run(
 	return ch, nil
 }
 
+func (a *assistantThenVisibleStateOnlyCompletionAgent) Run(
+	ctx context.Context,
+	invocation *agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event, 2)
+	go func() {
+		defer close(ch)
+		invocationID := "assistant-then-visible-completion-agent"
+		author := a.name
+		if invocation != nil {
+			invocationID = invocation.InvocationID
+			if invocation.AgentName != "" {
+				author = invocation.AgentName
+			}
+		}
+		assistantEvent := event.NewResponseEvent(invocationID, author, &model.Response{
+			ID:     "resp-1",
+			Object: model.ObjectTypeChatCompletion,
+			Done:   true,
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("wrapped-final"),
+			}},
+		})
+		rawCompletion := graph.NewGraphCompletionEvent(
+			graph.WithCompletionEventInvocationID(invocationID),
+			graph.WithCompletionEventFinalState(graph.State{
+				graph.StateKeyLastResponseID: "resp-1",
+				graphStateKey:                "child-state",
+			}),
+		)
+		visibleCompletion, ok := graph.VisibleGraphCompletionEvent(rawCompletion)
+		if !ok {
+			return
+		}
+		_ = agent.EmitEvent(ctx, invocation, ch, assistantEvent)
+		_ = agent.EmitEvent(ctx, invocation, ch, visibleCompletion)
+	}()
+	return ch, nil
+}
+
 func (a *visibleCompletionThenAfterAgent) Tools() []tool.Tool {
 	return nil
 }
@@ -159,6 +203,23 @@ func (a *visibleCompletionThenAfterAgent) SubAgents() []agent.Agent {
 }
 
 func (a *visibleCompletionThenAfterAgent) FindSubAgent(name string) agent.Agent {
+	_ = name
+	return nil
+}
+
+func (a *assistantThenVisibleStateOnlyCompletionAgent) Tools() []tool.Tool {
+	return nil
+}
+
+func (a *assistantThenVisibleStateOnlyCompletionAgent) Info() agent.Info {
+	return agent.Info{Name: a.name}
+}
+
+func (a *assistantThenVisibleStateOnlyCompletionAgent) SubAgents() []agent.Agent {
+	return nil
+}
+
+func (a *assistantThenVisibleStateOnlyCompletionAgent) FindSubAgent(name string) agent.Agent {
 	_ = name
 	return nil
 }
@@ -1552,6 +1613,54 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_KeepsFinalResult(t *tes
 		require.Equal(t, []byte(`"child-final"`), resultChunk.StateDelta[graph.StateKeyLastResponse])
 	}
 	require.Equal(t, "child-final", finalResult)
+}
+
+func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistantResultForVisibleStateOnlyCompletion(
+	t *testing.T,
+) {
+	at := NewTool(
+		&assistantThenVisibleStateOnlyCompletionAgent{name: "assistant-visible-agent"},
+		WithStreamInner(true),
+		WithHistoryScope(HistoryScopeParentBranch),
+	)
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	defer reader.Close()
+
+	var assistantEvents int
+	var finalChunk tool.FinalResultChunk
+	var sawFinalChunk bool
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		if evt, ok := chunk.Content.(*event.Event); ok {
+			if content, ok := assistantMessageContent(evt); ok {
+				require.Equal(t, "wrapped-final", content)
+				assistantEvents++
+			}
+			continue
+		}
+		resultChunk, ok := chunk.Content.(tool.FinalResultChunk)
+		require.True(t, ok)
+		finalChunk = resultChunk
+		sawFinalChunk = true
+	}
+
+	require.Equal(t, 1, assistantEvents)
+	require.True(t, sawFinalChunk)
+	require.Equal(t, "wrapped-final", finalChunk.Result)
+	require.Equal(t, []byte(`"resp-1"`), finalChunk.StateDelta[graph.StateKeyLastResponseID])
+	require.Equal(t, []byte(`"child-state"`), finalChunk.StateDelta[graphStateKey])
 }
 
 func TestTool_StreamableCall_DisableGraphCompletionEvent_SuppressesStateOnlyCompletion(t *testing.T) {

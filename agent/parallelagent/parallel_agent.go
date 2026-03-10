@@ -312,10 +312,6 @@ func (a *ParallelAgent) mergeEventStreams(
 				}
 			}()
 			for evt := range inputChan {
-				emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
-					emittedAssistantResponseIDs,
-					evt,
-				)
 				if evt != nil && evt.Response != nil && !evt.Response.IsPartial {
 					mu.Lock()
 					*fullRespEvent = evt
@@ -329,12 +325,20 @@ func (a *ParallelAgent) mergeEventStreams(
 						if err := event.EmitEvent(ctx, outputChan, visibleEvent); err != nil {
 							return
 						}
+						emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
+							emittedAssistantResponseIDs,
+							visibleEvent,
+						)
 					}
 					continue
 				}
 				if err := event.EmitEvent(ctx, outputChan, evt); err != nil {
 					return
 				}
+				emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
+					emittedAssistantResponseIDs,
+					evt,
+				)
 			}
 		}(runCtx, ch)
 	}

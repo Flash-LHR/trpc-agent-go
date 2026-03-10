@@ -408,10 +408,6 @@ func (ga *GraphAgent) wrapEventChannel(
 			if evt != nil && evt.Response != nil && !evt.Response.IsPartial {
 				fullRespEvent = evt
 			}
-			emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
-				emittedAssistantResponseIDs,
-				evt,
-			)
 			if suppressHiddenCompletion &&
 				graph.ShouldSuppressGraphCompletionEvent(
 					visibleCtx,
@@ -425,12 +421,20 @@ func (ga *GraphAgent) wrapEventChannel(
 					if err := event.EmitEvent(ctx, wrappedChan, visibleEvent); err != nil {
 						return
 					}
+					emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
+						emittedAssistantResponseIDs,
+						visibleEvent,
+					)
 				}
 				continue
 			}
 			if err := event.EmitEvent(ctx, wrappedChan, evt); err != nil {
 				return
 			}
+			emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
+				emittedAssistantResponseIDs,
+				evt,
+			)
 		}
 		if ga.agentCallbacks == nil {
 			return

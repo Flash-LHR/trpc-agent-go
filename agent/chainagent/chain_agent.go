@@ -210,10 +210,6 @@ func (a *ChainAgent) executeSubAgents(
 		// Forward all events from the sub-agent.
 		var emittedAssistantResponseIDs map[string]struct{}
 		for subEvent := range subEventChan {
-			emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
-				emittedAssistantResponseIDs,
-				subEvent,
-			)
 			if subEvent != nil && subEvent.Response != nil {
 				tracker.TrackResponse(subEvent.Response)
 				if subEvent.Response.Usage != nil && !subEvent.Response.IsPartial {
@@ -233,12 +229,20 @@ func (a *ChainAgent) executeSubAgents(
 					if err := event.EmitEvent(ctx, eventChan, visibleEvent); err != nil {
 						return nil, tokenUsage
 					}
+					emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
+						emittedAssistantResponseIDs,
+						visibleEvent,
+					)
 				}
 				continue
 			}
 			if err := event.EmitEvent(ctx, eventChan, subEvent); err != nil {
 				return nil, tokenUsage
 			}
+			emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
+				emittedAssistantResponseIDs,
+				subEvent,
+			)
 			if subEvent != nil && subEvent.Error != nil {
 				return subEvent, tokenUsage
 			}

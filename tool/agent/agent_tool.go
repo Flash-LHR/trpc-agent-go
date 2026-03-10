@@ -426,6 +426,21 @@ func graphCompletionFinalChunk(evt *event.Event) (tool.FinalResultChunk, bool) {
 	return chunk, true
 }
 
+func completionResponseIDFromStateDelta(delta map[string][]byte) string {
+	if len(delta) == 0 {
+		return ""
+	}
+	raw, ok := delta[graph.StateKeyLastResponseID]
+	if !ok || len(raw) == 0 {
+		return ""
+	}
+	var responseID string
+	if err := json.Unmarshal(raw, &responseID); err != nil {
+		return ""
+	}
+	return responseID
+}
+
 func cloneStateDelta(delta map[string][]byte) map[string][]byte {
 	if len(delta) == 0 {
 		return nil
@@ -562,11 +577,19 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 
 			var pendingCompletionChunk *tool.FinalResultChunk
 			var sawGraphCompletionSnapshot bool
+			var lastAssistantResponseID string
+			var lastAssistantContent string
 			var overrideResult string
 			for ev := range wrapped {
 				if subInv.RunOptions.DisableGraphCompletionEvent &&
 					isGraphCompletionSnapshotEvent(ev) {
 					if chunk, ok := graphCompletionFinalChunk(ev); ok {
+						if chunk.Result == nil &&
+							completionResponseIDFromStateDelta(chunk.StateDelta) ==
+								lastAssistantResponseID &&
+							lastAssistantContent != "" {
+							chunk.Result = lastAssistantContent
+						}
 						pendingChunk := chunk
 						pendingCompletionChunk = &pendingChunk
 						sawGraphCompletionSnapshot = true
@@ -583,6 +606,14 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 					pendingCompletionChunk = nil
 					sawGraphCompletionSnapshot = false
 					overrideResult = ""
+				}
+				if content, ok := assistantMessageContent(ev); ok &&
+					!graphCompletionSnapshot &&
+					!ev.IsPartial {
+					lastAssistantContent = content
+					if ev.Response != nil {
+						lastAssistantResponseID = ev.Response.ID
+					}
 				}
 				if content, ok := assistantMessageContent(ev); ok &&
 					!graphCompletionSnapshot &&

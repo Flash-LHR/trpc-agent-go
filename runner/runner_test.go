@@ -98,6 +98,11 @@ type staticModel struct {
 	content string
 }
 
+type emptyIDModel struct {
+	name    string
+	content string
+}
+
 const staticModelResponseIDPrefix = "static-model-response-"
 
 func (m *staticModel) GenerateContent(
@@ -119,6 +124,26 @@ func (m *staticModel) GenerateContent(
 }
 
 func (m *staticModel) Info() model.Info { return model.Info{Name: m.name} }
+
+func (m *emptyIDModel) GenerateContent(
+	_ context.Context,
+	_ *model.Request,
+) (<-chan *model.Response, error) {
+	ch := make(chan *model.Response, 1)
+	ch <- &model.Response{
+		ID:        "",
+		Done:      true,
+		IsPartial: false,
+		Choices: []model.Choice{{
+			Index:   0,
+			Message: model.NewAssistantMessage(m.content),
+		}},
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *emptyIDModel) Info() model.Info { return model.Info{Name: m.name} }
 
 func TestRunner_SessionIntegration(t *testing.T) {
 	// Create an in-memory session service.
@@ -1437,6 +1462,22 @@ func newWrappedGraphLLMChildAgent(t *testing.T) agent.Agent {
 	return child
 }
 
+func newWrappedGraphLLMEmptyIDChildAgent(t *testing.T) agent.Agent {
+	t.Helper()
+	schema := graph.MessagesStateSchema()
+	sg := graph.NewStateGraph(schema)
+	sg.AddLLMNode(
+		"n1",
+		&emptyIDModel{name: "m-empty-id", content: "empty-id-final"},
+		"i1",
+		nil,
+	)
+	compiled := sg.SetEntryPoint("n1").SetFinishPoint("n1").MustCompile()
+	child, err := graphagent.New("graph-child-llm-empty-id", compiled)
+	require.NoError(t, err)
+	return child
+}
+
 func assertSessionKeepsSingleFinalAssistantEvent(
 	t *testing.T,
 	svc *sessioninmemory.SessionService,
@@ -1509,6 +1550,41 @@ func TestRunner_GraphCompletion_DedupFinalChoices(t *testing.T) {
 	require.Equal(t, stateDeltaVal,
 		string(completion.StateDelta[stateDeltaKey]))
 	require.Empty(t, completion.Response.Choices)
+}
+
+func TestRunner_StreamModeUpdates_WithFinalModelResponses_EmptyResponseIDDedupsSessionText(
+	t *testing.T,
+) {
+	child := newWrappedGraphLLMEmptyIDChildAgent(t)
+	svc := sessioninmemory.NewSessionService()
+	r := NewRunner("app", child, WithSessionService(svc))
+	ch, err := r.Run(
+		context.Background(),
+		"u",
+		"updates-mode-empty-id",
+		model.NewUserMessage("hi"),
+		agent.WithGraphEmitFinalModelResponses(true),
+		agent.WithStreamMode(agent.StreamModeUpdates),
+	)
+	require.NoError(t, err)
+
+	var completion *event.Event
+	for evt := range ch {
+		require.NotEqual(t, model.ObjectTypeChatCompletion, evt.Object)
+		if evt.IsRunnerCompletion() {
+			completion = evt
+		}
+	}
+
+	require.NotNil(t, completion)
+	require.Len(t, completion.Response.Choices, 1)
+	require.Equal(t, "empty-id-final", completion.Response.Choices[0].Message.Content)
+	assertSessionKeepsSingleFinalAssistantEvent(
+		t,
+		svc,
+		"updates-mode-empty-id",
+		"empty-id-final",
+	)
 }
 
 func TestRunner_StreamMode_FiltersEvents(t *testing.T) {
