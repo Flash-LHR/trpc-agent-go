@@ -31,6 +31,15 @@ func (o testMessageOp) Apply(_ []model.Message) []model.Message {
 	return o.out
 }
 
+type mutateNestedMessageOp struct{}
+
+func (mutateNestedMessageOp) Apply(dst []model.Message) []model.Message {
+	replacement := "mutated-part"
+	dst[0].ContentParts[0].Text = &replacement
+	dst[0].ToolCalls[0].Function.Arguments[0] = 'X'
+	return dst
+}
+
 func TestGetStateValue(t *testing.T) {
 	t.Run("key not found", func(t *testing.T) {
 		state := State{}
@@ -557,6 +566,58 @@ func TestMessageReducer_CustomOpResultDoesNotAliasReturnedSlice(t *testing.T) {
 		assert.Equal(t, "batch", out[0].Content)
 		require.NotNil(t, out[0].ContentParts[0].Text)
 		assert.Equal(t, "batch-part", *out[0].ContentParts[0].Text)
+	})
+}
+
+func TestMessageReducer_CustomOpDoesNotMutateExistingNestedState(t *testing.T) {
+	buildExisting := func() []model.Message {
+		text := "orig-part"
+		args := []byte("abc")
+		return []model.Message{
+			{
+				Role: model.RoleAssistant,
+				ContentParts: []model.ContentPart{
+					{Type: model.ContentTypeText, Text: &text},
+				},
+				ToolCalls: []model.ToolCall{
+					{
+						Type: "function",
+						ID:   "call-1",
+						Function: model.FunctionDefinitionParam{
+							Arguments: args,
+						},
+					},
+				},
+			},
+		}
+	}
+	assertOriginal := func(t *testing.T, existing []model.Message) {
+		t.Helper()
+		require.NotNil(t, existing[0].ContentParts[0].Text)
+		assert.Equal(t, "orig-part", *existing[0].ContentParts[0].Text)
+		assert.Equal(t, byte('a'), existing[0].ToolCalls[0].Function.Arguments[0])
+	}
+	assertMutated := func(t *testing.T, out []model.Message) {
+		t.Helper()
+		require.NotNil(t, out[0].ContentParts[0].Text)
+		assert.Equal(t, "mutated-part", *out[0].ContentParts[0].Text)
+		assert.Equal(t, byte('X'), out[0].ToolCalls[0].Function.Arguments[0])
+	}
+	t.Run("single custom op", func(t *testing.T) {
+		existing := buildExisting()
+		outAny := MessageReducer(existing, mutateNestedMessageOp{})
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		assertMutated(t, out)
+		assertOriginal(t, existing)
+	})
+	t.Run("custom op in batch", func(t *testing.T) {
+		existing := buildExisting()
+		outAny := MessageReducer(existing, []MessageOp{mutateNestedMessageOp{}})
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		assertMutated(t, out)
+		assertOriginal(t, existing)
 	})
 }
 

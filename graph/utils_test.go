@@ -439,6 +439,52 @@ func TestDeepCopyAny_MessageNestedValuesPreserveSharing(t *testing.T) {
 	require.Equal(t, []byte("args"), args)
 }
 
+func TestDeepCopyAny_BytesPreserveSharing(t *testing.T) {
+	shared := []byte("abc")
+	copiedAny := deepCopyAny([]any{shared, shared})
+	copied, ok := copiedAny.([]any)
+	require.True(t, ok)
+	left, ok := copied[0].([]byte)
+	require.True(t, ok)
+	right, ok := copied[1].([]byte)
+	require.True(t, ok)
+	require.Equal(
+		t,
+		reflect.ValueOf(left).Pointer(),
+		reflect.ValueOf(right).Pointer(),
+	)
+	left[0] = 'X'
+	require.Equal(t, byte('X'), right[0])
+	require.Equal(t, []byte("abc"), shared)
+}
+
+func TestDeepCopyAny_MapStringBytesPreserveSharing(t *testing.T) {
+	shared := map[string][]byte{"k": []byte("value")}
+	copiedAny := deepCopyAny(map[string]any{
+		"left":  shared,
+		"right": shared,
+	})
+	copied, ok := copiedAny.(map[string]any)
+	require.True(t, ok)
+	left, ok := copied["left"].(map[string][]byte)
+	require.True(t, ok)
+	right, ok := copied["right"].(map[string][]byte)
+	require.True(t, ok)
+	require.Equal(
+		t,
+		reflect.ValueOf(left).Pointer(),
+		reflect.ValueOf(right).Pointer(),
+	)
+	require.NotEqual(
+		t,
+		reflect.ValueOf(shared).Pointer(),
+		reflect.ValueOf(left).Pointer(),
+	)
+	left["k"][0] = 'X'
+	require.Equal(t, byte('X'), right["k"][0])
+	require.Equal(t, "value", string(shared["k"]))
+}
+
 func TestDeepCopyAny_PreservesNilFastPathValues(t *testing.T) {
 	t.Run("nil map[string]any", func(t *testing.T) {
 		copied, ok := deepCopyAny(map[string]any(nil)).(map[string]any)

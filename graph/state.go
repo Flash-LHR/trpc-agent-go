@@ -733,8 +733,7 @@ func replaceUserMessageContent(msg model.Message, content string) model.Message 
 }
 
 func applyGenericMessageOp(existing []model.Message, op MessageOp) []model.Message {
-	out := cloneMessageSlicePreserveEmpty(existing)
-	return finalizeCustomMessageOp(op.Apply(out))
+	return finalizeCustomMessageOp(op.Apply(cloneCustomMessageOpInput(existing)))
 }
 
 func applyMessageOps(existing []model.Message, ops []MessageOp) []model.Message {
@@ -790,8 +789,12 @@ func applyOwnedMessageOp(out []model.Message, op MessageOp) []model.Message {
 	case RemoveAllMessages:
 		return nil
 	default:
-		return finalizeCustomMessageOp(v.Apply(out))
+		return finalizeCustomMessageOp(v.Apply(cloneCustomMessageOpInput(out)))
 	}
+}
+
+func cloneCustomMessageOpInput(in []model.Message) []model.Message {
+	return deepCopyModelMessages(in)
 }
 
 func finalizeCustomMessageOp(out []model.Message) []model.Message {

@@ -20,6 +20,7 @@ import (
 var (
 	timeType              = reflect.TypeOf(time.Time{})
 	mapStringAnyType      = reflect.TypeOf(map[string]any(nil))
+	mapStringBytesType    = reflect.TypeOf(map[string][]byte(nil))
 	sliceAnyType          = reflect.TypeOf([]any(nil))
 	sliceBytesType        = reflect.TypeOf([]byte(nil))
 	modelMessagesType     = reflect.TypeOf([]model.Message(nil))
@@ -113,7 +114,7 @@ func deepCopyFastPathWithVisited(value any, visited visitedMap) (any, bool) {
 	case []float64:
 		return cloneSlice(v), true
 	case []byte:
-		return cloneSlice(v), true
+		return deepCopyBytesWithVisited(v, visited), true
 	case []model.Message:
 		return deepCopyModelMessagesWithVisited(v, visited), true
 	case MessageOp:
@@ -227,7 +228,12 @@ func deepCopyMapStringBytesWithVisited(
 	if in == nil {
 		return nil
 	}
+	key := mapVisitKey(reflect.ValueOf(in).Pointer(), mapStringBytesType)
+	if cached, ok := visited[key]; ok {
+		return cached.(map[string][]byte)
+	}
 	copied := make(map[string][]byte, len(in))
+	visited[key] = copied
 	for k, v := range in {
 		copied[k] = deepCopyBytesWithVisited(v, visited)
 	}
