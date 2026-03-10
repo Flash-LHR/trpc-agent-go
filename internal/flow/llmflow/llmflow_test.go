@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -28,6 +30,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/plugin"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
+	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
@@ -42,6 +45,21 @@ type mockLongRunnerTool struct {
 
 func (m *mockLongRunnerTool) Declaration() *tool.Declaration { return &tool.Declaration{Name: m.name} }
 func (m *mockLongRunnerTool) LongRunning() bool              { return m.long }
+
+func useSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	originalProvider := trace.TracerProvider
+	originalTracer := trace.Tracer
+	trace.TracerProvider = provider
+	trace.Tracer = provider.Tracer("llm-flow-disable-tracing-test")
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+		trace.TracerProvider = originalProvider
+		trace.Tracer = originalTracer
+	})
+	return recorder
+}
 
 func TestCollectLongRunningToolIDs(t *testing.T) {
 	calls := []model.ToolCall{
@@ -130,10 +148,36 @@ func TestProcessStreamingResponses_RepairsToolCallArgumentsWhenEnabled(t *testin
 	ctx, span := tracer.Start(context.Background(), "s")
 	defer span.End()
 
-	lastEvent, err := f.processStreamingResponses(ctx, inv, req, responseSeq, eventChan, span)
+	lastEvent, err := f.processStreamingResponses(ctx, inv, req, responseSeq, eventChan, span, true)
 	require.NoError(t, err)
 	require.NotNil(t, lastEvent)
 	require.Equal(t, "{\"a\":2}", string(response.Choices[0].Message.ToolCalls[0].Function.Arguments))
+}
+
+func TestRunOneStep_DisableTracingSkipsSpanCreation(t *testing.T) {
+	recorder := useSpanRecorder(t)
+	f := New(nil, nil, Options{})
+	inv := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-tracing"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableTracing: true,
+		}),
+	)
+	inv.AgentName = "test-agent"
+	inv.Model = &mockModel{
+		responses: []*model.Response{
+			{
+				Model: "mock",
+				Choices: []model.Choice{
+					{Message: model.NewAssistantMessage("ok")},
+				},
+			},
+		},
+	}
+	eventChan := make(chan *event.Event, 4)
+	_, err := f.runOneStep(context.Background(), inv, eventChan)
+	require.NoError(t, err)
+	require.Empty(t, recorder.Ended())
 }
 
 // mockAgent implements agent.Agent for testing
@@ -743,7 +787,7 @@ func TestProcessStreamingResponses_ContextCancelledAfterPostprocess(t *testing.T
 	_, span := tracer.Start(ctx, "s")
 	defer span.End()
 
-	_, err := f.processStreamingResponses(ctx, inv, req, responseSeq, eventChan, span)
+	_, err := f.processStreamingResponses(ctx, inv, req, responseSeq, eventChan, span, true)
 	require.ErrorIs(t, err, context.Canceled)
 }
 

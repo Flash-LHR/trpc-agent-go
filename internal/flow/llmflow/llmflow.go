@@ -27,9 +27,9 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/internal/jsonrepair"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/internal/toolcall"
+	"trpc.group/trpc-go/trpc-agent-go/internal/traceutil"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
-	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
@@ -339,17 +339,17 @@ func (f *Flow) runOneStep(
 	if invocation.Model != nil {
 		modelName = invocation.Model.Info().Name
 	}
-	_, span = trace.Tracer.Start(ctx, itelemetry.NewChatSpanName(modelName))
-	defer span.End()
-
+	_, span, startedSpan := traceutil.StartSpan(ctx, invocation, itelemetry.NewChatSpanName(modelName))
+	if startedSpan {
+		defer span.End()
+	}
 	// 2. Call LLM (get response sequence).
 	ctx, responseSeq, err := f.callLLM(ctx, invocation, llmRequest)
 	if err != nil {
 		return nil, err
 	}
-
 	// 3. Process streaming responses.
-	return f.processStreamingResponses(ctx, invocation, llmRequest, responseSeq, eventChan, span)
+	return f.processStreamingResponses(ctx, invocation, llmRequest, responseSeq, eventChan, span, startedSpan)
 }
 
 // processStreamingResponses handles the streaming response processing logic.
@@ -360,6 +360,7 @@ func (f *Flow) processStreamingResponses(
 	responseSeq model.Seq[*model.Response],
 	eventChan chan<- *event.Event,
 	span oteltrace.Span,
+	startedSpan bool,
 ) (lastEvent *event.Event, err error) {
 	// Get or create timing info from invocation (only record first LLM call)
 	timingInfo := invocation.GetOrCreateTimingInfo()
@@ -409,13 +410,15 @@ func (f *Flow) processStreamingResponses(
 			return false
 		}
 
-		itelemetry.TraceChat(span, &itelemetry.TraceChatAttributes{
-			Invocation:       invocation,
-			Request:          llmRequest,
-			Response:         response,
-			EventID:          llmResponseEvent.ID,
-			TimeToFirstToken: tracker.FirstTokenTimeDuration(),
-		})
+		if startedSpan {
+			itelemetry.TraceChat(span, &itelemetry.TraceChatAttributes{
+				Invocation:       invocation,
+				Request:          llmRequest,
+				Response:         response,
+				EventID:          llmResponseEvent.ID,
+				TimeToFirstToken: tracker.FirstTokenTimeDuration(),
+			})
+		}
 		return true
 	})
 	if err != nil {
