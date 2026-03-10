@@ -1560,7 +1560,7 @@ func TestGraphAgent_DisableGraphCompletionEvent_PreservesAfterAgentResponse(t *t
 	require.Equal(t, "child-final", fullRespEvent.Response.Choices[0].Message.Content)
 }
 
-func TestGraphAgent_DisableGraphCompletionEvent_SuppressesOutputWithCaptureContext(t *testing.T) {
+func TestGraphAgent_DisableGraphCompletionEvent_PreservesOutputWithCaptureContext(t *testing.T) {
 	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
 		AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
 			return graph.State{graph.StateKeyLastResponse: "child-final"}, nil
@@ -1587,9 +1587,13 @@ func TestGraphAgent_DisableGraphCompletionEvent_SuppressesOutputWithCaptureConte
 	)
 	events, err := ga.Run(graph.WithGraphCompletionCapture(context.Background()), inv)
 	require.NoError(t, err)
+	var sawGraphCompletion bool
 	for evt := range events {
-		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if evt.Done && evt.Object == graph.ObjectTypeGraphExecution {
+			sawGraphCompletion = true
+		}
 	}
+	require.True(t, sawGraphCompletion)
 }
 
 func TestGraphAgent_DisableGraphCompletionEvent_PreservesVisibleResponseWithoutCallbacks(t *testing.T) {

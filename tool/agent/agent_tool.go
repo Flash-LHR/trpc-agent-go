@@ -472,6 +472,7 @@ func (at *Tool) buildChildFilterKey(parentInv *agent.Invocation) string {
 // channel, returning the complete response text.
 func (at *Tool) collectResponse(evCh <-chan *event.Event) (string, error) {
 	var response strings.Builder
+	var lastAssistantMessage string
 	for ev := range evCh {
 		if ev.Error != nil {
 			return "", fmt.Errorf("agent error: %s", ev.Error.Message)
@@ -479,7 +480,14 @@ func (at *Tool) collectResponse(evCh <-chan *event.Event) (string, error) {
 		if ev.Response != nil && len(ev.Response.Choices) > 0 {
 			choice := ev.Response.Choices[0]
 			if choice.Message.Role == model.RoleAssistant && choice.Message.Content != "" {
+				if result, ok := graphCompletionResult(ev); ok &&
+					result == lastAssistantMessage {
+					continue
+				}
 				response.WriteString(choice.Message.Content)
+				if !ev.IsPartial {
+					lastAssistantMessage = choice.Message.Content
+				}
 			}
 		}
 	}

@@ -38,6 +38,31 @@ type mockAgent struct {
 	description string
 }
 
+type fixedResponseModel struct {
+	response string
+}
+
+func (m *fixedResponseModel) GenerateContent(
+	ctx context.Context,
+	request *model.Request,
+) (<-chan *model.Response, error) {
+	ch := make(chan *model.Response, 1)
+	go func() {
+		defer close(ch)
+		ch <- &model.Response{
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage(m.response),
+			}},
+			Done: true,
+		}
+	}()
+	return ch, nil
+}
+
+func (m *fixedResponseModel) Info() model.Info {
+	return model.Info{Name: "fixed-response-model"}
+}
+
 func (m *mockAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
 	// Mock implementation - return a simple response.
 	eventChan := make(chan *event.Event, 1)
@@ -176,6 +201,28 @@ func TestTool_Call_DisableGraphCompletionEvent_KeepsFinalText(t *testing.T) {
 		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
 		agent.WithInvocationRunOptions(agent.RunOptions{
 			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	resultText, ok := result.(string)
+	require.True(t, ok)
+	require.Equal(t, "child-final", resultText)
+}
+
+func TestTool_Call_DisableGraphCompletionEvent_DedupsCapturedGraphCompletionAfterFinalModelResponse(t *testing.T) {
+	sg := graph.NewStateGraph(graph.MessagesStateSchema())
+	sg.AddLLMNode("llm", &fixedResponseModel{response: "child-final"}, "", nil)
+	compiled := sg.SetEntryPoint("llm").SetFinishPoint("llm").MustCompile()
+	ga, err := graphagent.New("graph-child", compiled)
+	require.NoError(t, err)
+	at := NewTool(ga, WithHistoryScope(HistoryScopeParentBranch))
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent:  true,
+			GraphEmitFinalModelResponses: true,
 		}),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)

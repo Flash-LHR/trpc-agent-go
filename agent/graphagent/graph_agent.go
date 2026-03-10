@@ -237,7 +237,12 @@ func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.In
 		return nil, err
 	}
 	if ga.agentCallbacks != nil || shouldWrapHiddenCompletion {
-		return ga.wrapEventChannel(ctx, invocation, eventChan), nil
+		return ga.wrapEventChannel(
+			ctx,
+			invocation,
+			eventChan,
+			shouldWrapHiddenCompletion,
+		), nil
 	}
 	return eventChan, nil
 }
@@ -366,6 +371,7 @@ func (ga *GraphAgent) wrapEventChannel(
 	ctx context.Context,
 	invocation *agent.Invocation,
 	originalChan <-chan *event.Event,
+	suppressHiddenCompletion bool,
 ) <-chan *event.Event {
 	wrappedChan := make(chan *event.Event, ga.eventChannelBufferSize(invocation))
 	runCtx := agent.CloneContext(ctx)
@@ -378,7 +384,12 @@ func (ga *GraphAgent) wrapEventChannel(
 			if evt != nil && evt.Response != nil && !evt.Response.IsPartial {
 				fullRespEvent = evt
 			}
-			if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, evt) {
+			if suppressHiddenCompletion &&
+				graph.ShouldSuppressGraphCompletionEvent(
+					visibleCtx,
+					invocation,
+					evt,
+				) {
 				if visibleEvent, ok := graph.VisibleGraphCompletionEvent(evt); ok {
 					if err := event.EmitEvent(ctx, wrappedChan, visibleEvent); err != nil {
 						return
