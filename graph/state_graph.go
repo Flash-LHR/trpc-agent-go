@@ -1335,10 +1335,8 @@ func (r *llmRunner) executeModel(
 			modelName = getModelName(r.llmModel)
 			emitModelStartEvent(
 				modelCtx,
-				modelExecutionEventInvocation(
-					modelEventBaseInvocation,
-					modelEventInvocation,
-				),
+				modelEventBaseInvocation,
+				modelEventInvocation,
 				eventChan,
 				modelEventInvocationID,
 				modelName,
@@ -1369,10 +1367,8 @@ func (r *llmRunner) executeModel(
 		}
 		emitModelCompleteEvent(
 			ctx,
-			modelExecutionEventInvocation(
-				modelEventBaseInvocation,
-				modelEventInvocation,
-			),
+			modelEventBaseInvocation,
+			modelEventInvocation,
 			eventChan,
 			modelEventInvocationID,
 			modelName,
@@ -3251,7 +3247,8 @@ func getModelName(llmModel model.Model) string {
 // emitModelStartEvent emits a model execution start event.
 func emitModelStartEvent(
 	ctx context.Context,
-	invocation *agent.Invocation,
+	baseInvocation *agent.Invocation,
+	currentInvocation *agent.Invocation,
 	eventChan chan<- *event.Event,
 	invocationID, modelName, nodeID, modelInput string,
 	startTime time.Time,
@@ -3268,13 +3265,21 @@ func emitModelStartEvent(
 		WithModelEventStartTime(startTime),
 		WithModelEventInput(modelInput),
 	)
-	emitInvocationScopedEvent(ctx, invocation, eventChan, invocationID, modelStartEvent)
+	emitInvocationScopedEvent(
+		ctx,
+		baseInvocation,
+		currentInvocation,
+		eventChan,
+		invocationID,
+		modelStartEvent,
+	)
 }
 
 // emitModelCompleteEvent emits a model execution complete event.
 func emitModelCompleteEvent(
 	ctx context.Context,
-	invocation *agent.Invocation,
+	baseInvocation *agent.Invocation,
+	currentInvocation *agent.Invocation,
 	eventChan chan<- *event.Event,
 	invocationID, modelName, nodeID, modelInput, modelOutput, responseID string,
 	startTime, endTime time.Time,
@@ -3296,12 +3301,20 @@ func emitModelCompleteEvent(
 		WithModelEventError(err),
 		WithModelEventResponseID(responseID),
 	)
-	emitInvocationScopedEvent(ctx, invocation, eventChan, invocationID, modelCompleteEvent)
+	emitInvocationScopedEvent(
+		ctx,
+		baseInvocation,
+		currentInvocation,
+		eventChan,
+		invocationID,
+		modelCompleteEvent,
+	)
 }
 
 func emitInvocationScopedEvent(
 	ctx context.Context,
-	invocation *agent.Invocation,
+	baseInvocation *agent.Invocation,
+	currentInvocation *agent.Invocation,
 	eventChan chan<- *event.Event,
 	invocationID string,
 	ev *event.Event,
@@ -3309,30 +3322,68 @@ func emitInvocationScopedEvent(
 	if ev == nil || eventChan == nil {
 		return
 	}
-	agent.InjectIntoEvent(invocation, ev)
+	if requestID := modelExecutionEventRequestID(baseInvocation, currentInvocation); requestID != "" {
+		ev.RequestID = requestID
+	}
+	if parentInvocationID := modelExecutionEventParentInvocationID(baseInvocation, currentInvocation); parentInvocationID != "" {
+		ev.ParentInvocationID = parentInvocationID
+	}
+	if branch := modelExecutionEventBranch(baseInvocation, currentInvocation); branch != "" {
+		ev.Branch = branch
+	}
+	if filterKey := modelExecutionEventFilterKey(baseInvocation, currentInvocation); filterKey != "" {
+		ev.FilterKey = filterKey
+	}
 	if invocationID != "" {
 		ev.InvocationID = invocationID
 	}
 	_ = event.EmitEvent(ctx, eventChan, ev)
 }
 
-func modelExecutionEventInvocation(
-	baseInvocation *agent.Invocation,
-	currentInvocation *agent.Invocation,
-) *agent.Invocation {
-	if currentInvocation == nil {
-		return baseInvocation
+func modelExecutionEventRequestID(baseInvocation, currentInvocation *agent.Invocation) string {
+	if currentInvocation != nil && currentInvocation.RunOptions.RequestID != "" {
+		return currentInvocation.RunOptions.RequestID
 	}
-	if baseInvocation == nil {
-		return currentInvocation
+	if baseInvocation != nil {
+		return baseInvocation.RunOptions.RequestID
 	}
-	if currentInvocation.GetParentInvocation() != nil ||
-		currentInvocation.Branch != "" ||
-		currentInvocation.GetEventFilterKey() != "" ||
-		currentInvocation.RunOptions.RequestID != "" {
-		return currentInvocation
+	return ""
+}
+
+func modelExecutionEventParentInvocationID(baseInvocation, currentInvocation *agent.Invocation) string {
+	if currentInvocation != nil {
+		if parent := currentInvocation.GetParentInvocation(); parent != nil {
+			return parent.InvocationID
+		}
 	}
-	return baseInvocation
+	if baseInvocation != nil {
+		if parent := baseInvocation.GetParentInvocation(); parent != nil {
+			return parent.InvocationID
+		}
+	}
+	return ""
+}
+
+func modelExecutionEventBranch(baseInvocation, currentInvocation *agent.Invocation) string {
+	if currentInvocation != nil && currentInvocation.Branch != "" {
+		return currentInvocation.Branch
+	}
+	if baseInvocation != nil {
+		return baseInvocation.Branch
+	}
+	return ""
+}
+
+func modelExecutionEventFilterKey(baseInvocation, currentInvocation *agent.Invocation) string {
+	if currentInvocation != nil {
+		if filterKey := currentInvocation.GetEventFilterKey(); filterKey != "" {
+			return filterKey
+		}
+	}
+	if baseInvocation != nil {
+		return baseInvocation.GetEventFilterKey()
+	}
+	return ""
 }
 
 // modelExecutionConfig contains configuration for model execution with events.
