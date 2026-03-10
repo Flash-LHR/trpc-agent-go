@@ -351,17 +351,28 @@ func (e *Executor) forwardExecutionEvents(
 ) {
 	if ctx == nil {
 		ctx = context.Background()
-	} else {
-		ctx = context.WithoutCancel(ctx)
 	}
 	defer close(dst)
 	for evt := range src {
 		if isGraphCompletionEvent(evt) {
 			continue
 		}
-		if err := event.EmitEvent(ctx, dst, evt); err != nil {
-			log.WarnfContext(ctx, "Failed to forward executor event: %v", err)
-			return
+		if ctx.Err() == nil {
+			if err := event.EmitEvent(ctx, dst, evt); err == nil {
+				continue
+			} else if ctx.Err() == nil {
+				log.WarnfContext(ctx, "Failed to forward executor event: %v", err)
+				return
+			}
+		}
+		select {
+		case dst <- evt:
+		default:
+			log.WarnfContext(
+				context.Background(),
+				"Drop forwarded executor event after cancellation because output channel is full: object=%s",
+				evt.Object,
+			)
 		}
 	}
 }

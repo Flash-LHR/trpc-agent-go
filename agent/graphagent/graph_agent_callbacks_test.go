@@ -255,3 +255,53 @@ func TestGraphAgent_CallbackContextPropagation(t *testing.T) {
 	// Verify that the context value was captured in AfterAgent callback.
 	require.Equal(t, testValue, capturedValue, "context value should be propagated from BeforeAgent to AfterAgent")
 }
+
+func TestGraphAgent_BeforeCallbackContextOverride_PreservesInvocationAndCapture(t *testing.T) {
+	schema := graph.MessagesStateSchema()
+	sg := graph.NewStateGraph(schema)
+	var sawInvocation bool
+	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		_, sawInvocation = agent.InvocationFromContext(ctx)
+		return graph.State{
+			graph.StateKeyLastResponse: "answer",
+		}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	callbacks := agent.NewCallbacks()
+	callbacks.RegisterBeforeAgent(func(ctx context.Context, args *agent.BeforeAgentArgs) (*agent.BeforeAgentResult, error) {
+		return &agent.BeforeAgentResult{
+			Context: context.Background(),
+		}, nil
+	})
+	graphAgent, err := New("test-graph", compiled, WithAgentCallbacks(callbacks))
+	require.NoError(t, err)
+
+	invocation := &agent.Invocation{
+		InvocationID: "test-invocation",
+		AgentName:    "test-graph",
+		Message:      model.NewUserMessage("test"),
+		RunOptions: agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		},
+	}
+	ctx := graph.WithGraphCompletionCapture(
+		agent.NewInvocationContext(context.Background(), invocation),
+	)
+	events, err := graphAgent.runWithCallbacks(ctx, invocation)
+	require.NoError(t, err)
+
+	var sawRawCompletion bool
+	var sawVisibleCompletion bool
+	for evt := range events {
+		if evt.Done && evt.Object == graph.ObjectTypeGraphExecution {
+			sawRawCompletion = true
+		}
+		if evt.Done && evt.Object == model.ObjectTypeChatCompletion {
+			sawVisibleCompletion = true
+		}
+	}
+
+	require.True(t, sawInvocation)
+	require.True(t, sawRawCompletion)
+	require.False(t, sawVisibleCompletion)
+}

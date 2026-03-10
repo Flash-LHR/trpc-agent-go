@@ -1327,6 +1327,39 @@ func TestRunner_DisableGraphCompletionEvent_KeepsRunnerCompletionWithWrappedGrap
 	}
 }
 
+func TestRunner_DisableGraphCompletionEvent_StreamModeUpdates_KeepsFinalTextInRunnerCompletion(t *testing.T) {
+	child := newWrappedGraphChildAgent(t)
+	svc := sessioninmemory.NewSessionService()
+	r := NewRunner(
+		"app",
+		chainagent.New("chain", chainagent.WithSubAgents([]agent.Agent{child})),
+		WithSessionService(svc),
+	)
+	ch, err := r.Run(
+		context.Background(),
+		"u",
+		"updates-mode",
+		model.NewUserMessage("hi"),
+		agent.WithDisableGraphCompletionEvent(true),
+		agent.WithStreamMode(agent.StreamModeUpdates),
+	)
+	require.NoError(t, err)
+
+	var completion *event.Event
+	for evt := range ch {
+		require.NotEqual(t, model.ObjectTypeChatCompletion, evt.Object)
+		if evt.IsRunnerCompletion() {
+			completion = evt
+		}
+	}
+
+	require.NotNil(t, completion)
+	require.NotNil(t, completion.StateDelta)
+	require.Equal(t, `"child-final"`, string(completion.StateDelta[graph.StateKeyLastResponse]))
+	require.Len(t, completion.Response.Choices, 1)
+	require.Equal(t, "child-final", completion.Response.Choices[0].Message.Content)
+}
+
 func newWrappedGraphChildAgent(t *testing.T) agent.Agent {
 	t.Helper()
 	sg := graph.NewStateGraph(graph.MessagesStateSchema())

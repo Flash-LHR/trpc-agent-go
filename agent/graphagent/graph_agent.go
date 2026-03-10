@@ -197,6 +197,7 @@ func (ga *GraphAgent) emitStartBarrierAndWait(ctx context.Context, invocation *a
 func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
 	// Execute the graph.
 	if ga.agentCallbacks != nil {
+		callbackBaseCtx := ctx
 		result, err := ga.agentCallbacks.RunBeforeAgent(ctx, &agent.BeforeAgentArgs{
 			Invocation: invocation,
 		})
@@ -205,7 +206,11 @@ func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.In
 		}
 		// Use the context from result if provided.
 		if result != nil && result.Context != nil {
-			ctx = result.Context
+			ctx = restoreGraphAgentRunContext(
+				callbackBaseCtx,
+				result.Context,
+				invocation,
+			)
 		}
 		if result != nil && result.CustomResponse != nil {
 			// Create a channel that returns the custom response and then closes.
@@ -245,6 +250,24 @@ func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.In
 		), nil
 	}
 	return eventChan, nil
+}
+
+func restoreGraphAgentRunContext(
+	baseCtx context.Context,
+	callbackCtx context.Context,
+	invocation *agent.Invocation,
+) context.Context {
+	if callbackCtx == nil {
+		return baseCtx
+	}
+	restoredCtx := callbackCtx
+	if invocation != nil {
+		restoredCtx = agent.NewInvocationContext(restoredCtx, invocation)
+	}
+	if graph.ShouldCaptureGraphCompletion(baseCtx) {
+		restoredCtx = graph.WithGraphCompletionCapture(restoredCtx)
+	}
+	return restoredCtx
 }
 
 func (ga *GraphAgent) createInitialState(ctx context.Context, invocation *agent.Invocation) graph.State {

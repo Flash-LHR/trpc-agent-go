@@ -447,6 +447,39 @@ func TestForwardExecutionEvents_DrainsQueuedEventsAfterContextCancellation(t *te
 	require.False(t, ok)
 }
 
+func TestForwardExecutionEvents_DoesNotBlockOnBackpressuredOutputAfterCancellation(t *testing.T) {
+	exec := &Executor{}
+	src := make(chan *event.Event, 2)
+	dst := make(chan *event.Event, 1)
+	first := event.New("inv", "author", event.WithObject(ObjectTypeGraphStateUpdate))
+	second := event.New("inv", "author", event.WithObject(ObjectTypeGraphChannelUpdate))
+	src <- first
+	src <- second
+	close(src)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		exec.forwardExecutionEvents(ctx, src, dst)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		require.FailNow(t, "forwardExecutionEvents blocked after cancellation with a full output channel")
+	}
+
+	evt, ok := <-dst
+	require.True(t, ok)
+	require.Equal(t, ObjectTypeGraphStateUpdate, evt.Object)
+
+	_, ok = <-dst
+	require.False(t, ok)
+}
+
 // Ensure handleInterrupt still emits the interrupt event even when
 // the provided context is canceled, because it uses a fresh background
 // context with a timeout for emission.

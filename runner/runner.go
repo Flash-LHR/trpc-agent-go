@@ -671,13 +671,13 @@ type eventLoopContext struct {
 	fallbackStateDelta  map[string][]byte
 	finalError          *model.ResponseError
 	graphCompletionSeen bool
-	// visibleCompletionChoicesSeen tracks whether this run already emitted a
+	// visibleCompletionChoicesEmitted tracks whether this run already emitted a
 	// caller-visible completion snapshot with assistant text.
 	//
 	// When true, runner.completion should preserve state handoff but not echo
 	// the same final assistant text again.
-	visibleCompletionChoicesSeen bool
-	streamFilter                 graph.StreamModeFilter
+	visibleCompletionChoicesEmitted bool
+	streamFilter                    graph.StreamModeFilter
 	// emittedAssistantResponseIDs tracks response IDs that already produced a
 	// non-partial assistant message event during this run.
 	//
@@ -775,10 +775,6 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 	}
 
 	r.recordEmittedAssistantResponseID(loop, agentEvent)
-	if graph.IsVisibleGraphCompletionEvent(agentEvent) &&
-		eventHasAssistantMessageContent(agentEvent) {
-		loop.visibleCompletionChoicesSeen = true
-	}
 
 	// Capture graph-level completion snapshot for final event.
 	if isGraphCompletionSnapshotEvent(agentEvent) {
@@ -802,6 +798,11 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 	r.recordRunEvent(loop)
 	if !loop.streamFilter.Allows(agentEvent) {
 		return nil
+	}
+
+	if graph.IsVisibleGraphCompletionEvent(agentEvent) &&
+		eventHasAssistantMessageContent(agentEvent) {
+		loop.visibleCompletionChoicesEmitted = true
 	}
 
 	// Emit event to output channel.
@@ -1285,7 +1286,7 @@ func (r *runner) shouldEchoFinalChoicesInCompletion(
 	if len(loop.finalChoices) == 0 {
 		return false
 	}
-	if loop.visibleCompletionChoicesSeen {
+	if loop.visibleCompletionChoicesEmitted {
 		return false
 	}
 	if loop.invocation == nil {
