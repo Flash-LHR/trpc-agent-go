@@ -1358,6 +1358,12 @@ func TestRunner_DisableGraphCompletionEvent_StreamModeUpdates_KeepsFinalTextInRu
 	require.Equal(t, `"child-final"`, string(completion.StateDelta[graph.StateKeyLastResponse]))
 	require.Len(t, completion.Response.Choices, 1)
 	require.Equal(t, "child-final", completion.Response.Choices[0].Message.Content)
+	assertSessionKeepsSingleFinalAssistantEvent(
+		t,
+		svc,
+		"updates-mode",
+		"child-final",
+	)
 }
 
 func TestRunner_DisableGraphCompletionEvent_StreamModeUpdates_WithFinalModelResponses_KeepsFinalTextInRunnerCompletion(t *testing.T) {
@@ -1392,6 +1398,12 @@ func TestRunner_DisableGraphCompletionEvent_StreamModeUpdates_WithFinalModelResp
 	require.Equal(t, `"wrapped-final"`, string(completion.StateDelta[graph.StateKeyLastResponse]))
 	require.Len(t, completion.Response.Choices, 1)
 	require.Equal(t, "wrapped-final", completion.Response.Choices[0].Message.Content)
+	assertSessionKeepsSingleFinalAssistantEvent(
+		t,
+		svc,
+		"updates-mode-final-model",
+		"wrapped-final",
+	)
 }
 
 func newWrappedGraphChildAgent(t *testing.T) agent.Agent {
@@ -1423,6 +1435,38 @@ func newWrappedGraphLLMChildAgent(t *testing.T) agent.Agent {
 	child, err := graphagent.New("graph-child-llm", compiled)
 	require.NoError(t, err)
 	return child
+}
+
+func assertSessionKeepsSingleFinalAssistantEvent(
+	t *testing.T,
+	svc *sessioninmemory.SessionService,
+	sessionID string,
+	finalText string,
+) {
+	t.Helper()
+	sess, err := svc.GetSession(context.Background(), session.Key{
+		AppName:   "app",
+		UserID:    "u",
+		SessionID: sessionID,
+	})
+	require.NoError(t, err)
+
+	var assistantTextCount int
+	for _, evt := range sess.Events {
+		if evt.IsRunnerCompletion() {
+			require.Empty(t, evt.Response.Choices)
+		}
+		if evt.Response == nil || len(evt.Response.Choices) == 0 {
+			continue
+		}
+		for _, choice := range evt.Response.Choices {
+			if choice.Message.Content == finalText {
+				assistantTextCount++
+			}
+		}
+	}
+
+	require.Equal(t, 1, assistantTextCount)
 }
 
 func TestRunner_GraphCompletion_DedupFinalChoices(t *testing.T) {

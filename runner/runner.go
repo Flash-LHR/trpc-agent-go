@@ -660,19 +660,21 @@ func (r *runner) getOrCreateSession(
 
 // eventLoopContext bundles all channels and state required by the event loop.
 type eventLoopContext struct {
-	sess                *session.Session
-	invocation          *agent.Invocation
-	agentEventCh        <-chan *event.Event
-	flushChan           chan *flush.FlushRequest
-	processedEventCh    chan *event.Event
-	runHandle           *runHandle
-	finalStateDelta     map[string][]byte
-	finalChoices        []model.Choice
-	fallbackChoices     []model.Choice
-	fallbackResponseID  string
-	fallbackStateDelta  map[string][]byte
-	finalError          *model.ResponseError
-	graphCompletionSeen bool
+	sess                                      *session.Session
+	invocation                                *agent.Invocation
+	agentEventCh                              <-chan *event.Event
+	flushChan                                 chan *flush.FlushRequest
+	processedEventCh                          chan *event.Event
+	runHandle                                 *runHandle
+	finalStateDelta                           map[string][]byte
+	finalChoices                              []model.Choice
+	fallbackChoices                           []model.Choice
+	fallbackResponseID                        string
+	fallbackStateDelta                        map[string][]byte
+	finalError                                *model.ResponseError
+	graphCompletionSeen                       bool
+	filteredVisibleCompletionChoicesPersisted bool
+	filteredPersistedAssistantResponseIDs     map[string]struct{}
 	// visibleCompletionChoicesEmitted tracks whether this run already emitted a
 	// caller-visible completion snapshot with assistant text.
 	//
@@ -785,9 +787,16 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 	if shouldSuppressGraphCompletionEvent(loop, agentEvent) {
 		return nil
 	}
+	shouldForwardEvent := loop.streamFilter.Allows(agentEvent)
 
 	// Append qualifying events to session and trigger summarization.
-	r.handleEventPersistence(ctx, loop.invocation, loop.sess, agentEvent)
+	persisted := r.handleEventPersistence(ctx, loop.invocation, loop.sess, agentEvent)
+	r.recordFilteredPersistedAssistantEvent(
+		loop,
+		agentEvent,
+		shouldForwardEvent,
+		persisted,
+	)
 
 	// Notify completion if required.
 	if agentEvent.RequiresCompletion {
@@ -796,7 +805,7 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 	}
 
 	r.recordRunEvent(loop)
-	if !loop.streamFilter.Allows(agentEvent) {
+	if !shouldForwardEvent {
 		return nil
 	}
 
@@ -812,6 +821,31 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 	}
 
 	return nil
+}
+
+func (r *runner) recordFilteredPersistedAssistantEvent(
+	loop *eventLoopContext,
+	agentEvent *event.Event,
+	shouldForwardEvent bool,
+	persisted bool,
+) {
+	if loop == nil || agentEvent == nil || shouldForwardEvent || !persisted {
+		return
+	}
+	if !eventHasAssistantMessageContent(agentEvent) {
+		return
+	}
+	if graph.IsVisibleGraphCompletionEvent(agentEvent) {
+		loop.filteredVisibleCompletionChoicesPersisted = true
+		return
+	}
+	if agentEvent.Response == nil || agentEvent.Response.ID == "" {
+		return
+	}
+	if loop.filteredPersistedAssistantResponseIDs == nil {
+		loop.filteredPersistedAssistantResponseIDs = make(map[string]struct{})
+	}
+	loop.filteredPersistedAssistantResponseIDs[agentEvent.Response.ID] = struct{}{}
 }
 
 func (r *runner) recordRunEvent(loop *eventLoopContext) {
@@ -948,13 +982,13 @@ func (r *runner) handleEventPersistence(
 	invocation *agent.Invocation,
 	sess *session.Session,
 	agentEvent *event.Event,
-) {
+) bool {
 	// Ensure error events have content so they are valid for persistence.
 	ensureErrorEventContent(agentEvent)
 
 	// Append event to session if it's complete (not partial).
 	if !r.shouldPersistEvent(agentEvent) {
-		return
+		return false
 	}
 
 	persistEvent := agentEvent
@@ -971,7 +1005,7 @@ func (r *runner) handleEventPersistence(
 		persistEvent,
 	); err != nil {
 		log.Errorf("Failed to append event to session: %v", err)
-		return
+		return false
 	}
 
 	// Skip user messages, tool call events, and invalid content.
@@ -979,7 +1013,7 @@ func (r *runner) handleEventPersistence(
 	if agentEvent.IsUserMessage() ||
 		agentEvent.IsToolCallResponse() ||
 		!agentEvent.IsValidContent() {
-		return
+		return true
 	}
 
 	// Trigger summary check after tool results to handle long tool call
@@ -989,7 +1023,7 @@ func (r *runner) handleEventPersistence(
 	// Skip if the event explicitly opts out of summarization.
 	if agentEvent.Actions != nil &&
 		agentEvent.Actions.SkipSummarization {
-		return
+		return true
 	}
 
 	// When sync intra-run summary is active for this
@@ -1001,7 +1035,7 @@ func (r *runner) handleEventPersistence(
 	if syncSummaryIntraRun, ok := agent.GetStateValue[bool](
 		invocation, agent.SyncSummaryIntraRunStateKey,
 	); ok && syncSummaryIntraRun && agentEvent.IsToolResultResponse() {
-		return
+		return true
 	}
 
 	// Use EnqueueSummaryJob for true asynchronous processing.
@@ -1016,6 +1050,7 @@ func (r *runner) handleEventPersistence(
 
 	// Note: Auto memory extraction is triggered once at runner completion,
 	// not here, to avoid redundant extraction calls.
+	return true
 }
 
 // shouldPersistEvent determines if an event should be persisted to the session.
@@ -1235,7 +1270,18 @@ func (r *runner) emitRunnerCompletion(ctx context.Context, loop *eventLoopContex
 	}
 
 	// Append runner completion event to session.
-	if err := r.sessionService.AppendEvent(ctx, loop.sess, runnerCompletionEvent); err != nil {
+	persistRunnerCompletionEvent := runnerCompletionEvent
+	if shouldClearRunnerCompletionChoicesInSession(loop, finalStateDelta) {
+		persistRunnerCompletionEvent = runnerCompletionEvent.Clone()
+		if persistRunnerCompletionEvent.Response != nil {
+			persistRunnerCompletionEvent.Response.Choices = nil
+		}
+	}
+	if err := r.sessionService.AppendEvent(
+		ctx,
+		loop.sess,
+		persistRunnerCompletionEvent,
+	); err != nil {
 		log.Errorf("Failed to append runner completion event to session: %v", err)
 	}
 
@@ -1276,6 +1322,24 @@ func (r *runner) propagateGraphCompletion(
 		b, _ := json.Marshal(finalChoices)
 		_ = json.Unmarshal(b, &runnerCompletionEvent.Response.Choices)
 	}
+}
+
+func shouldClearRunnerCompletionChoicesInSession(
+	loop *eventLoopContext,
+	finalStateDelta map[string][]byte,
+) bool {
+	if loop == nil {
+		return false
+	}
+	if loop.filteredVisibleCompletionChoicesPersisted {
+		return true
+	}
+	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)
+	if finalResponseID == "" {
+		return false
+	}
+	_, ok := loop.filteredPersistedAssistantResponseIDs[finalResponseID]
+	return ok
 }
 
 func (r *runner) completionChoicesForRunner(
