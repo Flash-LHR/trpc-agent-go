@@ -1159,6 +1159,28 @@ func TestDeepCopyAny_ChannelAndFuncFields(t *testing.T) {
 	})
 }
 
+func TestDeepCopyAny_PointerKeyDistinguishesStructAndFieldPointers(t *testing.T) {
+	type inner struct {
+		Name string
+	}
+	type pair struct {
+		Inner *inner
+		Name  *string
+	}
+	value := &inner{Name: "alice"}
+	orig := pair{
+		Inner: value,
+		Name:  &value.Name,
+	}
+	copiedAny := deepCopyAny(orig)
+	copied, ok := copiedAny.(pair)
+	require.True(t, ok)
+	require.NotNil(t, copied.Inner)
+	require.NotNil(t, copied.Name)
+	assert.Equal(t, "alice", copied.Inner.Name)
+	assert.Equal(t, "alice", *copied.Name)
+}
+
 func BenchmarkDeepCopyAny(b *testing.B) {
 	complexData := map[string]any{
 		"users": []map[string]any{
@@ -1632,6 +1654,22 @@ func TestJSONSafeCopy_PointerCycleInUnsafeStruct(t *testing.T) {
 
 	result := jsonSafeCopy(a)
 	require.NotNil(t, result)
+}
+
+func TestJSONSafeCopyPointer_DistinguishesStructAndFieldPointers(t *testing.T) {
+	type inner struct {
+		Name string
+	}
+	value := &inner{Name: "alice"}
+	visited := newVisitedMap()
+	copiedStructAny := jsonSafeCopyPointer(reflect.ValueOf(value), visited)
+	copiedNameAny := jsonSafeCopyPointer(reflect.ValueOf(&value.Name), visited)
+	copiedStruct, ok := copiedStructAny.(*inner)
+	require.True(t, ok)
+	copiedName, ok := copiedNameAny.(*string)
+	require.True(t, ok)
+	assert.Equal(t, "alice", copiedStruct.Name)
+	assert.Equal(t, "alice", *copiedName)
 }
 
 func TestJSONSafeCopy_NilMapInUnsafeStruct(t *testing.T) {

@@ -56,8 +56,8 @@ func newVisitedMap() visitedMap {
 	return make(visitedMap)
 }
 
-func pointerVisitKey(ptr uintptr) visitKey {
-	return visitKey{kind: visitKindPointer, ptr: ptr}
+func pointerVisitKey(ptr uintptr, typ reflect.Type) visitKey {
+	return visitKey{kind: visitKindPointer, typ: typ, ptr: ptr}
 }
 
 func mapVisitKey(ptr uintptr, typ reflect.Type) visitKey {
@@ -501,7 +501,7 @@ func deepCopyModelImageWithVisited(
 	if in == nil {
 		return nil
 	}
-	key := pointerVisitKey(reflect.ValueOf(in).Pointer())
+	key := pointerVisitKey(reflect.ValueOf(in).Pointer(), reflect.TypeOf(in))
 	if cached, ok := visited[key]; ok {
 		return cached.(*model.Image)
 	}
@@ -525,7 +525,7 @@ func deepCopyModelAudioWithVisited(
 	if in == nil {
 		return nil
 	}
-	key := pointerVisitKey(reflect.ValueOf(in).Pointer())
+	key := pointerVisitKey(reflect.ValueOf(in).Pointer(), reflect.TypeOf(in))
 	if cached, ok := visited[key]; ok {
 		return cached.(*model.Audio)
 	}
@@ -549,7 +549,7 @@ func deepCopyModelFileWithVisited(
 	if in == nil {
 		return nil
 	}
-	key := pointerVisitKey(reflect.ValueOf(in).Pointer())
+	key := pointerVisitKey(reflect.ValueOf(in).Pointer(), reflect.TypeOf(in))
 	if cached, ok := visited[key]; ok {
 		return cached.(*model.File)
 	}
@@ -621,7 +621,7 @@ func deepCopyStringPointerWithVisited(
 	if in == nil {
 		return nil
 	}
-	key := pointerVisitKey(reflect.ValueOf(in).Pointer())
+	key := pointerVisitKey(reflect.ValueOf(in).Pointer(), reflect.TypeOf(in))
 	if cached, ok := visited[key]; ok {
 		return cached.(*string)
 	}
@@ -637,7 +637,7 @@ func deepCopyIntPointerWithVisited(
 	if in == nil {
 		return nil
 	}
-	key := pointerVisitKey(reflect.ValueOf(in).Pointer())
+	key := pointerVisitKey(reflect.ValueOf(in).Pointer(), reflect.TypeOf(in))
 	if cached, ok := visited[key]; ok {
 		return cached.(*int)
 	}
@@ -708,7 +708,7 @@ func copyPointer(rv reflect.Value, visited visitedMap) any {
 	if rv.IsNil() {
 		return nil
 	}
-	key := pointerVisitKey(rv.Pointer())
+	key := pointerVisitKey(rv.Pointer(), rv.Type())
 	if cached, ok := visited[key]; ok {
 		return cached
 	}
@@ -1032,7 +1032,7 @@ func jsonSafeCopyPointer(
 	if rv.IsNil() {
 		return nil
 	}
-	key := pointerVisitKey(rv.Pointer())
+	key := pointerVisitKey(rv.Pointer(), rv.Type())
 	if cached, ok := visited[key]; ok {
 		return cached
 	}
