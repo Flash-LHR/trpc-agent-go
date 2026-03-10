@@ -1485,6 +1485,24 @@ func cloneEventStateDelta(stateDelta map[string][]byte) map[string][]byte {
 	return cloned
 }
 
+func streamToolEventError(ev *event.Event) error {
+	if ev == nil || !ev.IsError() {
+		return nil
+	}
+	if ev.Error != nil && ev.Error.Type == agent.ErrorTypeStopAgentError {
+		return agent.NewStopError(ev.Error.Message)
+	}
+	if ev.Error != nil {
+		return fmt.Errorf(
+			"%s: %s: %s",
+			ErrorStreamableToolExecution,
+			ev.Error.Type,
+			ev.Error.Message,
+		)
+	}
+	return fmt.Errorf(ErrorStreamableToolExecution)
+}
+
 // marshalChunkToText converts a chunk content into a string representation.
 func marshalChunkToText(content any) string {
 	switch v := content.(type) {
@@ -1738,6 +1756,9 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 			return err
 		}
 		f.appendInnerEventContent(ev, contents)
+		if err := streamToolEventError(ev); err != nil {
+			return err
+		}
 		return nil
 	}
 

@@ -671,7 +671,13 @@ type eventLoopContext struct {
 	fallbackStateDelta  map[string][]byte
 	finalError          *model.ResponseError
 	graphCompletionSeen bool
-	streamFilter        graph.StreamModeFilter
+	// visibleCompletionChoicesSeen tracks whether this run already emitted a
+	// caller-visible completion snapshot with assistant text.
+	//
+	// When true, runner.completion should preserve state handoff but not echo
+	// the same final assistant text again.
+	visibleCompletionChoicesSeen bool
+	streamFilter                 graph.StreamModeFilter
 	// emittedAssistantResponseIDs tracks response IDs that already produced a
 	// non-partial assistant message event during this run.
 	//
@@ -764,8 +770,15 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 	}
 
 	agentEvent = r.applyEventPlugins(ctx, loop.invocation, agentEvent)
+	if agentEvent == nil {
+		return nil
+	}
 
 	r.recordEmittedAssistantResponseID(loop, agentEvent)
+	if graph.IsVisibleGraphCompletionEvent(agentEvent) &&
+		eventHasAssistantMessageContent(agentEvent) {
+		loop.visibleCompletionChoicesSeen = true
+	}
 
 	// Capture graph-level completion snapshot for final event.
 	if isGraphCompletionSnapshotEvent(agentEvent) {
@@ -858,7 +871,7 @@ func (r *runner) recordEmittedAssistantResponseID(
 	loop *eventLoopContext,
 	e *event.Event,
 ) {
-	if loop == nil || e == nil || e.Response == nil {
+	if loop == nil {
 		return
 	}
 	if loop.invocation == nil {
@@ -870,26 +883,29 @@ func (r *runner) recordEmittedAssistantResponseID(
 	if isGraphCompletionEvent(e) {
 		return
 	}
-	if e.IsPartial || !e.IsValidContent() {
+	if !eventHasAssistantMessageContent(e) {
 		return
 	}
 	if e.Response.ID == "" {
 		return
 	}
+	if loop.emittedAssistantResponseIDs == nil {
+		loop.emittedAssistantResponseIDs = make(map[string]struct{})
+	}
+	loop.emittedAssistantResponseIDs[e.Response.ID] = struct{}{}
+}
+
+func eventHasAssistantMessageContent(e *event.Event) bool {
+	if e == nil || e.Response == nil || e.IsPartial || !e.IsValidContent() {
+		return false
+	}
 	for _, choice := range e.Response.Choices {
 		msg := choice.Message
-		if msg.Role != model.RoleAssistant {
-			continue
+		if msg.Role == model.RoleAssistant && msg.Content != "" {
+			return true
 		}
-		if msg.Content == "" {
-			continue
-		}
-		if loop.emittedAssistantResponseIDs == nil {
-			loop.emittedAssistantResponseIDs = make(map[string]struct{})
-		}
-		loop.emittedAssistantResponseIDs[e.Response.ID] = struct{}{}
-		return
 	}
+	return false
 }
 
 // safeEmitRunnerCompletion guards emitRunnerCompletion against panics from session services.
@@ -1267,6 +1283,9 @@ func (r *runner) shouldEchoFinalChoicesInCompletion(
 		return true
 	}
 	if len(loop.finalChoices) == 0 {
+		return false
+	}
+	if loop.visibleCompletionChoicesSeen {
 		return false
 	}
 	if loop.invocation == nil {

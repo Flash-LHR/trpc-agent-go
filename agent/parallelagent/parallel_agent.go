@@ -302,6 +302,7 @@ func (a *ParallelAgent) mergeEventStreams(
 		wg.Add(1)
 		go func(ctx context.Context, inputChan <-chan *event.Event) {
 			defer wg.Done()
+			var emittedAssistantResponseIDs map[string]struct{}
 			// Recover from potential panics during event merging.
 			defer func() {
 				if r := recover(); r != nil {
@@ -311,13 +312,20 @@ func (a *ParallelAgent) mergeEventStreams(
 				}
 			}()
 			for evt := range inputChan {
+				emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
+					emittedAssistantResponseIDs,
+					evt,
+				)
 				if evt != nil && evt.Response != nil && !evt.Response.IsPartial {
 					mu.Lock()
 					*fullRespEvent = evt
 					mu.Unlock()
 				}
 				if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, evt) {
-					if visibleEvent, ok := graph.VisibleGraphCompletionEvent(evt); ok {
+					if visibleEvent, ok := graph.VisibleGraphCompletionEventWithDedup(
+						evt,
+						emittedAssistantResponseIDs,
+					); ok {
 						if err := event.EmitEvent(ctx, outputChan, visibleEvent); err != nil {
 							return
 						}

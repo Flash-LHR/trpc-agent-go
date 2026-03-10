@@ -587,6 +587,11 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 				if graphCompletionSnapshot {
 					sawGraphCompletionSnapshot = true
 				}
+				if ev != nil && ev.Error != nil {
+					pendingCompletionChunk = nil
+					sawGraphCompletionSnapshot = false
+					overrideResult = ""
+				}
 				if content, ok := assistantMessageContent(ev); ok &&
 					!graphCompletionSnapshot &&
 					sawGraphCompletionSnapshot &&

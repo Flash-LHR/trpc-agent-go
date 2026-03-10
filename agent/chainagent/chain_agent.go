@@ -208,7 +208,12 @@ func (a *ChainAgent) executeSubAgents(
 		}
 
 		// Forward all events from the sub-agent.
+		var emittedAssistantResponseIDs map[string]struct{}
 		for subEvent := range subEventChan {
+			emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
+				emittedAssistantResponseIDs,
+				subEvent,
+			)
 			if subEvent != nil && subEvent.Response != nil {
 				tracker.TrackResponse(subEvent.Response)
 				if subEvent.Response.Usage != nil && !subEvent.Response.IsPartial {
@@ -221,7 +226,10 @@ func (a *ChainAgent) executeSubAgents(
 				}
 			}
 			if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, subEvent) {
-				if visibleEvent, ok := graph.VisibleGraphCompletionEvent(subEvent); ok {
+				if visibleEvent, ok := graph.VisibleGraphCompletionEventWithDedup(
+					subEvent,
+					emittedAssistantResponseIDs,
+				); ok {
 					if err := event.EmitEvent(ctx, eventChan, visibleEvent); err != nil {
 						return nil, tokenUsage
 					}

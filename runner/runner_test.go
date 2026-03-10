@@ -1296,19 +1296,33 @@ func TestRunner_DisableGraphCompletionEvent_KeepsRunnerCompletionWithWrappedGrap
 			require.NoError(t, err)
 
 			var completion *event.Event
+			var visibleResponses int
 			for evt := range ch {
 				require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+				if evt.Response != nil &&
+					len(evt.Response.Choices) > 0 &&
+					evt.Response.Choices[0].Message.Content == "child-final" {
+					visibleResponses++
+				}
 				if evt.IsRunnerCompletion() {
 					completion = evt
 				}
 			}
 
+			require.Equal(t, 1, visibleResponses)
 			require.NotNil(t, completion)
 			require.NotNil(t, completion.StateDelta)
 			require.Equal(t, `"child-final"`, string(completion.StateDelta[graph.StateKeyLastResponse]))
 			require.Equal(t, `"child-state"`, string(completion.StateDelta["child_state"]))
-			require.Len(t, completion.Response.Choices, 1)
-			require.Equal(t, "child-final", completion.Response.Choices[0].Message.Content)
+			require.Empty(t, completion.Response.Choices)
+			sess, err := svc.GetSession(context.Background(), session.Key{
+				AppName:   "app",
+				UserID:    "u",
+				SessionID: tt.name,
+			})
+			require.NoError(t, err)
+			require.Len(t, sess.Events, 2)
+			require.Equal(t, "child-final", sess.Events[1].Choices[0].Message.Content)
 		})
 	}
 }
@@ -1324,6 +1338,22 @@ func newWrappedGraphChildAgent(t *testing.T) agent.Agent {
 	})
 	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
 	child, err := graphagent.New("graph-child", compiled)
+	require.NoError(t, err)
+	return child
+}
+
+func newWrappedGraphLLMChildAgent(t *testing.T) agent.Agent {
+	t.Helper()
+	schema := graph.MessagesStateSchema()
+	sg := graph.NewStateGraph(schema)
+	sg.AddLLMNode(
+		"n1",
+		&staticModel{name: "m1", content: "wrapped-final"},
+		"i1",
+		nil,
+	)
+	compiled := sg.SetEntryPoint("n1").SetFinishPoint("n1").MustCompile()
+	child, err := graphagent.New("graph-child-llm", compiled)
 	require.NoError(t, err)
 	return child
 }
@@ -2377,6 +2407,81 @@ func TestRunner_GraphAgentPersistsLLMDoneResponsesWithCallbacksAndHiddenCompleti
 	require.True(t, sess.Events[0].IsUserMessage())
 	require.Equal(t, "first", sess.Events[1].Choices[0].Message.Content)
 	require.Equal(t, "second", sess.Events[2].Choices[0].Message.Content)
+}
+
+func TestRunner_WrappedGraphAgentFinalModelResponses_NoDuplicateFinalText(t *testing.T) {
+	tests := []struct {
+		name  string
+		build func(child agent.Agent) agent.Agent
+	}{
+		{
+			name: "chain",
+			build: func(child agent.Agent) agent.Agent {
+				return chainagent.New("chain", chainagent.WithSubAgents([]agent.Agent{child}))
+			},
+		},
+		{
+			name: "cycle",
+			build: func(child agent.Agent) agent.Agent {
+				return cycleagent.New(
+					"cycle",
+					cycleagent.WithSubAgents([]agent.Agent{child}),
+					cycleagent.WithMaxIterations(1),
+				)
+			},
+		},
+		{
+			name: "parallel",
+			build: func(child agent.Agent) agent.Agent {
+				return parallelagent.New("parallel", parallelagent.WithSubAgents([]agent.Agent{child}))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			child := newWrappedGraphLLMChildAgent(t)
+			svc := sessioninmemory.NewSessionService()
+			r := NewRunner("app", tt.build(child), WithSessionService(svc))
+			ch, err := r.Run(
+				context.Background(),
+				"u",
+				tt.name+"-llm",
+				model.NewUserMessage("hi"),
+				agent.WithDisableGraphCompletionEvent(true),
+				agent.WithGraphEmitFinalModelResponses(true),
+			)
+			require.NoError(t, err)
+
+			var completion *event.Event
+			var finalTextEvents int
+			for evt := range ch {
+				require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+				if evt.Response != nil &&
+					len(evt.Response.Choices) > 0 &&
+					evt.Response.Choices[0].Message.Content == "wrapped-final" {
+					finalTextEvents++
+				}
+				if evt.IsRunnerCompletion() {
+					completion = evt
+				}
+			}
+
+			require.Equal(t, 1, finalTextEvents)
+			require.NotNil(t, completion)
+			require.NotNil(t, completion.StateDelta)
+			require.Equal(t, `"wrapped-final"`, string(completion.StateDelta[graph.StateKeyLastResponse]))
+			require.Empty(t, completion.Response.Choices)
+
+			sess, err := svc.GetSession(context.Background(), session.Key{
+				AppName:   "app",
+				UserID:    "u",
+				SessionID: tt.name + "-llm",
+			})
+			require.NoError(t, err)
+			require.Len(t, sess.Events, 2)
+			require.Equal(t, "wrapped-final", sess.Events[1].Choices[0].Message.Content)
+		})
+	}
 }
 
 func TestPropagateGraphCompletion_NilStateValue(t *testing.T) {

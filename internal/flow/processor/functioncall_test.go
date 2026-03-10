@@ -2924,6 +2924,37 @@ func (s *finalResultStreamTool) StreamableCall(
 	return st.Reader, nil
 }
 
+type errorThenFinalResultStreamTool struct{ name string }
+
+func (s *errorThenFinalResultStreamTool) Declaration() *tool.Declaration {
+	return &tool.Declaration{Name: s.name}
+}
+
+func (s *errorThenFinalResultStreamTool) StreamableCall(
+	ctx context.Context,
+	_ []byte,
+) (*tool.StreamReader, error) {
+	st := tool.NewStream(4)
+	go func() {
+		defer st.Writer.Close()
+		st.Writer.Send(tool.StreamChunk{
+			Content: event.NewErrorEvent(
+				"inner-inv",
+				"inner-agent",
+				agent.ErrorTypeAgentCallbackError,
+				"after callback failed",
+			),
+		}, nil)
+		st.Writer.Send(tool.StreamChunk{
+			Content: tool.FinalResultChunk{
+				Result:     "stale-result",
+				StateDelta: map[string][]byte{"final": []byte(`"stale"`)},
+			},
+		}, nil)
+	}()
+	return st.Reader, nil
+}
+
 func TestExecuteStreamableTool_PreservesFinalResultChunk(t *testing.T) {
 	f := NewFunctionCallResponseProcessor(false, nil)
 	ctx := context.Background()
@@ -3063,6 +3094,38 @@ func TestExecuteStreamableTool_FinalResultChunkNilResultOverridesMergedContent(t
 	require.NotNil(t, second)
 	require.True(t, second.IsPartial)
 	require.Equal(t, []byte(`"ok"`), second.StateDelta["final"])
+}
+
+func TestExecuteStreamableTool_ErrorEventStopsBeforeStaleFinalResult(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{
+		InvocationID: "inv-final-error",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID:       "c1",
+		Function: model.FunctionDefinitionParam{Name: "final"},
+	}
+	st := &errorThenFinalResultStreamTool{name: "final"}
+	ch := make(chan *event.Event, 4)
+	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.Error(t, err)
+	require.Nil(t, res)
+
+	evt := <-ch
+	require.NotNil(t, evt)
+	require.Equal(t, model.ObjectTypeError, evt.Object)
+	require.NotNil(t, evt.Error)
+	require.Equal(t, "after callback failed", evt.Error.Message)
+
+	select {
+	case extra := <-ch:
+		t.Fatalf("unexpected event after terminal error: %#v", extra)
+	default:
+	}
 }
 
 func TestProcessStreamChunk_PointerFinalResultChunkMarksSeen(t *testing.T) {

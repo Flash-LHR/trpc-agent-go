@@ -349,6 +349,11 @@ func (e *Executor) forwardExecutionEvents(
 	src <-chan *event.Event,
 	dst chan<- *event.Event,
 ) {
+	if ctx == nil {
+		ctx = context.Background()
+	} else {
+		ctx = context.WithoutCancel(ctx)
+	}
 	defer close(dst)
 	for evt := range src {
 		if isGraphCompletionEvent(evt) {

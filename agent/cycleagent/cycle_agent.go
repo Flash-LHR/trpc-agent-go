@@ -196,13 +196,21 @@ func (a *CycleAgent) runSubAgent(
 
 	// Forward events from the sub-agent and check for escalation.
 	visibleCtx := graph.WithoutGraphCompletionCapture(ctx)
+	var emittedAssistantResponseIDs map[string]struct{}
 	for subEvent := range subEventChan {
+		emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
+			emittedAssistantResponseIDs,
+			subEvent,
+		)
 		if subEvent != nil && subEvent.Response != nil && !subEvent.Response.IsPartial {
 			*fullRespEvent = subEvent
 		}
 		escalationEvent := subEvent
 		if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, subEvent) {
-			if visibleEvent, ok := graph.VisibleGraphCompletionEvent(subEvent); ok {
+			if visibleEvent, ok := graph.VisibleGraphCompletionEventWithDedup(
+				subEvent,
+				emittedAssistantResponseIDs,
+			); ok {
 				escalationEvent = visibleEvent
 				if err := event.EmitEvent(ctx, eventChan, visibleEvent); err != nil {
 					return true

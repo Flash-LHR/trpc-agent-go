@@ -64,6 +64,26 @@ func newGraphAgentWithAfterCallback(
 	return ga
 }
 
+func newGraphAgentWithAfterCallbackError(
+	t *testing.T,
+	state graph.State,
+	err error,
+) *graphagent.GraphAgent {
+	t.Helper()
+	sg := graph.NewStateGraph(graph.MessagesStateSchema())
+	sg.AddNode("done", func(ctx context.Context, input graph.State) (any, error) {
+		return state, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	callbacks := agent.NewCallbacks()
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		return nil, err
+	})
+	ga, runErr := graphagent.New("graph-child-callback-error", compiled, graphagent.WithAgentCallbacks(callbacks))
+	require.NoError(t, runErr)
+	return ga
+}
+
 func (m *fixedResponseModel) GenerateContent(
 	ctx context.Context,
 	request *model.Request,
@@ -1611,6 +1631,46 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 	require.True(t, sawFinalChunk)
 	require.Equal(t, "after callback", finalChunk.Result)
 	require.Equal(t, []byte(`"child-state"`), finalChunk.StateDelta[graphStateKey])
+}
+
+func TestTool_StreamableCall_DisableGraphCompletionEvent_DropsPendingFinalResultAfterCallbackError(t *testing.T) {
+	ga := newGraphAgentWithAfterCallbackError(
+		t,
+		graph.State{
+			graph.StateKeyLastResponse: "child-final",
+			graphStateKey:              "child-state",
+		},
+		errors.New("after callback failed"),
+	)
+	at := NewTool(ga, WithStreamInner(true), WithHistoryScope(HistoryScopeParentBranch))
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	defer reader.Close()
+	var sawError bool
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		if evt, ok := chunk.Content.(*event.Event); ok {
+			if evt.Object == model.ObjectTypeError &&
+				evt.Error != nil &&
+				evt.Error.Message == "after callback failed" {
+				sawError = true
+			}
+			continue
+		}
+		t.Fatalf("unexpected final result chunk after callback error: %#v", chunk.Content)
+	}
+	require.True(t, sawError)
 }
 
 func TestTool_StreamInner_FlagFalse(t *testing.T) {

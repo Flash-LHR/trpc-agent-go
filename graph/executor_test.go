@@ -426,6 +426,27 @@ func TestExecutor_DisableGraphCompletionEvent_SuppressesOutput(t *testing.T) {
 	}
 }
 
+func TestForwardExecutionEvents_DrainsQueuedEventsAfterContextCancellation(t *testing.T) {
+	exec := &Executor{}
+	src := make(chan *event.Event, 2)
+	dst := make(chan *event.Event, 2)
+	src <- event.New("inv", "author", event.WithObject(ObjectTypeGraphStateUpdate))
+	src <- NewGraphCompletionEvent(WithCompletionEventInvocationID("inv"))
+	close(src)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	exec.forwardExecutionEvents(ctx, src, dst)
+
+	evt, ok := <-dst
+	require.True(t, ok)
+	require.Equal(t, ObjectTypeGraphStateUpdate, evt.Object)
+
+	_, ok = <-dst
+	require.False(t, ok)
+}
+
 // Ensure handleInterrupt still emits the interrupt event even when
 // the provided context is canceled, because it uses a fresh background
 // context with a timeout for emission.

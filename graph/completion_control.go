@@ -11,6 +11,7 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -93,6 +94,51 @@ func VisibleGraphCompletionEvent(evt *event.Event) (*event.Event, bool) {
 	return visible, true
 }
 
+// RecordAssistantResponseID stores the response ID when the event contains a
+// non-partial assistant message so visible completion snapshots can avoid
+// re-emitting the same final answer text.
+func RecordAssistantResponseID(
+	emitted map[string]struct{},
+	evt *event.Event,
+) map[string]struct{} {
+	if evt == nil || evt.Response == nil || evt.IsPartial || evt.Response.ID == "" {
+		return emitted
+	}
+	for _, choice := range evt.Response.Choices {
+		msg := choice.Message
+		if msg.Role != model.RoleAssistant || msg.Content == "" {
+			continue
+		}
+		if emitted == nil {
+			emitted = make(map[string]struct{})
+		}
+		emitted[evt.Response.ID] = struct{}{}
+		return emitted
+	}
+	return emitted
+}
+
+// VisibleGraphCompletionEventWithDedup rewrites a terminal graph completion
+// event into a caller-visible response event and clears duplicated final
+// choices when the corresponding assistant response was already emitted.
+func VisibleGraphCompletionEventWithDedup(
+	evt *event.Event,
+	emittedAssistantResponseIDs map[string]struct{},
+) (*event.Event, bool) {
+	visible, ok := VisibleGraphCompletionEvent(evt)
+	if !ok {
+		return nil, false
+	}
+	if shouldClearVisibleGraphCompletionChoices(
+		visible,
+		emittedAssistantResponseIDs,
+	) {
+		visible.Response = visible.Response.Clone()
+		visible.Response.Choices = nil
+	}
+	return visible, true
+}
+
 // ShouldSuppressGraphCompletionEvent reports whether the caller-visible stream
 // should hide the terminal graph completion event for this invocation.
 func ShouldSuppressGraphCompletionEvent(
@@ -107,4 +153,34 @@ func ShouldSuppressGraphCompletionEvent(
 		return false
 	}
 	return IsGraphCompletionEvent(evt)
+}
+
+func shouldClearVisibleGraphCompletionChoices(
+	evt *event.Event,
+	emittedAssistantResponseIDs map[string]struct{},
+) bool {
+	if evt == nil || evt.Response == nil || len(evt.Response.Choices) == 0 {
+		return false
+	}
+	responseID := completionResponseIDFromStateDelta(evt.StateDelta)
+	if responseID == "" {
+		return false
+	}
+	_, ok := emittedAssistantResponseIDs[responseID]
+	return ok
+}
+
+func completionResponseIDFromStateDelta(stateDelta map[string][]byte) string {
+	if stateDelta == nil {
+		return ""
+	}
+	raw, ok := stateDelta[StateKeyLastResponseID]
+	if !ok || len(raw) == 0 {
+		return ""
+	}
+	var responseID string
+	if err := json.Unmarshal(raw, &responseID); err != nil {
+		return ""
+	}
+	return responseID
 }

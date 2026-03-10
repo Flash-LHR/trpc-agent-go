@@ -378,19 +378,27 @@ func (ga *GraphAgent) wrapEventChannel(
 	go func(ctx context.Context) {
 		defer close(wrappedChan)
 		var fullRespEvent *event.Event
+		var emittedAssistantResponseIDs map[string]struct{}
 		visibleCtx := graph.WithoutGraphCompletionCapture(ctx)
 		// Forward all events from the original channel
 		for evt := range originalChan {
 			if evt != nil && evt.Response != nil && !evt.Response.IsPartial {
 				fullRespEvent = evt
 			}
+			emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
+				emittedAssistantResponseIDs,
+				evt,
+			)
 			if suppressHiddenCompletion &&
 				graph.ShouldSuppressGraphCompletionEvent(
 					visibleCtx,
 					invocation,
 					evt,
 				) {
-				if visibleEvent, ok := graph.VisibleGraphCompletionEvent(evt); ok {
+				if visibleEvent, ok := graph.VisibleGraphCompletionEventWithDedup(
+					evt,
+					emittedAssistantResponseIDs,
+				); ok {
 					if err := event.EmitEvent(ctx, wrappedChan, visibleEvent); err != nil {
 						return
 					}
