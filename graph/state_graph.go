@@ -27,6 +27,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -458,10 +459,10 @@ func tracingDisabledInContext(ctx context.Context) bool {
 	return ok && tracingDisabled(invocation)
 }
 
-// startNodeSpan reuses the current span when tracing is disabled and otherwise starts a new span.
+// startNodeSpan returns a no-op span when tracing is disabled and otherwise starts a new span.
 func startNodeSpan(ctx context.Context, spanName string) (context.Context, oteltrace.Span, bool) {
 	if tracingDisabledInContext(ctx) {
-		return ctx, oteltrace.SpanFromContext(ctx), false
+		return ctx, noop.Span{}, false
 	}
 	ctx, span := trace.Tracer.Start(ctx, spanName)
 	return ctx, span, true

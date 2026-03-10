@@ -12,13 +12,19 @@ package graph
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/embedded"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -77,6 +83,48 @@ func useSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
 	})
 	return recorder
 }
+
+type trackingSpan struct {
+	embedded.Span
+	mu             sync.Mutex
+	attributes     []attribute.KeyValue
+	recordedErrors []error
+	statusCode     codes.Code
+}
+
+func (s *trackingSpan) End(options ...oteltrace.SpanEndOption)                 {}
+func (s *trackingSpan) AddEvent(name string, options ...oteltrace.EventOption) {}
+func (s *trackingSpan) AddLink(link oteltrace.Link)                            {}
+func (s *trackingSpan) IsRecording() bool                                      { return true }
+
+func (s *trackingSpan) RecordError(err error, options ...oteltrace.EventOption) {
+	if err == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordedErrors = append(s.recordedErrors, err)
+}
+
+func (s *trackingSpan) SpanContext() oteltrace.SpanContext {
+	return oteltrace.NewSpanContext(oteltrace.SpanContextConfig{})
+}
+
+func (s *trackingSpan) SetStatus(code codes.Code, description string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.statusCode = code
+}
+
+func (s *trackingSpan) SetName(name string) {}
+
+func (s *trackingSpan) SetAttributes(kv ...attribute.KeyValue) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attributes = append(s.attributes, kv...)
+}
+
+func (s *trackingSpan) TracerProvider() oteltrace.TracerProvider { return noop.NewTracerProvider() }
 
 // stubAgent is a minimal agent implementation used for subgraph tests.
 type stubAgent struct {
@@ -395,6 +443,41 @@ func TestLLMNode_DisableTracingUsesCurrentSpan(t *testing.T) {
 	require.NoError(t, err)
 	for range ch {
 	}
+}
+
+func TestStartNodeSpan_DisableTracingUsesNoopSpan(t *testing.T) {
+	parentSpan := &trackingSpan{}
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{DisableTracing: true}),
+	)
+	ctx := agent.NewInvocationContext(
+		oteltrace.ContextWithSpan(context.Background(), parentSpan),
+		invocation,
+	)
+
+	_, span, startedSpan := startNodeSpan(ctx, "ignored")
+	require.False(t, startedSpan)
+
+	span.SetAttributes(attribute.String("key", "value"))
+	span.RecordError(errors.New("boom"))
+	span.SetStatus(codes.Error, "boom")
+	itelemetry.TraceAfterInvokeAgent(
+		span,
+		event.NewResponseEvent(
+			"invocation-id",
+			"agent-name",
+			&model.Response{
+				ID:      "response-id",
+				Choices: []model.Choice{{Message: model.NewAssistantMessage("ok")}},
+			},
+		),
+		nil,
+		0,
+	)
+
+	require.Empty(t, parentSpan.attributes)
+	require.Empty(t, parentSpan.recordedErrors)
+	require.NotEqual(t, codes.Error, parentSpan.statusCode)
 }
 
 func TestTraceProcessedModelResponse_DisableTracing(t *testing.T) {
