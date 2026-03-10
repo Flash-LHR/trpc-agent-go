@@ -394,6 +394,22 @@ func isGraphCompletionEvent(evt *event.Event) bool {
 		evt.Object == graph.ObjectTypeGraphExecution
 }
 
+func isGraphCompletionSnapshotEvent(evt *event.Event) bool {
+	return isGraphCompletionEvent(evt) ||
+		graph.IsVisibleGraphCompletionEvent(evt)
+}
+
+func assistantMessageContent(evt *event.Event) (string, bool) {
+	if evt == nil || evt.Response == nil || len(evt.Response.Choices) == 0 {
+		return "", false
+	}
+	message := evt.Response.Choices[0].Message
+	if message.Role != model.RoleAssistant || message.Content == "" {
+		return "", false
+	}
+	return message.Content, true
+}
+
 func graphCompletionResult(evt *event.Event) (string, bool) {
 	if !isGraphCompletionEvent(evt) || evt.Response == nil || len(evt.Response.Choices) == 0 {
 		return "", false
@@ -473,22 +489,32 @@ func (at *Tool) buildChildFilterKey(parentInv *agent.Invocation) string {
 func (at *Tool) collectResponse(evCh <-chan *event.Event) (string, error) {
 	var response strings.Builder
 	var lastAssistantMessage string
+	var sawGraphCompletionSnapshot bool
 	for ev := range evCh {
 		if ev.Error != nil {
 			return "", fmt.Errorf("agent error: %s", ev.Error.Message)
 		}
-		if ev.Response != nil && len(ev.Response.Choices) > 0 {
-			choice := ev.Response.Choices[0]
-			if choice.Message.Role == model.RoleAssistant && choice.Message.Content != "" {
-				if result, ok := graphCompletionResult(ev); ok &&
-					result == lastAssistantMessage {
-					continue
-				}
-				response.WriteString(choice.Message.Content)
-				if !ev.IsPartial {
-					lastAssistantMessage = choice.Message.Content
-				}
-			}
+		graphCompletionSnapshot := isGraphCompletionSnapshotEvent(ev)
+		if graphCompletionSnapshot {
+			sawGraphCompletionSnapshot = true
+		}
+		content, ok := assistantMessageContent(ev)
+		if !ok {
+			continue
+		}
+		if graphCompletionSnapshot && content == lastAssistantMessage {
+			continue
+		}
+		if !graphCompletionSnapshot &&
+			sawGraphCompletionSnapshot &&
+			!ev.IsPartial {
+			response.Reset()
+			lastAssistantMessage = ""
+			sawGraphCompletionSnapshot = false
+		}
+		response.WriteString(content)
+		if !ev.IsPartial {
+			lastAssistantMessage = content
 		}
 	}
 	return response.String(), nil
@@ -545,20 +571,39 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 			}
 			wrapped := at.wrapWithStreamSemantics(subCtx, subInv, evCh)
 
+			var pendingCompletionChunk *tool.FinalResultChunk
+			var sawGraphCompletionSnapshot bool
+			var overrideResult string
 			for ev := range wrapped {
 				if subInv.RunOptions.DisableGraphCompletionEvent && isGraphCompletionEvent(ev) {
 					if chunk, ok := graphCompletionFinalChunk(ev); ok {
-						if stream.Writer.Send(tool.StreamChunk{
-							Content: chunk,
-						}, nil) {
-							return
-						}
+						pendingChunk := chunk
+						pendingCompletionChunk = &pendingChunk
+						sawGraphCompletionSnapshot = true
 					}
 					continue
+				}
+				graphCompletionSnapshot := isGraphCompletionSnapshotEvent(ev)
+				if graphCompletionSnapshot {
+					sawGraphCompletionSnapshot = true
+				}
+				if content, ok := assistantMessageContent(ev); ok &&
+					!graphCompletionSnapshot &&
+					sawGraphCompletionSnapshot &&
+					!ev.IsPartial {
+					overrideResult = content
 				}
 				if stream.Writer.Send(tool.StreamChunk{Content: ev}, nil) {
 					return
 				}
+			}
+			if pendingCompletionChunk != nil {
+				if overrideResult != "" {
+					pendingCompletionChunk.Result = overrideResult
+				}
+				_ = stream.Writer.Send(tool.StreamChunk{
+					Content: *pendingCompletionChunk,
+				}, nil)
 			}
 			return
 		}

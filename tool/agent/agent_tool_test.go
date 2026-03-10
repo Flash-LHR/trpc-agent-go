@@ -42,6 +42,28 @@ type fixedResponseModel struct {
 	response string
 }
 
+func newGraphAgentWithAfterCallback(
+	t *testing.T,
+	state graph.State,
+	customResponse *model.Response,
+) *graphagent.GraphAgent {
+	t.Helper()
+	sg := graph.NewStateGraph(graph.MessagesStateSchema())
+	sg.AddNode("done", func(ctx context.Context, input graph.State) (any, error) {
+		return state, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	callbacks := agent.NewCallbacks()
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		return &agent.AfterAgentResult{
+			CustomResponse: customResponse,
+		}, nil
+	})
+	ga, err := graphagent.New("graph-child-callback", compiled, graphagent.WithAgentCallbacks(callbacks))
+	require.NoError(t, err)
+	return ga
+}
+
 func (m *fixedResponseModel) GenerateContent(
 	ctx context.Context,
 	request *model.Request,
@@ -231,6 +253,33 @@ func TestTool_Call_DisableGraphCompletionEvent_DedupsCapturedGraphCompletionAfte
 	resultText, ok := result.(string)
 	require.True(t, ok)
 	require.Equal(t, "child-final", resultText)
+}
+
+func TestTool_Call_DisableGraphCompletionEvent_PrefersAfterCallbackCustomResponse(t *testing.T) {
+	ga := newGraphAgentWithAfterCallback(
+		t,
+		graph.State{graph.StateKeyLastResponse: "child-final"},
+		&model.Response{
+			Object: "after.custom",
+			Done:   true,
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("after callback"),
+			}},
+		},
+	)
+	at := NewTool(ga, WithHistoryScope(HistoryScopeParentBranch))
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	resultText, ok := result.(string)
+	require.True(t, ok)
+	require.Equal(t, "after callback", resultText)
 }
 
 func TestTool_DefaultSkipSummarization(t *testing.T) {
@@ -1466,6 +1515,102 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_SuppressesStateOnlyComp
 	require.Equal(t, 1, resultChunks)
 	require.Nil(t, finalChunk.Result)
 	require.Equal(t, []byte(graphStateValue), finalChunk.StateDelta[graphStateKey])
+}
+
+func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCustomResponse(t *testing.T) {
+	ga := newGraphAgentWithAfterCallback(
+		t,
+		graph.State{graph.StateKeyLastResponse: "child-final"},
+		&model.Response{
+			Object: "after.custom",
+			Done:   true,
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("after callback"),
+			}},
+		},
+	)
+	at := NewTool(ga, WithStreamInner(true), WithHistoryScope(HistoryScopeParentBranch))
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	defer reader.Close()
+	var sawAfterCallback bool
+	var finalChunk tool.FinalResultChunk
+	var sawFinalChunk bool
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		if evt, ok := chunk.Content.(*event.Event); ok {
+			require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+			if evt.Object == "after.custom" {
+				sawAfterCallback = true
+				require.Len(t, evt.Response.Choices, 1)
+				require.Equal(t, "after callback", evt.Response.Choices[0].Message.Content)
+			}
+			continue
+		}
+		resultChunk, ok := chunk.Content.(tool.FinalResultChunk)
+		require.True(t, ok)
+		finalChunk = resultChunk
+		sawFinalChunk = true
+	}
+	require.True(t, sawAfterCallback)
+	require.True(t, sawFinalChunk)
+	require.Equal(t, "after callback", finalChunk.Result)
+	require.Equal(t, []byte(`"child-final"`), finalChunk.StateDelta[graph.StateKeyLastResponse])
+}
+
+func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCustomResponseForStateOnlyCompletion(t *testing.T) {
+	ga := newGraphAgentWithAfterCallback(
+		t,
+		graph.State{graphStateKey: "child-state"},
+		&model.Response{
+			Object: "after.custom",
+			Done:   true,
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("after callback"),
+			}},
+		},
+	)
+	at := NewTool(ga, WithStreamInner(true), WithHistoryScope(HistoryScopeParentBranch))
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	defer reader.Close()
+	var finalChunk tool.FinalResultChunk
+	var sawFinalChunk bool
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		if _, ok := chunk.Content.(*event.Event); ok {
+			continue
+		}
+		resultChunk, ok := chunk.Content.(tool.FinalResultChunk)
+		require.True(t, ok)
+		finalChunk = resultChunk
+		sawFinalChunk = true
+	}
+	require.True(t, sawFinalChunk)
+	require.Equal(t, "after callback", finalChunk.Result)
+	require.Equal(t, []byte(`"child-state"`), finalChunk.StateDelta[graphStateKey])
 }
 
 func TestTool_StreamInner_FlagFalse(t *testing.T) {
