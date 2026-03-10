@@ -1335,7 +1335,10 @@ func (r *llmRunner) executeModel(
 			modelName = getModelName(r.llmModel)
 			emitModelStartEvent(
 				modelCtx,
-				modelEventBaseInvocation,
+				modelExecutionEventInvocation(
+					modelEventBaseInvocation,
+					modelEventInvocation,
+				),
 				eventChan,
 				modelEventInvocationID,
 				modelName,
@@ -1366,7 +1369,10 @@ func (r *llmRunner) executeModel(
 		}
 		emitModelCompleteEvent(
 			ctx,
-			modelEventBaseInvocation,
+			modelExecutionEventInvocation(
+				modelEventBaseInvocation,
+				modelEventInvocation,
+			),
 			eventChan,
 			modelEventInvocationID,
 			modelName,
@@ -3308,6 +3314,25 @@ func emitInvocationScopedEvent(
 		ev.InvocationID = invocationID
 	}
 	_ = event.EmitEvent(ctx, eventChan, ev)
+}
+
+func modelExecutionEventInvocation(
+	baseInvocation *agent.Invocation,
+	currentInvocation *agent.Invocation,
+) *agent.Invocation {
+	if currentInvocation == nil {
+		return baseInvocation
+	}
+	if baseInvocation == nil {
+		return currentInvocation
+	}
+	if currentInvocation.GetParentInvocation() != nil ||
+		currentInvocation.Branch != "" ||
+		currentInvocation.GetEventFilterKey() != "" ||
+		currentInvocation.RunOptions.RequestID != "" {
+		return currentInvocation
+	}
+	return baseInvocation
 }
 
 // modelExecutionConfig contains configuration for model execution with events.
