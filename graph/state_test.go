@@ -848,6 +848,63 @@ func TestMessageReducer_BuiltInOpsDoNotAliasUpdateNestedState(t *testing.T) {
 	})
 }
 
+func TestStateSchemaApplyUpdate_MessageReducerIsolation(t *testing.T) {
+	buildSchema := func() *StateSchema {
+		return NewStateSchema().AddField("messages", StateField{
+			Type:    reflect.TypeOf([]model.Message{}),
+			Reducer: MessageReducer,
+		})
+	}
+	buildMessage := func(content string) model.Message {
+		text := content + "-part"
+		args := []byte(content)
+		return model.Message{
+			Role:    model.RoleAssistant,
+			Content: content,
+			ContentParts: []model.ContentPart{
+				{Type: model.ContentTypeText, Text: &text},
+			},
+			ToolCalls: []model.ToolCall{
+				{
+					Type: "function",
+					ID:   "call-" + content,
+					Function: model.FunctionDefinitionParam{
+						Arguments: args,
+					},
+				},
+			},
+		}
+	}
+	t.Run("nil update does not alias current state", func(t *testing.T) {
+		schema := buildSchema()
+		current := []model.Message{buildMessage("current")}
+		next := schema.ApplyUpdate(State{"messages": current}, State{"messages": nil})
+		out, ok := next["messages"].([]model.Message)
+		require.True(t, ok)
+		mutated := "mutated-part"
+		out[0].ContentParts[0].Text = &mutated
+		out[0].ToolCalls[0].Function.Arguments[0] = 'Q'
+		require.NotNil(t, current[0].ContentParts[0].Text)
+		assert.Equal(t, "current-part", *current[0].ContentParts[0].Text)
+		assert.Equal(t, byte('c'), current[0].ToolCalls[0].Function.Arguments[0])
+	})
+	t.Run("append messages op fast path does not alias update", func(t *testing.T) {
+		schema := buildSchema()
+		update := []model.Message{buildMessage("update")}
+		next := schema.ApplyUpdate(State{"messages": []model.Message{}}, State{
+			"messages": []MessageOp{AppendMessages{Items: update}},
+		})
+		out, ok := next["messages"].([]model.Message)
+		require.True(t, ok)
+		mutated := "mutated-part"
+		update[0].ContentParts[0].Text = &mutated
+		update[0].ToolCalls[0].Function.Arguments[0] = 'Q'
+		require.NotNil(t, out[0].ContentParts[0].Text)
+		assert.Equal(t, "update-part", *out[0].ContentParts[0].Text)
+		assert.Equal(t, byte('u'), out[0].ToolCalls[0].Function.Arguments[0])
+	})
+}
+
 func TestMergeReducerAndMessageReducerCoveragePaths(t *testing.T) {
 	require.False(t, isMergeReducer(nil))
 	require.True(t, isMergeReducer(MergeReducer))
@@ -998,12 +1055,61 @@ func BenchmarkMessageReducer(b *testing.B) {
 		return msgs
 	}
 	existing := buildMessages(64)
+	appendSliceUpdate := []model.Message{model.NewAssistantMessage("next")}
 	appendUpdate := AppendMessages{Items: []model.Message{model.NewAssistantMessage("next")}}
+	appendFastPathUpdate := []MessageOp{AppendMessages{Items: appendSliceUpdate}}
+	replaceUpdate := ReplaceLastUser{Content: "replacement"}
+	nilBatchUpdate := []MessageOp{nil}
+	emptySliceUpdate := []model.Message{}
+	emptyAppendUpdate := AppendMessages{Items: nil}
+	emptyAppendFastPathUpdate := []MessageOp{AppendMessages{Items: nil}}
 	customUpdate := benchmarkAppendMessageOp{msg: model.NewAssistantMessage("next")}
 	b.Run("append_messages", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			MessageReducer(existing, appendUpdate)
+		}
+	})
+	b.Run("append_messages_op_fast_path", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			MessageReducer(existing, appendFastPathUpdate)
+		}
+	})
+	b.Run("replace_last_user", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			MessageReducer(existing, replaceUpdate)
+		}
+	})
+	b.Run("nil_update", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			MessageReducer(existing, nil)
+		}
+	})
+	b.Run("empty_slice_update", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			MessageReducer(existing, emptySliceUpdate)
+		}
+	})
+	b.Run("empty_append_update", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			MessageReducer(existing, emptyAppendUpdate)
+		}
+	})
+	b.Run("empty_append_messages_op_fast_path", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			MessageReducer(existing, emptyAppendFastPathUpdate)
+		}
+	})
+	b.Run("nil_message_op_batch", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			MessageReducer(existing, nilBatchUpdate)
 		}
 	})
 	b.Run("custom_message_op", func(b *testing.B) {
