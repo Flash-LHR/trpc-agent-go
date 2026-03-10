@@ -2408,7 +2408,7 @@ func TestProcessStreamChunk_ForwardsEvent(t *testing.T) {
 	ev := event.New("i", "a")
 	ch := make(chan *event.Event, 1)
 	var contents []any
-	var finalResult any
+	var finalResult streamFinalResult
 	err := f.processStreamChunk(ctx, inv,
 		model.ToolCall{ID: "x"},
 		tool.StreamChunk{Content: ev}, ch, &contents, &finalResult,
@@ -2420,7 +2420,8 @@ func TestProcessStreamChunk_ForwardsEvent(t *testing.T) {
 	default:
 		t.Fatal("expected an event forwarded")
 	}
-	require.Nil(t, finalResult)
+	require.False(t, finalResult.seen)
+	require.Nil(t, finalResult.value)
 }
 
 func TestExecuteToolCall_MarshalErrorIgnored(t *testing.T) {
@@ -2897,6 +2898,7 @@ func TestExecuteStreamableTool_ChunkStructJSON(t *testing.T) {
 
 type finalResultStreamTool struct {
 	name       string
+	result     any
 	stateDelta map[string][]byte
 }
 
@@ -2914,7 +2916,7 @@ func (s *finalResultStreamTool) StreamableCall(
 		st.Writer.Send(tool.StreamChunk{Content: "line-1"}, nil)
 		st.Writer.Send(tool.StreamChunk{
 			Content: tool.FinalResultChunk{
-				Result:     map[string]any{"status": "ok"},
+				Result:     s.result,
 				StateDelta: s.stateDelta,
 			},
 		}, nil)
@@ -2935,7 +2937,10 @@ func TestExecuteStreamableTool_PreservesFinalResultChunk(t *testing.T) {
 		ID:       "c1",
 		Function: model.FunctionDefinitionParam{Name: "final"},
 	}
-	st := &finalResultStreamTool{name: "final"}
+	st := &finalResultStreamTool{
+		name:   "final",
+		result: map[string]any{"status": "ok"},
+	}
 	ch := make(chan *event.Event, 4)
 	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
@@ -2966,6 +2971,7 @@ func TestExecuteStreamableTool_FinalResultChunkEmitsStateDelta(t *testing.T) {
 	}
 	st := &finalResultStreamTool{
 		name:       "final",
+		result:     map[string]any{"status": "ok"},
 		stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
 	}
 	ch := make(chan *event.Event, 4)
@@ -3009,6 +3015,7 @@ func TestExecuteStreamableTool_FinalResultChunkStateDeltaUsesAgentInjection(t *t
 	}
 	st := &finalResultStreamTool{
 		name:       "final",
+		result:     map[string]any{"status": "ok"},
 		stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
 	}
 	ch := make(chan *event.Event, 4)
@@ -3023,6 +3030,79 @@ func TestExecuteStreamableTool_FinalResultChunkStateDeltaUsesAgentInjection(t *t
 	require.Equal(t, "root/tester", second.Branch)
 	require.Equal(t, "root/tester", second.FilterKey)
 	require.Equal(t, []byte(`"ok"`), second.StateDelta["final"])
+}
+
+func TestExecuteStreamableTool_FinalResultChunkNilResultOverridesMergedContent(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{
+		InvocationID: "inv-final-nil",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID:       "c1",
+		Function: model.FunctionDefinitionParam{Name: "final"},
+	}
+	st := &finalResultStreamTool{
+		name:       "final",
+		stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
+	}
+	ch := make(chan *event.Event, 4)
+	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.NoError(t, err)
+	require.Nil(t, res)
+
+	first := <-ch
+	require.NotNil(t, first)
+	require.True(t, first.IsPartial)
+	require.Equal(t, "line-1", first.Choices[0].Delta.Content)
+
+	second := <-ch
+	require.NotNil(t, second)
+	require.True(t, second.IsPartial)
+	require.Equal(t, []byte(`"ok"`), second.StateDelta["final"])
+}
+
+func TestProcessStreamChunk_PointerFinalResultChunkMarksSeen(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{
+		InvocationID: "inv-final-pointer",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID:       "c1",
+		Function: model.FunctionDefinitionParam{Name: "final"},
+	}
+	var contents []any
+	finalResult := streamFinalResult{}
+	ch := make(chan *event.Event, 1)
+	err := f.processStreamChunk(
+		ctx,
+		inv,
+		tc,
+		tool.StreamChunk{
+			Content: &tool.FinalResultChunk{
+				StateDelta: map[string][]byte{"final": []byte(`"ok"`)},
+			},
+		},
+		ch,
+		&contents,
+		&finalResult,
+	)
+	require.NoError(t, err)
+	require.True(t, finalResult.seen)
+	require.Nil(t, finalResult.value)
+	require.Empty(t, contents)
+
+	evt := <-ch
+	require.NotNil(t, evt)
+	require.True(t, evt.IsPartial)
+	require.Equal(t, []byte(`"ok"`), evt.StateDelta["final"])
 }
 
 // stream tool forwarding inner *event.Event
@@ -3307,7 +3387,7 @@ func TestProcessStreamChunk_EmptyText_NoEvent(t *testing.T) {
 	inv := &agent.Invocation{Model: &mockModel{}}
 	tc := model.ToolCall{ID: "x", Function: model.FunctionDefinitionParam{Name: "t"}}
 	out := make([]any, 0)
-	var finalResult any
+	var finalResult streamFinalResult
 	ch := make(chan *event.Event, 1)
 	// Empty string chunk should be ignored.
 	err := f.processStreamChunk(
@@ -3322,7 +3402,8 @@ func TestProcessStreamChunk_EmptyText_NoEvent(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, out)
 	require.Len(t, ch, 0)
-	require.Nil(t, finalResult)
+	require.False(t, finalResult.seen)
+	require.Nil(t, finalResult.value)
 }
 
 func TestExecuteToolWithCallbacks_BeforeCustomResult(t *testing.T) {

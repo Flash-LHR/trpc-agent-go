@@ -1361,8 +1361,8 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 	if err != nil {
 		return nil, err
 	}
-	if finalResult != nil {
-		return finalResult, nil
+	if finalResult.seen {
+		return finalResult.value, nil
 	}
 	// If we forwarded inner events, still return the merged content as the tool
 	// result so it can be recorded in the tool response message for the next LLM
@@ -1372,6 +1372,11 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 	return tool.Merge(contents), nil
 }
 
+type streamFinalResult struct {
+	seen  bool
+	value any
+}
+
 // consumeStream reads all chunks from the reader and processes them.
 func (f *FunctionCallResponseProcessor) consumeStream(
 	ctx context.Context,
@@ -1379,9 +1384,9 @@ func (f *FunctionCallResponseProcessor) consumeStream(
 	toolCall model.ToolCall,
 	reader *tool.StreamReader,
 	eventChan chan<- *event.Event,
-) ([]any, any, error) {
+) ([]any, streamFinalResult, error) {
 	var contents []any
-	var finalResult any
+	var finalResult streamFinalResult
 	for {
 		chunk, err := reader.Recv()
 		if err == io.EOF {
@@ -1688,12 +1693,13 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 	chunk tool.StreamChunk,
 	eventChan chan<- *event.Event,
 	contents *[]any,
-	finalResult *any,
+	finalResult *streamFinalResult,
 ) error {
 	switch v := chunk.Content.(type) {
 	case tool.FinalResultChunk:
 		if finalResult != nil {
-			*finalResult = v.Result
+			finalResult.seen = true
+			finalResult.value = v.Result
 		}
 		if len(v.StateDelta) > 0 && eventChan != nil {
 			deltaEvent := f.buildStateDeltaToolResponseEvent(
@@ -1708,7 +1714,8 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 		return nil
 	case *tool.FinalResultChunk:
 		if v != nil && finalResult != nil {
-			*finalResult = v.Result
+			finalResult.seen = true
+			finalResult.value = v.Result
 		}
 		if v != nil && len(v.StateDelta) > 0 && eventChan != nil {
 			deltaEvent := f.buildStateDeltaToolResponseEvent(

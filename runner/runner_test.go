@@ -1145,6 +1145,111 @@ func TestRunner_DisableGraphCompletionEvent_KeepsRunnerCompletionWithGraphAgentC
 	require.Equal(t, "hidden graph completion", completion.Response.Choices[0].Message.Content)
 }
 
+func TestRunner_DisableGraphCompletionEvent_DropsCapturedGraphCompletionAfterCustomCallback(t *testing.T) {
+	schema := graph.MessagesStateSchema()
+	sg := graph.NewStateGraph(schema)
+	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		return graph.State{
+			graph.StateKeyLastResponse: "hidden graph completion",
+		}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	callbacks := agent.NewCallbacks()
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		return &agent.AfterAgentResult{
+			CustomResponse: &model.Response{
+				Object: "after.custom",
+				Done:   true,
+				Choices: []model.Choice{{
+					Message: model.Message{
+						Role:    model.RoleAssistant,
+						Content: "after callback",
+					},
+				}},
+			},
+		}, nil
+	})
+	ga, err := graphagent.New("ga", compiled, graphagent.WithAgentCallbacks(callbacks))
+	require.NoError(t, err)
+
+	svc := sessioninmemory.NewSessionService()
+	r := NewRunner("app", ga, WithSessionService(svc))
+
+	ch, err := r.Run(
+		context.Background(),
+		"u",
+		"s",
+		model.NewUserMessage("hi"),
+		agent.WithDisableGraphCompletionEvent(true),
+	)
+	require.NoError(t, err)
+
+	var completion *event.Event
+	var sawAfterCustom bool
+	for evt := range ch {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if evt.Object == "after.custom" {
+			sawAfterCustom = true
+		}
+		if evt.IsRunnerCompletion() {
+			completion = evt
+		}
+	}
+
+	require.True(t, sawAfterCustom)
+	require.NotNil(t, completion)
+	require.Empty(t, completion.StateDelta)
+	require.Empty(t, completion.Response.Choices)
+}
+
+func TestRunner_DisableGraphCompletionEvent_DropsCapturedGraphCompletionAfterCallbackError(t *testing.T) {
+	schema := graph.MessagesStateSchema()
+	sg := graph.NewStateGraph(schema)
+	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		return graph.State{
+			graph.StateKeyLastResponse: "hidden graph completion",
+		}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	callbacks := agent.NewCallbacks()
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		return nil, errors.New("after callback failed")
+	})
+	ga, err := graphagent.New("ga", compiled, graphagent.WithAgentCallbacks(callbacks))
+	require.NoError(t, err)
+
+	svc := sessioninmemory.NewSessionService()
+	r := NewRunner("app", ga, WithSessionService(svc))
+
+	ch, err := r.Run(
+		context.Background(),
+		"u",
+		"s",
+		model.NewUserMessage("hi"),
+		agent.WithDisableGraphCompletionEvent(true),
+	)
+	require.NoError(t, err)
+
+	var completion *event.Event
+	var sawCallbackError bool
+	for evt := range ch {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if evt.Object == model.ObjectTypeError &&
+			evt.Error != nil &&
+			evt.Error.Message == "after callback failed" {
+			sawCallbackError = true
+		}
+		if evt.IsRunnerCompletion() {
+			completion = evt
+		}
+	}
+
+	require.True(t, sawCallbackError)
+	require.NotNil(t, completion)
+	require.Empty(t, completion.StateDelta)
+	require.Empty(t, completion.Response.Choices)
+}
+
 func TestRunner_GraphCompletion_DedupFinalChoices(t *testing.T) {
 	const (
 		appName       = "test-app"

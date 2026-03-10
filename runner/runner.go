@@ -660,17 +660,18 @@ func (r *runner) getOrCreateSession(
 
 // eventLoopContext bundles all channels and state required by the event loop.
 type eventLoopContext struct {
-	sess               *session.Session
-	invocation         *agent.Invocation
-	agentEventCh       <-chan *event.Event
-	flushChan          chan *flush.FlushRequest
-	processedEventCh   chan *event.Event
-	runHandle          *runHandle
-	finalStateDelta    map[string][]byte
-	finalChoices       []model.Choice
-	fallbackStateDelta map[string][]byte
-	finalError         *model.ResponseError
-	streamFilter       graph.StreamModeFilter
+	sess                *session.Session
+	invocation          *agent.Invocation
+	agentEventCh        <-chan *event.Event
+	flushChan           chan *flush.FlushRequest
+	processedEventCh    chan *event.Event
+	runHandle           *runHandle
+	finalStateDelta     map[string][]byte
+	finalChoices        []model.Choice
+	fallbackStateDelta  map[string][]byte
+	finalError          *model.ResponseError
+	graphCompletionSeen bool
+	streamFilter        graph.StreamModeFilter
 	// emittedAssistantResponseIDs tracks response IDs that already produced a
 	// non-partial assistant message event during this run.
 	//
@@ -768,6 +769,7 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 
 	// Capture graph-level completion snapshot for final event.
 	if isGraphCompletionEvent(agentEvent) {
+		loop.graphCompletionSeen = true
 		loop.finalStateDelta, loop.finalChoices = r.captureGraphCompletion(agentEvent)
 	}
 	r.captureCompletionFallback(loop, agentEvent)
@@ -1048,7 +1050,8 @@ func (r *runner) captureCompletionFallback(
 	if loop == nil || agentEvent == nil {
 		return
 	}
-	if len(agentEvent.StateDelta) > 0 {
+	graphCompletionEvent := isGraphCompletionEvent(agentEvent)
+	if !graphCompletionEvent && len(agentEvent.StateDelta) > 0 {
 		loop.fallbackStateDelta = mergeCompletionFallbackStateDelta(
 			loop.fallbackStateDelta,
 			agentEvent.StateDelta,
@@ -1056,6 +1059,11 @@ func (r *runner) captureCompletionFallback(
 	}
 	if agentEvent.Response == nil || agentEvent.IsPartial {
 		return
+	}
+	// A later visible terminal response supersedes any earlier hidden graph completion snapshot.
+	if loop.graphCompletionSeen && !graphCompletionEvent {
+		loop.finalStateDelta = nil
+		loop.finalChoices = nil
 	}
 	// The last non-partial response wins so the completion event reflects
 	// the terminal outcome seen by the runner.
