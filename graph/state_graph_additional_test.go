@@ -12,11 +12,14 @@ package graph
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -61,6 +64,24 @@ func (s *simpleToolSet) Name() string { return s.name }
 // stubAgent is a minimal agent implementation used for subgraph tests.
 type stubAgent struct {
 	name string
+}
+
+type iterErrorModel struct {
+	err error
+}
+
+func (m *iterErrorModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
+	ch := make(chan *model.Response)
+	close(ch)
+	return ch, nil
+}
+
+func (m *iterErrorModel) GenerateContentIter(ctx context.Context, req *model.Request) (model.Seq[*model.Response], error) {
+	return nil, m.err
+}
+
+func (m *iterErrorModel) Info() model.Info {
+	return model.Info{Name: "iter-error-model"}
 }
 
 func (a *stubAgent) Run(
@@ -180,6 +201,121 @@ func TestAddLLMNode_GenerationConfigOption(t *testing.T) {
 	}
 	require.Equal(t, cfg.Stop, got.Stop)
 
+}
+
+func TestRunModelStream_IterModelError(t *testing.T) {
+	iterErr := errors.New("iter boom")
+
+	_, _, err := runModelStream(
+		context.Background(),
+		nil,
+		nil,
+		&iterErrorModel{err: iterErr},
+		&model.Request{},
+	)
+	require.ErrorIs(t, err, iterErr)
+	require.ErrorContains(t, err, "failed to generate content")
+}
+
+func TestEmitFastModelResponseEvent_DisablesPartialMetadata(t *testing.T) {
+	t.Run("partial response omits generated ID and timestamp", func(t *testing.T) {
+		ch := make(chan *event.Event, 1)
+		resp := &model.Response{
+			IsPartial: true,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("partial")},
+			},
+		}
+
+		ev, err := emitFastModelResponseEvent(
+			context.Background(),
+			agent.NewInvocation(agent.WithInvocationID("inv-fast")),
+			modelExecutionConfig{
+				InvocationID: "inv-fast",
+				EventChan:    ch,
+				Span:         noop.Span{},
+			},
+			resp,
+			"llm",
+			true,
+			true,
+			nil,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, ev)
+		require.Empty(t, ev.ID)
+		require.True(t, ev.Timestamp.IsZero())
+		require.Same(t, ev, <-ch)
+	})
+
+	t.Run("response error is surfaced", func(t *testing.T) {
+		resp := &model.Response{
+			Error: &model.ResponseError{Message: "api boom"},
+		}
+
+		ev, err := emitFastModelResponseEvent(
+			context.Background(),
+			agent.NewInvocation(agent.WithInvocationID("inv-fast-err")),
+			modelExecutionConfig{
+				InvocationID: "inv-fast-err",
+				Span:         noop.Span{},
+			},
+			resp,
+			"llm",
+			false,
+			false,
+			&event.Event{},
+		)
+		require.ErrorContains(t, err, "model API error: api boom")
+		require.NotNil(t, ev)
+		require.Same(t, resp, ev.Response)
+	})
+}
+
+func TestModelResponseProcessorConsume_FastPathSeq(t *testing.T) {
+	ch := make(chan *event.Event, 2)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-fast-seq"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableResponseUsageTracking:  true,
+			DisablePartialEventIDs:        true,
+			DisablePartialEventTimestamps: true,
+		}),
+	)
+	var runErr error
+	processor := newModelResponseProcessor(
+		context.Background(),
+		modelExecutionConfig{
+			Invocation:   invocation,
+			InvocationID: invocation.InvocationID,
+			EventChan:    ch,
+			Request:      &model.Request{},
+			Span:         noop.Span{},
+			NodeID:       "llm",
+		},
+		invocation,
+		&runErr,
+	)
+	require.True(t, processor.fastResponsePath)
+
+	err := processor.consume(modelResponseStream{
+		Seq: func(yield func(*model.Response) bool) {
+			if !yield(nil) {
+				return
+			}
+			yield(&model.Response{
+				IsPartial: true,
+				Choices: []model.Choice{
+					{Message: model.NewAssistantMessage("partial")},
+				},
+				Timestamp: time.Now(),
+			})
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, processor.lastEvent)
+	require.NotNil(t, processor.finalResponse)
+	require.Same(t, processor.lastEvent, <-ch)
 }
 
 func TestBuilderOptions_Destinations_And_Callbacks(t *testing.T) {
