@@ -589,8 +589,8 @@ func TestDeepCopyAny_MessageOpZeroLenSlicesDoNotAlias(t *testing.T) {
 
 func TestDeepCopySliceAnyWithVisited_ZeroLenSkipsCache(t *testing.T) {
 	in := make([]any, 1)[:0]
-	visited := map[uintptr]any{
-		reflect.ValueOf(in).Pointer(): []model.Message{model.NewUserMessage("cached")},
+	visited := visitedMap{
+		sliceVisitKey(reflect.ValueOf(in).Pointer(), len(in), sliceAnyType): []model.Message{model.NewUserMessage("cached")},
 	}
 	copied := deepCopySliceAnyWithVisited(in, visited)
 	require.NotNil(t, copied)
@@ -599,8 +599,8 @@ func TestDeepCopySliceAnyWithVisited_ZeroLenSkipsCache(t *testing.T) {
 
 func TestDeepCopyModelMessagesWithVisited_ZeroLenSkipsCache(t *testing.T) {
 	in := make([]model.Message, 1)[:0]
-	visited := map[uintptr]any{
-		reflect.ValueOf(in).Pointer(): []any{"cached"},
+	visited := visitedMap{
+		sliceVisitKey(reflect.ValueOf(in).Pointer(), len(in), modelMessagesType): []any{"cached"},
 	}
 	copied := deepCopyModelMessagesWithVisited(in, visited)
 	require.NotNil(t, copied)
@@ -609,12 +609,63 @@ func TestDeepCopyModelMessagesWithVisited_ZeroLenSkipsCache(t *testing.T) {
 
 func TestDeepCopyModelToolCallsWithVisited_ZeroLenSkipsCache(t *testing.T) {
 	in := make([]model.ToolCall, 1)[:0]
-	visited := map[uintptr]any{
-		reflect.ValueOf(in).Pointer(): []any{"cached"},
+	visited := visitedMap{
+		sliceVisitKey(reflect.ValueOf(in).Pointer(), len(in), modelToolCallsType): []any{"cached"},
 	}
 	copied := deepCopyModelToolCallsWithVisited(in, visited)
 	require.NotNil(t, copied)
 	assert.Len(t, copied, 0)
+}
+
+func TestDeepCopyMapStringAnyWithVisited_DistinctSliceHeadersDoNotTruncate(
+	t *testing.T,
+) {
+	backing := []any{"a", "b"}
+	in := map[string]any{
+		"short": backing[:1],
+		"long":  backing[:2],
+	}
+	copied := deepCopyMapStringAny(in)
+	shortSlice, ok := copied["short"].([]any)
+	require.True(t, ok)
+	longSlice, ok := copied["long"].([]any)
+	require.True(t, ok)
+	assert.Len(t, shortSlice, 1)
+	assert.Len(t, longSlice, 2)
+	assert.Equal(t, []any{"a", "b"}, longSlice)
+}
+
+func TestDeepCopySliceAnyWithVisited_DistinctSliceHeadersDoNotTruncate(
+	t *testing.T,
+) {
+	backing := []any{"a", "b"}
+	in := []any{backing[:1], backing[:2]}
+	copied := deepCopySliceAny(in)
+	first, ok := copied[0].([]any)
+	require.True(t, ok)
+	second, ok := copied[1].([]any)
+	require.True(t, ok)
+	assert.Len(t, first, 1)
+	assert.Len(t, second, 2)
+	assert.Equal(t, []any{"a", "b"}, second)
+}
+
+func TestDeepCopyAny_ReflectSlicesWithDistinctHeadersDoNotTruncate(t *testing.T) {
+	type item struct {
+		Value string
+	}
+	backing := []item{{Value: "a"}, {Value: "b"}}
+	in := []any{backing[:1], backing[:2]}
+	copiedAny := deepCopyAny(in)
+	copied, ok := copiedAny.([]any)
+	require.True(t, ok)
+	first, ok := copied[0].([]item)
+	require.True(t, ok)
+	second, ok := copied[1].([]item)
+	require.True(t, ok)
+	assert.Len(t, first, 1)
+	assert.Len(t, second, 2)
+	assert.Equal(t, []item{{Value: "a"}, {Value: "b"}}, second)
 }
 
 func TestDeepCopyUnexportedFields(t *testing.T) {
@@ -914,8 +965,8 @@ func TestJSONSafeCopy_MapDeepCopy(t *testing.T) {
 
 func TestJSONSafeFastPath_ZeroLenSliceSkipsCache(t *testing.T) {
 	in := make([]any, 1)[:0]
-	visited := map[uintptr]any{
-		reflect.ValueOf(in).Pointer(): []string{"cached"},
+	visited := visitedMap{
+		sliceVisitKey(reflect.ValueOf(in).Pointer(), len(in), sliceAnyType): []string{"cached"},
 	}
 	copied, ok := jsonSafeFastPath(in, visited)
 	require.True(t, ok)
@@ -930,13 +981,34 @@ func TestJSONSafeCopySlice_ZeroLenSkipsCache(t *testing.T) {
 	}
 	in := make([]item, 1)[:0]
 	rv := reflect.ValueOf(in)
-	visited := map[uintptr]any{
-		rv.Pointer(): []string{"cached"},
+	visited := visitedMap{
+		sliceVisitKey(rv.Pointer(), rv.Len(), rv.Type()): []string{"cached"},
 	}
 	copied := jsonSafeCopySlice(rv, visited)
 	out, ok := copied.([]any)
 	require.True(t, ok)
 	assert.Len(t, out, 0)
+}
+
+func TestJSONSafeCopy_DistinctReflectSliceHeadersDoNotTruncate(t *testing.T) {
+	type item struct {
+		Value string
+	}
+	backing := []item{{Value: "a"}, {Value: "b"}}
+	in := []any{backing[:1], backing[:2]}
+	copiedAny := jsonSafeCopy(in)
+	copied, ok := copiedAny.([]any)
+	require.True(t, ok)
+	first, ok := copied[0].([]any)
+	require.True(t, ok)
+	second, ok := copied[1].([]any)
+	require.True(t, ok)
+	assert.Len(t, first, 1)
+	assert.Len(t, second, 2)
+	assert.Equal(t, []any{
+		item{Value: "a"},
+		item{Value: "b"},
+	}, second)
 }
 
 func TestJSONSafeCopy_StructWithChan(t *testing.T) {
@@ -1339,7 +1411,7 @@ func TestJSONSafeCopy_TimeViaUnsafeStruct(t *testing.T) {
 
 func TestJSONSafeReflect_InvalidValue(t *testing.T) {
 	// Covers jsonSafeReflect invalid value (L395-397).
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	result := jsonSafeReflect(reflect.Value{}, visited)
 	assert.Nil(t, result)
 }
@@ -1357,7 +1429,7 @@ func TestCopyInterface_DeepCopier(t *testing.T) {
 	// Covers copyInterface DeepCopier branch (L104-106).
 	var iface any = &deepCopoerStruct{Name: "if", age: 1}
 	rv := reflect.ValueOf(&iface).Elem()
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	result := copyInterface(rv, visited)
 	dc, ok := result.(deepCopoerStruct)
 	require.True(t, ok)
@@ -1368,7 +1440,7 @@ func TestCopyPointer_DeepCopier(t *testing.T) {
 	// Covers copyPointer DeepCopier branch (L118-120).
 	orig := &deepCopoerStruct{Name: "cp", age: 2}
 	rv := reflect.ValueOf(orig)
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	result := copyPointer(rv, visited)
 	dc, ok := result.(deepCopoerStruct)
 	require.True(t, ok)
@@ -1379,8 +1451,8 @@ func TestCopyMap_CacheHit(t *testing.T) {
 	// Covers copyMap cache hit (L133-135).
 	m := map[string]int{"a": 1}
 	rv := reflect.ValueOf(m)
-	visited := make(map[uintptr]any)
-	visited[rv.Pointer()] = m
+	visited := newVisitedMap()
+	visited[mapVisitKey(rv.Pointer(), rv.Type())] = m
 	result := copyMap(rv, visited)
 	assert.Equal(t, m, result)
 }
@@ -1389,8 +1461,8 @@ func TestCopySlice_CacheHit(t *testing.T) {
 	// Covers copySlice cache hit (L151-153).
 	s := []int{1, 2, 3}
 	rv := reflect.ValueOf(s)
-	visited := make(map[uintptr]any)
-	visited[rv.Pointer()] = s
+	visited := newVisitedMap()
+	visited[sliceVisitKey(rv.Pointer(), rv.Len(), rv.Type())] = s
 	result := copySlice(rv, visited)
 	assert.Equal(t, s, result)
 }
@@ -1401,13 +1473,27 @@ func TestCopySlice_ZeroLenSkipsCache(t *testing.T) {
 	}
 	s := make([]item, 1)[:0]
 	rv := reflect.ValueOf(s)
-	visited := map[uintptr]any{
-		rv.Pointer(): []string{"cached"},
+	visited := visitedMap{
+		sliceVisitKey(rv.Pointer(), rv.Len(), rv.Type()): []string{"cached"},
 	}
 	result := copySlice(rv, visited)
 	copied, ok := result.([]item)
 	require.True(t, ok)
 	assert.Len(t, copied, 0)
+}
+
+func TestCopySlice_DistinctSliceHeadersDoNotTruncate(t *testing.T) {
+	type item struct {
+		Value string
+	}
+	backing := []item{{Value: "a"}, {Value: "b"}}
+	rv := reflect.ValueOf([][]item{backing[:1], backing[:2]})
+	result := copySlice(rv, newVisitedMap())
+	copied, ok := result.([][]item)
+	require.True(t, ok)
+	assert.Len(t, copied[0], 1)
+	assert.Len(t, copied[1], 2)
+	assert.Equal(t, []item{{Value: "a"}, {Value: "b"}}, copied[1])
 }
 
 func TestCopyStruct_ConvertibleAndFallback(t *testing.T) {
@@ -1420,7 +1506,7 @@ func TestCopyStruct_ConvertibleAndFallback(t *testing.T) {
 		V myInt
 	}
 	orig := s{V: 42}
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	result := copyStruct(reflect.ValueOf(orig), visited)
 	res, ok := result.(s)
 	require.True(t, ok)

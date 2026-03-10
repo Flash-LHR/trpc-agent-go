@@ -18,7 +18,13 @@ import (
 )
 
 var (
-	timeType = reflect.TypeOf(time.Time{})
+	timeType              = reflect.TypeOf(time.Time{})
+	mapStringAnyType      = reflect.TypeOf(map[string]any(nil))
+	sliceAnyType          = reflect.TypeOf([]any(nil))
+	sliceBytesType        = reflect.TypeOf([]byte(nil))
+	modelMessagesType     = reflect.TypeOf([]model.Message(nil))
+	modelContentPartsType = reflect.TypeOf([]model.ContentPart(nil))
+	modelToolCallsType    = reflect.TypeOf([]model.ToolCall(nil))
 )
 
 // DeepCopier defines an interface for types that can perform deep copies of themselves.
@@ -27,17 +33,50 @@ type DeepCopier interface {
 	DeepCopy() any
 }
 
+type visitKind uint8
+
+const (
+	visitKindPointer visitKind = iota
+	visitKindMap
+	visitKindSlice
+)
+
+type visitKey struct {
+	kind visitKind
+	typ  reflect.Type
+	ptr  uintptr
+	len  int
+}
+
+type visitedMap map[visitKey]any
+
+func newVisitedMap() visitedMap {
+	return make(visitedMap)
+}
+
+func pointerVisitKey(ptr uintptr) visitKey {
+	return visitKey{kind: visitKindPointer, ptr: ptr}
+}
+
+func mapVisitKey(ptr uintptr, typ reflect.Type) visitKey {
+	return visitKey{kind: visitKindMap, typ: typ, ptr: ptr}
+}
+
+func sliceVisitKey(ptr uintptr, length int, typ reflect.Type) visitKey {
+	return visitKey{kind: visitKindSlice, typ: typ, ptr: ptr, len: length}
+}
+
 // deepCopyAny performs a deep copy of common JSON-serializable Go types to
 // avoid sharing mutable references (maps/slices) across goroutines.
 func deepCopyAny(value any) any {
 	if out, ok := deepCopyPrimitiveFastPath(value); ok {
 		return out
 	}
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return deepCopyAnyWithVisited(value, visited)
 }
 
-func deepCopyAnyWithVisited(value any, visited map[uintptr]any) any {
+func deepCopyAnyWithVisited(value any, visited visitedMap) any {
 	if copier, ok := value.(DeepCopier); ok {
 		return copier.DeepCopy()
 	}
@@ -52,11 +91,11 @@ func deepCopyFastPath(value any) (any, bool) {
 	if out, ok := deepCopyPrimitiveFastPath(value); ok {
 		return out, true
 	}
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return deepCopyFastPathWithVisited(value, visited)
 }
 
-func deepCopyFastPathWithVisited(value any, visited map[uintptr]any) (any, bool) {
+func deepCopyFastPathWithVisited(value any, visited visitedMap) (any, bool) {
 	if out, ok := deepCopyPrimitiveFastPath(value); ok {
 		return out, true
 	}
@@ -153,23 +192,23 @@ func deepCopyNumericFastPath(value any) (any, bool) {
 }
 
 func deepCopyMapStringAny(in map[string]any) map[string]any {
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return deepCopyMapStringAnyWithVisited(in, visited)
 }
 
 func deepCopyMapStringAnyWithVisited(
 	in map[string]any,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) map[string]any {
 	if in == nil {
 		return nil
 	}
-	ptr := reflect.ValueOf(in).Pointer()
-	if cached, ok := visited[ptr]; ok {
+	key := mapVisitKey(reflect.ValueOf(in).Pointer(), mapStringAnyType)
+	if cached, ok := visited[key]; ok {
 		return cached.(map[string]any)
 	}
 	copied := make(map[string]any, len(in))
-	visited[ptr] = copied
+	visited[key] = copied
 	for k, v := range in {
 		copied[k] = deepCopyAnyWithVisited(v, visited)
 	}
@@ -177,13 +216,13 @@ func deepCopyMapStringAnyWithVisited(
 }
 
 func deepCopyMapStringBytes(in map[string][]byte) map[string][]byte {
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return deepCopyMapStringBytesWithVisited(in, visited)
 }
 
 func deepCopyMapStringBytesWithVisited(
 	in map[string][]byte,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) map[string][]byte {
 	if in == nil {
 		return nil
@@ -196,11 +235,11 @@ func deepCopyMapStringBytesWithVisited(
 }
 
 func deepCopySliceAny(in []any) []any {
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return deepCopySliceAnyWithVisited(in, visited)
 }
 
-func deepCopySliceAnyWithVisited(in []any, visited map[uintptr]any) []any {
+func deepCopySliceAnyWithVisited(in []any, visited visitedMap) []any {
 	if in == nil {
 		return nil
 	}
@@ -209,14 +248,18 @@ func deepCopySliceAnyWithVisited(in []any, visited map[uintptr]any) []any {
 	}
 	ptr := reflect.ValueOf(in).Pointer()
 	if ptr != 0 {
-		if cached, ok := visited[ptr]; ok {
+		key := sliceVisitKey(ptr, len(in), sliceAnyType)
+		if cached, ok := visited[key]; ok {
 			return cached.([]any)
 		}
+		copied := make([]any, len(in))
+		visited[key] = copied
+		for i := range in {
+			copied[i] = deepCopyAnyWithVisited(in[i], visited)
+		}
+		return copied
 	}
 	copied := make([]any, len(in))
-	if ptr != 0 {
-		visited[ptr] = copied
-	}
 	for i := range in {
 		copied[i] = deepCopyAnyWithVisited(in[i], visited)
 	}
@@ -233,13 +276,13 @@ func cloneSlice[T any](in []T) []T {
 }
 
 func deepCopyMessageOps(in []MessageOp) ([]MessageOp, bool) {
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return deepCopyMessageOpsWithVisited(in, visited)
 }
 
 func deepCopyMessageOpsWithVisited(
 	in []MessageOp,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) ([]MessageOp, bool) {
 	if in == nil {
 		return nil, true
@@ -259,13 +302,13 @@ func deepCopyMessageOpsWithVisited(
 }
 
 func deepCopyMessageOp(op MessageOp) (MessageOp, bool) {
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return deepCopyMessageOpWithVisited(op, visited)
 }
 
 func deepCopyMessageOpWithVisited(
 	op MessageOp,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) (MessageOp, bool) {
 	switch v := op.(type) {
 	case AppendMessages:
@@ -283,13 +326,13 @@ func deepCopyMessageOpWithVisited(
 }
 
 func deepCopyModelMessages(in []model.Message) []model.Message {
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return deepCopyModelMessagesWithVisited(in, visited)
 }
 
 func deepCopyModelMessagesWithVisited(
 	in []model.Message,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) []model.Message {
 	if in == nil {
 		return nil
@@ -299,14 +342,24 @@ func deepCopyModelMessagesWithVisited(
 	}
 	ptr := reflect.ValueOf(in).Pointer()
 	if ptr != 0 {
-		if cached, ok := visited[ptr]; ok {
+		key := sliceVisitKey(ptr, len(in), modelMessagesType)
+		if cached, ok := visited[key]; ok {
 			return cached.([]model.Message)
 		}
+		out := make([]model.Message, len(in))
+		visited[key] = out
+		for i := range in {
+			out[i] = in[i]
+			if parts := in[i].ContentParts; parts != nil {
+				out[i].ContentParts = deepCopyModelContentPartsWithVisited(parts, visited)
+			}
+			if calls := in[i].ToolCalls; calls != nil {
+				out[i].ToolCalls = deepCopyModelToolCallsWithVisited(calls, visited)
+			}
+		}
+		return out
 	}
 	out := make([]model.Message, len(in))
-	if ptr != 0 {
-		visited[ptr] = out
-	}
 	for i := range in {
 		out[i] = in[i]
 		if parts := in[i].ContentParts; parts != nil {
@@ -320,13 +373,13 @@ func deepCopyModelMessagesWithVisited(
 }
 
 func deepCopyModelContentParts(in []model.ContentPart) []model.ContentPart {
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return deepCopyModelContentPartsWithVisited(in, visited)
 }
 
 func deepCopyModelContentPartsWithVisited(
 	in []model.ContentPart,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) []model.ContentPart {
 	if in == nil {
 		return nil
@@ -336,14 +389,30 @@ func deepCopyModelContentPartsWithVisited(
 	}
 	ptr := reflect.ValueOf(in).Pointer()
 	if ptr != 0 {
-		if cached, ok := visited[ptr]; ok {
+		key := sliceVisitKey(ptr, len(in), modelContentPartsType)
+		if cached, ok := visited[key]; ok {
 			return cached.([]model.ContentPart)
 		}
+		out := make([]model.ContentPart, len(in))
+		visited[key] = out
+		for i := range in {
+			out[i] = in[i]
+			if in[i].Text != nil {
+				out[i].Text = deepCopyStringPointerWithVisited(in[i].Text, visited)
+			}
+			if in[i].Image != nil {
+				out[i].Image = deepCopyModelImageWithVisited(in[i].Image, visited)
+			}
+			if in[i].Audio != nil {
+				out[i].Audio = deepCopyModelAudioWithVisited(in[i].Audio, visited)
+			}
+			if in[i].File != nil {
+				out[i].File = deepCopyModelFileWithVisited(in[i].File, visited)
+			}
+		}
+		return out
 	}
 	out := make([]model.ContentPart, len(in))
-	if ptr != 0 {
-		visited[ptr] = out
-	}
 	for i := range in {
 		out[i] = in[i]
 		if in[i].Text != nil {
@@ -363,23 +432,23 @@ func deepCopyModelContentPartsWithVisited(
 }
 
 func deepCopyModelImage(in *model.Image) *model.Image {
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return deepCopyModelImageWithVisited(in, visited)
 }
 
 func deepCopyModelImageWithVisited(
 	in *model.Image,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) *model.Image {
 	if in == nil {
 		return nil
 	}
-	ptr := reflect.ValueOf(in).Pointer()
-	if cached, ok := visited[ptr]; ok {
+	key := pointerVisitKey(reflect.ValueOf(in).Pointer())
+	if cached, ok := visited[key]; ok {
 		return cached.(*model.Image)
 	}
 	out := *in
-	visited[ptr] = &out
+	visited[key] = &out
 	if in.Data != nil {
 		out.Data = deepCopyBytesWithVisited(in.Data, visited)
 	}
@@ -387,23 +456,23 @@ func deepCopyModelImageWithVisited(
 }
 
 func deepCopyModelAudio(in *model.Audio) *model.Audio {
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return deepCopyModelAudioWithVisited(in, visited)
 }
 
 func deepCopyModelAudioWithVisited(
 	in *model.Audio,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) *model.Audio {
 	if in == nil {
 		return nil
 	}
-	ptr := reflect.ValueOf(in).Pointer()
-	if cached, ok := visited[ptr]; ok {
+	key := pointerVisitKey(reflect.ValueOf(in).Pointer())
+	if cached, ok := visited[key]; ok {
 		return cached.(*model.Audio)
 	}
 	out := *in
-	visited[ptr] = &out
+	visited[key] = &out
 	if in.Data != nil {
 		out.Data = deepCopyBytesWithVisited(in.Data, visited)
 	}
@@ -411,23 +480,23 @@ func deepCopyModelAudioWithVisited(
 }
 
 func deepCopyModelFile(in *model.File) *model.File {
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return deepCopyModelFileWithVisited(in, visited)
 }
 
 func deepCopyModelFileWithVisited(
 	in *model.File,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) *model.File {
 	if in == nil {
 		return nil
 	}
-	ptr := reflect.ValueOf(in).Pointer()
-	if cached, ok := visited[ptr]; ok {
+	key := pointerVisitKey(reflect.ValueOf(in).Pointer())
+	if cached, ok := visited[key]; ok {
 		return cached.(*model.File)
 	}
 	out := *in
-	visited[ptr] = &out
+	visited[key] = &out
 	if in.Data != nil {
 		out.Data = deepCopyBytesWithVisited(in.Data, visited)
 	}
@@ -435,13 +504,13 @@ func deepCopyModelFileWithVisited(
 }
 
 func deepCopyModelToolCalls(in []model.ToolCall) []model.ToolCall {
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return deepCopyModelToolCallsWithVisited(in, visited)
 }
 
 func deepCopyModelToolCallsWithVisited(
 	in []model.ToolCall,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) []model.ToolCall {
 	if in == nil {
 		return nil
@@ -451,14 +520,27 @@ func deepCopyModelToolCallsWithVisited(
 	}
 	ptr := reflect.ValueOf(in).Pointer()
 	if ptr != 0 {
-		if cached, ok := visited[ptr]; ok {
+		key := sliceVisitKey(ptr, len(in), modelToolCallsType)
+		if cached, ok := visited[key]; ok {
 			return cached.([]model.ToolCall)
 		}
+		out := make([]model.ToolCall, len(in))
+		visited[key] = out
+		for i := range in {
+			out[i] = in[i]
+			if in[i].Index != nil {
+				out[i].Index = deepCopyIntPointerWithVisited(in[i].Index, visited)
+			}
+			if args := in[i].Function.Arguments; args != nil {
+				out[i].Function.Arguments = deepCopyBytesWithVisited(args, visited)
+			}
+			if extra := in[i].ExtraFields; extra != nil {
+				out[i].ExtraFields = deepCopyMapStringAnyWithVisited(extra, visited)
+			}
+		}
+		return out
 	}
 	out := make([]model.ToolCall, len(in))
-	if ptr != 0 {
-		visited[ptr] = out
-	}
 	for i := range in {
 		out[i] = in[i]
 		if in[i].Index != nil {
@@ -476,39 +558,39 @@ func deepCopyModelToolCallsWithVisited(
 
 func deepCopyStringPointerWithVisited(
 	in *string,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) *string {
 	if in == nil {
 		return nil
 	}
-	ptr := reflect.ValueOf(in).Pointer()
-	if cached, ok := visited[ptr]; ok {
+	key := pointerVisitKey(reflect.ValueOf(in).Pointer())
+	if cached, ok := visited[key]; ok {
 		return cached.(*string)
 	}
 	out := *in
-	visited[ptr] = &out
+	visited[key] = &out
 	return &out
 }
 
 func deepCopyIntPointerWithVisited(
 	in *int,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) *int {
 	if in == nil {
 		return nil
 	}
-	ptr := reflect.ValueOf(in).Pointer()
-	if cached, ok := visited[ptr]; ok {
+	key := pointerVisitKey(reflect.ValueOf(in).Pointer())
+	if cached, ok := visited[key]; ok {
 		return cached.(*int)
 	}
 	out := *in
-	visited[ptr] = &out
+	visited[key] = &out
 	return &out
 }
 
 func deepCopyBytesWithVisited(
 	in []byte,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) []byte {
 	if in == nil {
 		return nil
@@ -518,19 +600,19 @@ func deepCopyBytesWithVisited(
 	}
 	ptr := reflect.ValueOf(in).Pointer()
 	if ptr != 0 {
-		if cached, ok := visited[ptr]; ok {
+		key := sliceVisitKey(ptr, len(in), sliceBytesType)
+		if cached, ok := visited[key]; ok {
 			return cached.([]byte)
 		}
+		out := cloneSlice(in)
+		visited[key] = out
+		return out
 	}
-	out := cloneSlice(in)
-	if ptr != 0 {
-		visited[ptr] = out
-	}
-	return out
+	return cloneSlice(in)
 }
 
 // deepCopyReflect performs a deep copy using reflection with cycle detection.
-func deepCopyReflect(rv reflect.Value, visited map[uintptr]any) any {
+func deepCopyReflect(rv reflect.Value, visited visitedMap) any {
 	if !rv.IsValid() {
 		return nil
 	}
@@ -554,7 +636,7 @@ func deepCopyReflect(rv reflect.Value, visited map[uintptr]any) any {
 	}
 }
 
-func copyInterface(rv reflect.Value, visited map[uintptr]any) any {
+func copyInterface(rv reflect.Value, visited visitedMap) any {
 	if rv.IsNil() {
 		return nil
 	}
@@ -564,12 +646,12 @@ func copyInterface(rv reflect.Value, visited map[uintptr]any) any {
 	return deepCopyReflect(rv.Elem(), visited)
 }
 
-func copyPointer(rv reflect.Value, visited map[uintptr]any) any {
+func copyPointer(rv reflect.Value, visited visitedMap) any {
 	if rv.IsNil() {
 		return nil
 	}
-	ptr := rv.Pointer()
-	if cached, ok := visited[ptr]; ok {
+	key := pointerVisitKey(rv.Pointer())
+	if cached, ok := visited[key]; ok {
 		return cached
 	}
 	if copier, ok := rv.Interface().(DeepCopier); ok {
@@ -577,21 +659,21 @@ func copyPointer(rv reflect.Value, visited map[uintptr]any) any {
 	}
 	elem := rv.Elem()
 	newPtr := reflect.New(elem.Type())
-	visited[ptr] = newPtr.Interface()
+	visited[key] = newPtr.Interface()
 	newPtr.Elem().Set(reflect.ValueOf(deepCopyReflect(elem, visited)))
 	return newPtr.Interface()
 }
 
-func copyMap(rv reflect.Value, visited map[uintptr]any) any {
+func copyMap(rv reflect.Value, visited visitedMap) any {
 	if rv.IsNil() {
 		return reflect.Zero(rv.Type()).Interface()
 	}
-	ptr := rv.Pointer()
-	if cached, ok := visited[ptr]; ok {
+	key := mapVisitKey(rv.Pointer(), rv.Type())
+	if cached, ok := visited[key]; ok {
 		return cached
 	}
 	newMap := reflect.MakeMapWithSize(rv.Type(), rv.Len())
-	visited[ptr] = newMap.Interface()
+	visited[key] = newMap.Interface()
 	for _, mk := range rv.MapKeys() {
 		mv := rv.MapIndex(mk)
 		newMap.SetMapIndex(mk,
@@ -600,7 +682,7 @@ func copyMap(rv reflect.Value, visited map[uintptr]any) any {
 	return newMap.Interface()
 }
 
-func copySlice(rv reflect.Value, visited map[uintptr]any) any {
+func copySlice(rv reflect.Value, visited visitedMap) any {
 	if rv.IsNil() {
 		return reflect.Zero(rv.Type()).Interface()
 	}
@@ -608,12 +690,12 @@ func copySlice(rv reflect.Value, visited map[uintptr]any) any {
 	if l == 0 {
 		return reflect.MakeSlice(rv.Type(), 0, 0).Interface()
 	}
-	ptr := rv.Pointer()
-	if cached, ok := visited[ptr]; ok {
+	key := sliceVisitKey(rv.Pointer(), l, rv.Type())
+	if cached, ok := visited[key]; ok {
 		return cached
 	}
 	newSlice := reflect.MakeSlice(rv.Type(), l, l)
-	visited[ptr] = newSlice.Interface()
+	visited[key] = newSlice.Interface()
 	for i := 0; i < l; i++ {
 		newSlice.Index(i).Set(
 			reflect.ValueOf(deepCopyReflect(rv.Index(i), visited)),
@@ -622,7 +704,7 @@ func copySlice(rv reflect.Value, visited map[uintptr]any) any {
 	return newSlice.Interface()
 }
 
-func copyArray(rv reflect.Value, visited map[uintptr]any) any {
+func copyArray(rv reflect.Value, visited visitedMap) any {
 	l := rv.Len()
 	newArr := reflect.New(rv.Type()).Elem()
 	for i := 0; i < l; i++ {
@@ -632,7 +714,7 @@ func copyArray(rv reflect.Value, visited map[uintptr]any) any {
 	return newArr.Interface()
 }
 
-func copyStruct(rv reflect.Value, visited map[uintptr]any) any {
+func copyStruct(rv reflect.Value, visited visitedMap) any {
 	if copier, ok := rv.Interface().(DeepCopier); ok {
 		return copier.DeepCopy()
 	}
@@ -776,11 +858,11 @@ func hasJSONUnsafeType(rt reflect.Type, visiting map[reflect.Type]bool) bool {
 // encoding/json.Marshal. Structs containing chan/func fields are
 // converted to map[string]any with those fields omitted.
 func jsonSafeCopy(value any) any {
-	visited := make(map[uintptr]any)
+	visited := newVisitedMap()
 	return jsonSafeCopyWithVisited(value, visited)
 }
 
-func jsonSafeCopyWithVisited(value any, visited map[uintptr]any) any {
+func jsonSafeCopyWithVisited(value any, visited visitedMap) any {
 	if value == nil {
 		return nil
 	}
@@ -796,15 +878,15 @@ func jsonSafeCopyWithVisited(value any, visited map[uintptr]any) any {
 // jsonSafeFastPath handles common JSON-friendly types without
 // reflection, delegating nested values to jsonSafeCopyWithVisited.
 // For maps, unsafe values are dropped to match jsonSafeCopyMap behavior.
-func jsonSafeFastPath(value any, visited map[uintptr]any) (any, bool) {
+func jsonSafeFastPath(value any, visited visitedMap) (any, bool) {
 	switch v := value.(type) {
 	case map[string]any:
-		ptr := reflect.ValueOf(v).Pointer()
-		if cached, ok := visited[ptr]; ok {
+		key := mapVisitKey(reflect.ValueOf(v).Pointer(), mapStringAnyType)
+		if cached, ok := visited[key]; ok {
 			return cached, true
 		}
 		copied := make(map[string]any, len(v))
-		visited[ptr] = copied
+		visited[key] = copied
 		for k, vv := range v {
 			copiedVal := jsonSafeCopyWithVisited(vv, visited)
 			if copiedVal == nil && valueIsJSONUnsafe(vv) {
@@ -820,12 +902,12 @@ func jsonSafeFastPath(value any, visited map[uintptr]any) (any, bool) {
 		if len(v) == 0 {
 			return []any{}, true
 		}
-		ptr := reflect.ValueOf(v).Pointer()
-		if cached, ok := visited[ptr]; ok {
+		key := sliceVisitKey(reflect.ValueOf(v).Pointer(), len(v), sliceAnyType)
+		if cached, ok := visited[key]; ok {
 			return cached, true
 		}
 		copied := make([]any, len(v))
-		visited[ptr] = copied
+		visited[key] = copied
 		for i := range v {
 			copied[i] = jsonSafeCopyWithVisited(v[i], visited)
 		}
@@ -853,7 +935,7 @@ func jsonSafeFastPath(value any, visited map[uintptr]any) (any, bool) {
 // so that the result is always safe for json.Marshal.
 func jsonSafeReflect(
 	rv reflect.Value,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) any {
 	if !rv.IsValid() {
 		return nil
@@ -887,18 +969,17 @@ func jsonSafeReflect(
 
 func jsonSafeCopyPointer(
 	rv reflect.Value,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) any {
 	if rv.IsNil() {
 		return nil
 	}
-	ptr := rv.Pointer()
-	if cached, ok := visited[ptr]; ok {
+	key := pointerVisitKey(rv.Pointer())
+	if cached, ok := visited[key]; ok {
 		return cached
 	}
-
 	// Cache a placeholder before descending to break pointer cycles.
-	visited[ptr] = nil
+	visited[key] = nil
 	inner := jsonSafeReflect(rv.Elem(), visited)
 	if inner == nil {
 		return nil
@@ -906,23 +987,23 @@ func jsonSafeCopyPointer(
 	newPtr := reflect.New(reflect.TypeOf(inner))
 	newPtr.Elem().Set(reflect.ValueOf(inner))
 	result := newPtr.Interface()
-	visited[ptr] = result
+	visited[key] = result
 	return result
 }
 
 func jsonSafeCopyMap(
 	rv reflect.Value,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) any {
 	if rv.IsNil() {
 		return nil
 	}
-	ptr := rv.Pointer()
-	if cached, ok := visited[ptr]; ok {
+	key := mapVisitKey(rv.Pointer(), rv.Type())
+	if cached, ok := visited[key]; ok {
 		return cached
 	}
 	newMap := make(map[string]any, rv.Len())
-	visited[ptr] = newMap
+	visited[key] = newMap
 	for _, mk := range rv.MapKeys() {
 		mv := rv.MapIndex(mk)
 		val := jsonSafeReflect(mv, visited)
@@ -936,7 +1017,7 @@ func jsonSafeCopyMap(
 
 func jsonSafeCopySlice(
 	rv reflect.Value,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) any {
 	if rv.IsNil() {
 		return nil
@@ -945,12 +1026,12 @@ func jsonSafeCopySlice(
 	if l == 0 {
 		return []any{}
 	}
-	ptr := rv.Pointer()
-	if cached, ok := visited[ptr]; ok {
+	key := sliceVisitKey(rv.Pointer(), l, rv.Type())
+	if cached, ok := visited[key]; ok {
 		return cached
 	}
 	result := make([]any, l)
-	visited[ptr] = result
+	visited[key] = result
 	for i := 0; i < l; i++ {
 		result[i] = jsonSafeReflect(rv.Index(i), visited)
 	}
@@ -959,7 +1040,7 @@ func jsonSafeCopySlice(
 
 func jsonSafeCopyArray(
 	rv reflect.Value,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) any {
 	l := rv.Len()
 	result := make([]any, l)
@@ -973,7 +1054,7 @@ func jsonSafeCopyArray(
 // contains non-serializable fields; otherwise deep-copies normally.
 func jsonSafeCopyStruct(
 	rv reflect.Value,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) any {
 	if isTimeType(rv.Type()) {
 		return copyTime(rv)
@@ -990,7 +1071,7 @@ func jsonSafeCopyStruct(
 // skipping fields whose types are not JSON-serializable.
 func structToJSONSafeMap(
 	rv reflect.Value,
-	visited map[uintptr]any,
+	visited visitedMap,
 ) map[string]any {
 	result := make(map[string]any, rv.NumField())
 	for i := 0; i < rv.NumField(); i++ {
