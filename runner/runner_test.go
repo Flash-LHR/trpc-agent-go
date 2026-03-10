@@ -2886,6 +2886,75 @@ func TestRunner_WrappedGraphAgentFinalModelResponses_NoDuplicateFinalText(t *tes
 	}
 }
 
+func TestRunner_WrappedGraphAgentFinalModelResponses_EmptyResponseID_StreamModeUpdates_KeepsFinalText(
+	t *testing.T,
+) {
+	tests := []struct {
+		name  string
+		build func(child agent.Agent) agent.Agent
+	}{
+		{
+			name: "chain",
+			build: func(child agent.Agent) agent.Agent {
+				return chainagent.New("chain", chainagent.WithSubAgents([]agent.Agent{child}))
+			},
+		},
+		{
+			name: "cycle",
+			build: func(child agent.Agent) agent.Agent {
+				return cycleagent.New(
+					"cycle",
+					cycleagent.WithSubAgents([]agent.Agent{child}),
+					cycleagent.WithMaxIterations(1),
+				)
+			},
+		},
+		{
+			name: "parallel",
+			build: func(child agent.Agent) agent.Agent {
+				return parallelagent.New("parallel", parallelagent.WithSubAgents([]agent.Agent{child}))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			child := newWrappedGraphLLMEmptyIDChildAgent(t)
+			svc := sessioninmemory.NewSessionService()
+			r := NewRunner("app", tt.build(child), WithSessionService(svc))
+			ch, err := r.Run(
+				context.Background(),
+				"u",
+				tt.name+"-llm-empty-id-updates",
+				model.NewUserMessage("hi"),
+				agent.WithDisableGraphCompletionEvent(true),
+				agent.WithGraphEmitFinalModelResponses(true),
+				agent.WithStreamMode(agent.StreamModeUpdates),
+			)
+			require.NoError(t, err)
+
+			var completion *event.Event
+			for evt := range ch {
+				require.NotEqual(t, model.ObjectTypeChatCompletion, evt.Object)
+				if evt.IsRunnerCompletion() {
+					completion = evt
+				}
+			}
+
+			require.NotNil(t, completion)
+			require.NotNil(t, completion.StateDelta)
+			require.Equal(t, `"empty-id-final"`, string(completion.StateDelta[graph.StateKeyLastResponse]))
+			require.Len(t, completion.Response.Choices, 1)
+			require.Equal(t, "empty-id-final", completion.Response.Choices[0].Message.Content)
+			assertSessionKeepsSingleFinalAssistantEvent(
+				t,
+				svc,
+				tt.name+"-llm-empty-id-updates",
+				"empty-id-final",
+			)
+		})
+	}
+}
+
 func TestPropagateGraphCompletion_NilStateValue(t *testing.T) {
 	// Call propagateGraphCompletion directly to cover the nil-value copy branch.
 	rr := NewRunner("app", &noOpAgent{name: "a"}).(*runner)

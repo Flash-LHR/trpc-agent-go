@@ -1374,7 +1374,20 @@ func (r *runner) completionChoicesForRunner(
 		return loop.finalChoices
 	}
 	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)
-	if finalResponseID == "" || finalResponseID != loop.fallbackResponseID {
+	if finalResponseID != "" {
+		if finalResponseID == loop.fallbackResponseID {
+			return loop.fallbackChoices
+		}
+		return nil
+	}
+	if len(loop.fallbackChoices) == 0 {
+		return nil
+	}
+	finalResponseText := finalResponseTextFromStateDelta(finalStateDelta)
+	if finalResponseText == "" {
+		return nil
+	}
+	if assistantChoicePrimaryContent(loop.fallbackChoices) != finalResponseText {
 		return nil
 	}
 	return loop.fallbackChoices
@@ -1474,6 +1487,32 @@ func finalResponseIDFromStateDelta(finalStateDelta map[string][]byte) string {
 		return ""
 	}
 	return responseID
+}
+
+func finalResponseTextFromStateDelta(finalStateDelta map[string][]byte) string {
+	if finalStateDelta == nil {
+		return ""
+	}
+	raw, ok := finalStateDelta[graph.StateKeyLastResponse]
+	if !ok || len(raw) == 0 {
+		return ""
+	}
+	var responseText string
+	if err := json.Unmarshal(raw, &responseText); err != nil {
+		return ""
+	}
+	return responseText
+}
+
+func assistantChoicePrimaryContent(choices []model.Choice) string {
+	for _, choice := range choices {
+		if choice.Message.Role != model.RoleAssistant ||
+			choice.Message.Content == "" {
+			continue
+		}
+		return choice.Message.Content
+	}
+	return ""
 }
 
 // shouldAppendUserMessage checks if the incoming user message should be
