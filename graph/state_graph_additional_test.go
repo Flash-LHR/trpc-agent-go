@@ -19,12 +19,17 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	semconvmetrics "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/metrics"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -82,6 +87,18 @@ func (m *iterErrorModel) GenerateContentIter(ctx context.Context, req *model.Req
 
 func (m *iterErrorModel) Info() model.Info {
 	return model.Info{Name: "iter-error-model"}
+}
+
+type noResponseModel struct{}
+
+func (m *noResponseModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
+	ch := make(chan *model.Response)
+	close(ch)
+	return ch, nil
+}
+
+func (m *noResponseModel) Info() model.Info {
+	return model.Info{Name: "no-response-model"}
 }
 
 func (a *stubAgent) Run(
@@ -316,6 +333,156 @@ func TestModelResponseProcessorConsume_FastPathSeq(t *testing.T) {
 	require.NotNil(t, processor.lastEvent)
 	require.NotNil(t, processor.finalResponse)
 	require.Same(t, processor.lastEvent, <-ch)
+}
+
+func TestProcessModelResponse_DisablesPartialMetadataOnSlowPath(t *testing.T) {
+	ch := make(chan *event.Event, 1)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-slow-partial"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisablePartialEventIDs:        true,
+			DisablePartialEventTimestamps: true,
+		}),
+	)
+	var ctx context.Context = agent.NewInvocationContext(context.Background(), invocation)
+	resp := &model.Response{
+		IsPartial: true,
+		Choices: []model.Choice{
+			{Message: model.NewAssistantMessage("partial")},
+		},
+	}
+	ctx, ev, err := processModelResponse(ctx, modelResponseConfig{
+		Response:     resp,
+		EventChan:    ch,
+		InvocationID: invocation.InvocationID,
+		Request:      &model.Request{},
+		Span:         noop.Span{},
+		NodeID:       "llm",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ctx)
+	require.NotNil(t, ev)
+	require.Empty(t, ev.ID)
+	require.True(t, ev.Timestamp.IsZero())
+	require.Same(t, ev, <-ch)
+}
+
+func TestExecuteModelAndProcessResponses_UsesInvocationFromCallbackContext(t *testing.T) {
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base"),
+		agent.WithInvocationRunOptions(agent.RunOptions{}),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableResponseUsageTracking: true,
+		}),
+	)
+	callbacks := model.NewCallbacks().RegisterBeforeModel(
+		func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
+			return &model.BeforeModelResult{
+				Context: agent.NewInvocationContext(ctx, updatedInvocation),
+			}, nil
+		},
+	)
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		modelExecutionConfig{
+			Invocation:     baseInvocation,
+			ModelCallbacks: callbacks,
+			LLMModel:       &captureModel{},
+			Request:        &model.Request{},
+			InvocationID:   baseInvocation.InvocationID,
+			Span:           noop.Span{},
+			NodeID:         "llm",
+		},
+	)
+	require.NoError(t, err)
+	finalResponse, ok := resp.(*model.Response)
+	require.True(t, ok)
+	require.Nil(t, finalResponse.Usage)
+}
+
+func TestExecuteModelAndProcessResponses_TracksFinalizeErrors(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	originalProvider := itelemetry.MeterProvider
+	originalMeter := itelemetry.ChatMeter
+	originalRequestCnt := itelemetry.ChatMetricTRPCAgentGoClientRequestCnt
+	defer func() {
+		itelemetry.MeterProvider = originalProvider
+		itelemetry.ChatMeter = originalMeter
+		itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = originalRequestCnt
+	}()
+	itelemetry.MeterProvider = provider
+	itelemetry.ChatMeter = provider.Meter(semconvmetrics.MeterNameChat)
+	requestCnt, err := itelemetry.ChatMeter.Int64Counter("trpc_agent_go.client.request.cnt")
+	require.NoError(t, err)
+	itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = requestCnt
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-metrics"),
+		agent.WithInvocationModel(&noResponseModel{}),
+		agent.WithInvocationSession(&session.Session{ID: "sess-metrics"}),
+	)
+	_, err = executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), invocation),
+		modelExecutionConfig{
+			Invocation:   invocation,
+			LLMModel:     invocation.Model,
+			Request:      &model.Request{},
+			InvocationID: invocation.InvocationID,
+			SessionID:    invocation.Session.ID,
+			Span:         noop.Span{},
+			NodeID:       "llm",
+		},
+	)
+	require.ErrorContains(t, err, errMsgNoModelResponse)
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyErrorType, itelemetry.ValueDefaultErrorType))
+}
+
+func resourceMetricsContainAttribute(rm metricdata.ResourceMetrics, key, value string) bool {
+	for _, scopeMetric := range rm.ScopeMetrics {
+		for _, metric := range scopeMetric.Metrics {
+			switch data := metric.Data.(type) {
+			case metricdata.Sum[int64]:
+				for _, point := range data.DataPoints {
+					if attributeSetContains(point.Attributes, key, value) {
+						return true
+					}
+				}
+			case metricdata.Sum[float64]:
+				for _, point := range data.DataPoints {
+					if attributeSetContains(point.Attributes, key, value) {
+						return true
+					}
+				}
+			case metricdata.Histogram[int64]:
+				for _, point := range data.DataPoints {
+					if attributeSetContains(point.Attributes, key, value) {
+						return true
+					}
+				}
+			case metricdata.Histogram[float64]:
+				for _, point := range data.DataPoints {
+					if attributeSetContains(point.Attributes, key, value) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func attributeSetContains(set attribute.Set, key, value string) bool {
+	for _, kv := range set.ToSlice() {
+		if string(kv.Key) == key && kv.Value.AsString() == value {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuilderOptions_Destinations_And_Callbacks(t *testing.T) {

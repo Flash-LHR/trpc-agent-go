@@ -1539,6 +1539,22 @@ func modelResponseAuthor(config modelResponseConfig) string {
 	return config.LLMModel.Info().Name
 }
 
+func applyPartialEventMetadataOverrides(
+	ev *event.Event,
+	resp *model.Response,
+	invocation *agent.Invocation,
+) {
+	if ev == nil || resp == nil || !resp.IsPartial || invocation == nil {
+		return
+	}
+	if invocation.RunOptions.DisablePartialEventIDs {
+		ev.ID = ""
+	}
+	if invocation.RunOptions.DisablePartialEventTimestamps {
+		ev.Timestamp = resp.Timestamp
+	}
+}
+
 func emitModelResponseEvent(
 	ctx context.Context,
 	config modelResponseConfig,
@@ -1617,11 +1633,13 @@ func processModelResponse(ctx context.Context, config modelResponseConfig) (cont
 		jsonrepair.IsToolCallArgumentsJSONRepairEnabled(invocation) {
 		jsonrepair.RepairResponseToolCallArgumentsInPlace(ctx, config.Response)
 	}
+	invocation, _ := agent.InvocationFromContext(ctx)
 	llmEvent := event.NewResponseEvent(
 		config.InvocationID,
 		modelResponseAuthor(config),
 		config.Response,
 	)
+	applyPartialEventMetadataOverrides(llmEvent, config.Response, invocation)
 
 	if err := emitModelResponseEvent(ctx, config, llmEvent); err != nil {
 		return ctx, nil, err
@@ -3630,6 +3648,9 @@ func executeModelAndProcessResponses(ctx context.Context, config modelExecutionC
 		config.Span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("failed to run model: %w", err)
 	}
+	if updatedInvocation, ok := agent.InvocationFromContext(ctx); ok && updatedInvocation != nil {
+		invocation = updatedInvocation
+	}
 	if invocation == nil {
 		invocation = agent.NewInvocation(
 			agent.WithInvocationID(config.InvocationID),
@@ -3641,14 +3662,18 @@ func executeModelAndProcessResponses(ctx context.Context, config modelExecutionC
 	processor := newModelResponseProcessor(ctx, config, invocation, &err)
 	defer processor.close()
 
-	if err := processor.consume(stream); err != nil {
+	if err = processor.consume(stream); err != nil {
 		return nil, err
 	}
 	if err != nil {
 		return nil, err
 	}
-
-	return processor.finalize()
+	finalResponse, finalizeErr := processor.finalize()
+	err = finalizeErr
+	if err != nil {
+		return nil, err
+	}
+	return finalResponse, nil
 }
 
 // executeModelWithEvents preserves the previous helper name for existing
