@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	ichannel "trpc.group/trpc-go/trpc-agent-go/graph/internal/channel"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/barrier"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -289,6 +290,30 @@ func TestExecutor_NodeStartEvent_UsesCustomUserInputKey(t *testing.T) {
 		got = meta.ModelInput
 	}
 	require.Equal(t, testCustomInput, got)
+}
+
+func TestExecutor_DisableGraphExecutorEvents_SuppressesEventHelpers(t *testing.T) {
+	exec := &Executor{}
+	eventCh := make(chan *event.Event, 8)
+	execCtx := &ExecutionContext{
+		InvocationID: "inv-disable-events",
+		EventChan:    eventCh,
+		State:        State{"answer": "ok"},
+	}
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphExecutorEvents: true,
+		}),
+	)
+
+	exec.emitExecutionStepEvent(context.Background(), invocation, execCtx, []*Task{{NodeID: "node-a"}}, 1)
+	exec.emitNodeStartEvent(context.Background(), invocation, execCtx, "node-a", NodeTypeFunction, 1, time.Now())
+	exec.emitChannelUpdateEvent(context.Background(), invocation, execCtx, "messages", ichannel.BehaviorLastValue, []string{"node-a"})
+	exec.emitNodeCompleteEvent(context.Background(), invocation, execCtx, "node-a", NodeTypeFunction, 1, time.Now(), false)
+	exec.emitUpdateStepEvent(context.Background(), invocation, execCtx, 1)
+	exec.emitStateUpdateEvent(context.Background(), invocation, execCtx)
+
+	require.Len(t, eventCh, 0)
 }
 
 // Ensure handleInterrupt still emits the interrupt event even when

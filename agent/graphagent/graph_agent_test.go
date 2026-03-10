@@ -143,6 +143,34 @@ func TestGraphAgentRun_NilInvocation(t *testing.T) {
 	require.Equal(t, invocationNilErrMsg, err.Error())
 }
 
+func TestGraphAgentRun_UsesInvocationEventChannelBufferSize(t *testing.T) {
+	stateGraph := graph.NewStateGraph(graph.NewStateSchema())
+	stateGraph.AddNode("noop", func(context.Context, graph.State) (any, error) {
+		return nil, nil
+	})
+	stateGraph.SetEntryPoint("noop")
+	stateGraph.SetFinishPoint("noop")
+
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+
+	graphAgent, err := New("test-agent", g, WithChannelBufferSize(1))
+	require.NoError(t, err)
+
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			EventChannelBufferSize: 7,
+		}),
+	)
+
+	events, err := graphAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	require.Equal(t, 7, cap(events))
+
+	for range events {
+	}
+}
+
 func TestGraphAgent_WithMaxConcurrency(t *testing.T) {
 	const (
 		nodeRoot       = "root"

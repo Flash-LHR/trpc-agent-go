@@ -455,3 +455,16 @@ func (m *mockArtifactService) DeleteArtifact(ctx context.Context, info artifact.
 func (m *mockArtifactService) ListVersions(ctx context.Context, info artifact.SessionInfo, filename string) ([]int, error) {
 	return nil, nil
 }
+
+func TestGraphRunOptionSetters(t *testing.T) {
+	opts := &RunOptions{}
+
+	WithDisableGraphCompletionEvent(true)(opts)
+	require.True(t, opts.DisableGraphCompletionEvent)
+
+	WithDisableGraphExecutorEvents(true)(opts)
+	require.True(t, opts.DisableGraphExecutorEvents)
+
+	WithEventChannelBufferSize(256)(opts)
+	require.Equal(t, 256, opts.EventChannelBufferSize)
+}
