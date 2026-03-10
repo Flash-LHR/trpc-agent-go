@@ -556,6 +556,46 @@ func TestCycleAgent_DisableGraphCompletionEvent_PreservesStateOnlyChildCompletio
 	require.Equal(t, []byte(`"child-state"`), visibleEvent.StateDelta["child_state"])
 }
 
+func TestCycleAgent_DisableGraphCompletionEvent_CustomEscalationSeesVisibleChildCompletion(t *testing.T) {
+	sg := graph.NewStateGraph(graph.MessagesStateSchema())
+	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		return graph.State{
+			graph.StateKeyLastResponse: "child-final",
+			"child_state":              "child-state",
+		}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	child, err := graphagent.New("graph-child", compiled)
+	require.NoError(t, err)
+	cycleAgent := newFromLegacy(legacyOptions{
+		Name:          "test-cycle",
+		SubAgents:     []agent.Agent{child},
+		MaxIterations: ptrInt(2),
+		EscalationFunc: func(evt *event.Event) bool {
+			return evt != nil &&
+				evt.Object == model.ObjectTypeChatCompletion &&
+				len(evt.StateDelta) > 0
+		},
+	})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	events, err := cycleAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	var visibleCompletionCount int
+	for evt := range events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if evt != nil &&
+			evt.Object == model.ObjectTypeChatCompletion &&
+			len(evt.StateDelta) > 0 {
+			visibleCompletionCount++
+		}
+	}
+	require.Equal(t, 1, visibleCompletionCount)
+}
+
 func TestCycleAgent_WithCallbacks(t *testing.T) {
 	// Create agent callbacks.
 	callbacks := agent.NewCallbacks()

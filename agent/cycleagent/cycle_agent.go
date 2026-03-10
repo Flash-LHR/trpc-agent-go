@@ -200,23 +200,23 @@ func (a *CycleAgent) runSubAgent(
 		if subEvent != nil && subEvent.Response != nil && !subEvent.Response.IsPartial {
 			*fullRespEvent = subEvent
 		}
+		escalationEvent := subEvent
 		if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, subEvent) {
 			if visibleEvent, ok := graph.VisibleGraphCompletionEvent(subEvent); ok {
+				escalationEvent = visibleEvent
 				if err := event.EmitEvent(ctx, eventChan, visibleEvent); err != nil {
 					return true
 				}
 			}
-			continue
-		}
-		if err := event.EmitEvent(ctx, eventChan, subEvent); err != nil {
+		} else if err := event.EmitEvent(ctx, eventChan, subEvent); err != nil {
 			return true
 		}
-		if subEvent != nil && subEvent.Error != nil {
+		if escalationEvent != nil && escalationEvent.Error != nil {
 			return true
 		}
 
 		// Check if this event indicates escalation.
-		if a.shouldEscalate(subEvent) {
+		if a.shouldEscalate(escalationEvent) {
 			return true // Indicates escalation
 		}
 	}
