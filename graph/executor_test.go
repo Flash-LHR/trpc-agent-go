@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace/noop"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	ichannel "trpc.group/trpc-go/trpc-agent-go/graph/internal/channel"
@@ -316,8 +317,8 @@ func TestExecutor_DisableGraphExecutorEvents_SuppressesEventHelpers(t *testing.T
 	exec.emitStateUpdateEvent(ctx, invocation, execCtx)
 	emitModelStartEvent(ctx, eventCh, "inv-disable-events", "test-model", "node-a", "input", time.Now())
 	emitModelCompleteEvent(ctx, eventCh, "inv-disable-events", "test-model", "node-a", "input", "output", "resp-id", time.Now(), time.Now(), nil)
-	emitToolStartEvent(ctx, eventCh, "inv-disable-events", "test-tool", "tool-id", "node-a", time.Now(), []byte(`{"x":1}`), "resp-id")
-	completeEvent := emitToolCompleteEvent(ctx, toolCompleteEventConfig{
+	emitToolStartEvent(ctx, invocation, eventCh, "inv-disable-events", "test-tool", "tool-id", "node-a", time.Now(), []byte(`{"x":1}`), "resp-id")
+	completeEvent := emitToolCompleteEvent(ctx, invocation, toolCompleteEventConfig{
 		EventChan:    eventCh,
 		InvocationID: "inv-disable-events",
 		ToolName:     "test-tool",
@@ -330,6 +331,47 @@ func TestExecutor_DisableGraphExecutorEvents_SuppressesEventHelpers(t *testing.T
 	})
 
 	require.Nil(t, completeEvent)
+	require.Len(t, eventCh, 0)
+}
+
+func TestExecuteSingleToolCall_DisableGraphExecutorEvents_IgnoresCallbackContextReplacement(t *testing.T) {
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		return &tool.BeforeToolResult{
+			Context: context.Background(),
+		}, nil
+	})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-tool-disable-events"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphExecutorEvents: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	eventCh := make(chan *event.Event, 4)
+	toolCall := model.ToolCall{
+		ID: "tool-call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "echo",
+			Arguments: []byte(`{"value":"ok"}`),
+		},
+	}
+	msg, err := executeSingleToolCall(ctx, singleToolCallConfig{
+		ToolCall:     toolCall,
+		Tools:        map[string]tool.Tool{"echo": &dummyTool{name: "echo"}},
+		InvocationID: invocation.InvocationID,
+		EventChan:    eventCh,
+		Span:         noop.Span{},
+		State: State{
+			StateKeyCurrentNodeID: "node-a",
+		},
+		ToolCallbacks: callbacks,
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.RoleTool, msg.Role)
 	require.Len(t, eventCh, 0)
 }
 

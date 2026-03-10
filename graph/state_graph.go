@@ -3506,12 +3506,13 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 	}
 
 	// Execute the tool with callbacks and get modified arguments.
+	invocation, _ := agent.InvocationFromContext(ctx)
 	ctx, span := trace.Tracer.Start(ctx, itelemetry.NewExecuteToolSpanName(config.ToolCall.Function.Name))
 	ctx, result, modifiedArgs, err := runTool(ctx, config.ToolCall, config.ToolCallbacks, t, config.State)
 
 	// Emit tool execution start event with modified arguments.
 	emitToolStartEvent(
-		ctx, config.EventChan, config.InvocationID, name, id, nodeID,
+		ctx, invocation, config.EventChan, config.InvocationID, name, id, nodeID,
 		startTime, modifiedArgs, responseID,
 	)
 
@@ -3528,7 +3529,7 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 		}
 	}
 	// Emit tool execution complete event.
-	event := emitToolCompleteEvent(ctx, toolCompleteEventConfig{
+	event := emitToolCompleteEvent(ctx, invocation, toolCompleteEventConfig{
 		EventChan:    config.EventChan,
 		InvocationID: config.InvocationID,
 		ToolName:     name,
@@ -3575,6 +3576,7 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 // emitToolStartEvent emits a tool execution start event.
 func emitToolStartEvent(
 	ctx context.Context,
+	invocation *agent.Invocation,
 	eventChan chan<- *event.Event,
 	invocationID, toolName, toolID, nodeID string,
 	startTime time.Time,
@@ -3584,7 +3586,6 @@ func emitToolStartEvent(
 	if eventChan == nil {
 		return
 	}
-	invocation, _ := agent.InvocationFromContext(ctx)
 	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
 		return
 	}
@@ -3616,11 +3617,14 @@ type toolCompleteEventConfig struct {
 }
 
 // emitToolCompleteEvent emits a tool execution complete event.
-func emitToolCompleteEvent(ctx context.Context, config toolCompleteEventConfig) *event.Event {
+func emitToolCompleteEvent(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	config toolCompleteEventConfig,
+) *event.Event {
 	if config.EventChan == nil {
 		return nil
 	}
-	invocation, _ := agent.InvocationFromContext(ctx)
 	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
 		return nil
 	}
