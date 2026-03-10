@@ -195,11 +195,12 @@ func (a *CycleAgent) runSubAgent(
 	}
 
 	// Forward events from the sub-agent and check for escalation.
+	visibleCtx := graph.WithoutGraphCompletionCapture(ctx)
 	for subEvent := range subEventChan {
 		if subEvent != nil && subEvent.Response != nil && !subEvent.Response.IsPartial {
 			*fullRespEvent = subEvent
 		}
-		if graph.ShouldSuppressGraphCompletionEvent(ctx, invocation, subEvent) {
+		if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, subEvent) {
 			continue
 		}
 		if err := event.EmitEvent(ctx, eventChan, subEvent); err != nil {

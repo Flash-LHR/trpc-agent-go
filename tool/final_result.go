@@ -13,5 +13,6 @@ package tool
 // tool call. When present, the flow should preserve this result instead
 // of merging only textual chunks.
 type FinalResultChunk struct {
-	Result any
+	Result     any
+	StateDelta map[string][]byte
 }

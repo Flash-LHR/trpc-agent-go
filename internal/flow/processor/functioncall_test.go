@@ -2895,7 +2895,10 @@ func TestExecuteStreamableTool_ChunkStructJSON(t *testing.T) {
 	require.Equal(t, `{"a":1}{"b":"x"}`, res.(string))
 }
 
-type finalResultStreamTool struct{ name string }
+type finalResultStreamTool struct {
+	name       string
+	stateDelta map[string][]byte
+}
 
 func (s *finalResultStreamTool) Declaration() *tool.Declaration {
 	return &tool.Declaration{Name: s.name}
@@ -2911,7 +2914,8 @@ func (s *finalResultStreamTool) StreamableCall(
 		st.Writer.Send(tool.StreamChunk{Content: "line-1"}, nil)
 		st.Writer.Send(tool.StreamChunk{
 			Content: tool.FinalResultChunk{
-				Result: map[string]any{"status": "ok"},
+				Result:     map[string]any{"status": "ok"},
+				StateDelta: s.stateDelta,
 			},
 		}, nil)
 	}()
@@ -2945,6 +2949,40 @@ func TestExecuteStreamableTool_PreservesFinalResultChunk(t *testing.T) {
 	default:
 		t.Fatalf("expected a partial event from streamed output")
 	}
+}
+
+func TestExecuteStreamableTool_FinalResultChunkEmitsStateDelta(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{
+		InvocationID: "inv-final-delta",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID:       "c1",
+		Function: model.FunctionDefinitionParam{Name: "final"},
+	}
+	st := &finalResultStreamTool{
+		name:       "final",
+		stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
+	}
+	ch := make(chan *event.Event, 4)
+	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{"status": "ok"}, res)
+
+	first := <-ch
+	require.NotNil(t, first)
+	require.True(t, first.IsPartial)
+	require.Equal(t, "line-1", first.Choices[0].Delta.Content)
+
+	second := <-ch
+	require.NotNil(t, second)
+	require.True(t, second.IsPartial)
+	require.Empty(t, second.Choices[0].Delta.Content)
+	require.Equal(t, []byte(`"ok"`), second.StateDelta["final"])
 }
 
 // stream tool forwarding inner *event.Event

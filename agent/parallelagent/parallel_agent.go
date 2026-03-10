@@ -290,6 +290,7 @@ func (a *ParallelAgent) mergeEventStreams(
 ) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	visibleCtx := graph.WithoutGraphCompletionCapture(ctx)
 
 	// Start a goroutine for each input channel.
 	for _, ch := range eventChans {
@@ -315,7 +316,7 @@ func (a *ParallelAgent) mergeEventStreams(
 					*fullRespEvent = evt
 					mu.Unlock()
 				}
-				if graph.ShouldSuppressGraphCompletionEvent(ctx, invocation, evt) {
+				if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, evt) {
 					continue
 				}
 				if err := event.EmitEvent(ctx, outputChan, evt); err != nil {

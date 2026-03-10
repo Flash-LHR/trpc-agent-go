@@ -179,6 +179,7 @@ func (a *ChainAgent) executeSubAgents(
 ) (*event.Event, *itelemetry.TokenUsage) {
 	tokenUsage := &itelemetry.TokenUsage{}
 	var fullRespEvent *event.Event
+	visibleCtx := graph.WithoutGraphCompletionCapture(ctx)
 	for _, subAgent := range a.subAgents {
 		// Create clean invocation for sub-agent - no shared state mutation.
 		subInvocation := a.createSubAgentInvocation(subAgent, invocation)
@@ -219,7 +220,7 @@ func (a *ChainAgent) executeSubAgents(
 					fullRespEvent = subEvent
 				}
 			}
-			if graph.ShouldSuppressGraphCompletionEvent(ctx, invocation, subEvent) {
+			if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, subEvent) {
 				continue
 			}
 			if err := event.EmitEvent(ctx, eventChan, subEvent); err != nil {

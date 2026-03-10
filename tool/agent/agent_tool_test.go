@@ -1375,6 +1375,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_KeepsFinalResult(t *tes
 		resultChunk, ok := chunk.Content.(tool.FinalResultChunk)
 		require.True(t, ok)
 		finalResult = resultChunk.Result
+		require.Equal(t, []byte(`"child-final"`), resultChunk.StateDelta[graph.StateKeyLastResponse])
 	}
 	require.Equal(t, "child-final", finalResult)
 }
@@ -1397,6 +1398,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_SuppressesStateOnlyComp
 	defer reader.Close()
 	eventChunks := 0
 	resultChunks := 0
+	var finalChunk tool.FinalResultChunk
 	for {
 		chunk, recvErr := reader.Recv()
 		if recvErr == io.EOF {
@@ -1408,12 +1410,15 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_SuppressesStateOnlyComp
 			require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
 			continue
 		}
-		_, ok := chunk.Content.(tool.FinalResultChunk)
+		resultChunk, ok := chunk.Content.(tool.FinalResultChunk)
 		require.True(t, ok)
+		finalChunk = resultChunk
 		resultChunks++
 	}
 	require.Zero(t, eventChunks)
-	require.Zero(t, resultChunks)
+	require.Equal(t, 1, resultChunks)
+	require.Nil(t, finalChunk.Result)
+	require.Equal(t, []byte(graphStateValue), finalChunk.StateDelta[graphStateKey])
 }
 
 func TestTool_StreamInner_FlagFalse(t *testing.T) {

@@ -1453,6 +1453,33 @@ func (f *FunctionCallResponseProcessor) buildPartialToolResponseEvent(
 	)
 }
 
+func (f *FunctionCallResponseProcessor) buildStateDeltaToolResponseEvent(
+	inv *agent.Invocation,
+	toolCall model.ToolCall,
+	stateDelta map[string][]byte,
+) *event.Event {
+	evt := f.buildPartialToolResponseEvent(inv, toolCall, "")
+	if evt != nil && len(stateDelta) > 0 {
+		evt.StateDelta = cloneEventStateDelta(stateDelta)
+	}
+	return evt
+}
+
+func cloneEventStateDelta(stateDelta map[string][]byte) map[string][]byte {
+	if len(stateDelta) == 0 {
+		return nil
+	}
+	cloned := make(map[string][]byte, len(stateDelta))
+	for key, value := range stateDelta {
+		if value == nil {
+			cloned[key] = nil
+			continue
+		}
+		cloned[key] = append([]byte(nil), value...)
+	}
+	return cloned
+}
+
 // marshalChunkToText converts a chunk content into a string representation.
 func marshalChunkToText(content any) string {
 	switch v := content.(type) {
@@ -1668,10 +1695,30 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 		if finalResult != nil {
 			*finalResult = v.Result
 		}
+		if len(v.StateDelta) > 0 && eventChan != nil {
+			deltaEvent := f.buildStateDeltaToolResponseEvent(
+				invocation,
+				toolCall,
+				v.StateDelta,
+			)
+			if err := event.EmitEvent(ctx, eventChan, deltaEvent); err != nil {
+				return err
+			}
+		}
 		return nil
 	case *tool.FinalResultChunk:
 		if v != nil && finalResult != nil {
 			*finalResult = v.Result
+		}
+		if v != nil && len(v.StateDelta) > 0 && eventChan != nil {
+			deltaEvent := f.buildStateDeltaToolResponseEvent(
+				invocation,
+				toolCall,
+				v.StateDelta,
+			)
+			if err := event.EmitEvent(ctx, eventChan, deltaEvent); err != nil {
+				return err
+			}
 		}
 		return nil
 	}

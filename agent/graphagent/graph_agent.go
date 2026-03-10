@@ -370,12 +370,13 @@ func (ga *GraphAgent) wrapEventChannel(
 	go func(ctx context.Context) {
 		defer close(wrappedChan)
 		var fullRespEvent *event.Event
+		visibleCtx := graph.WithoutGraphCompletionCapture(ctx)
 		// Forward all events from the original channel
 		for evt := range originalChan {
 			if evt != nil && evt.Response != nil && !evt.Response.IsPartial {
 				fullRespEvent = evt
 			}
-			if graph.ShouldSuppressGraphCompletionEvent(ctx, invocation, evt) {
+			if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, evt) {
 				continue
 			}
 			if err := event.EmitEvent(ctx, wrappedChan, evt); err != nil {

@@ -1560,6 +1560,38 @@ func TestGraphAgent_DisableGraphCompletionEvent_PreservesAfterAgentResponse(t *t
 	require.Equal(t, "child-final", fullRespEvent.Response.Choices[0].Message.Content)
 }
 
+func TestGraphAgent_DisableGraphCompletionEvent_SuppressesOutputWithCaptureContext(t *testing.T) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+			return graph.State{graph.StateKeyLastResponse: "child-final"}, nil
+		}).
+		SetEntryPoint("done").
+		SetFinishPoint("done").
+		Compile()
+	require.NoError(t, err)
+	callbacks := agent.NewCallbacks()
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		return nil, nil
+	})
+	ga, err := New(
+		"test-after-hidden-completion-capture",
+		g,
+		WithAgentCallbacks(callbacks),
+	)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	events, err := ga.Run(graph.WithGraphCompletionCapture(context.Background()), inv)
+	require.NoError(t, err)
+	for evt := range events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+	}
+}
+
 func TestGraphAgent_BarrierWaitsForCompletion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

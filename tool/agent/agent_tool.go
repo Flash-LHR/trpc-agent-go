@@ -405,6 +405,37 @@ func graphCompletionResult(evt *event.Event) (string, bool) {
 	return message.Content, true
 }
 
+func graphCompletionFinalChunk(evt *event.Event) (tool.FinalResultChunk, bool) {
+	if !isGraphCompletionEvent(evt) {
+		return tool.FinalResultChunk{}, false
+	}
+	chunk := tool.FinalResultChunk{
+		StateDelta: cloneStateDelta(evt.StateDelta),
+	}
+	if result, ok := graphCompletionResult(evt); ok {
+		chunk.Result = result
+	}
+	if chunk.Result == nil && len(chunk.StateDelta) == 0 {
+		return tool.FinalResultChunk{}, false
+	}
+	return chunk, true
+}
+
+func cloneStateDelta(delta map[string][]byte) map[string][]byte {
+	if len(delta) == 0 {
+		return nil
+	}
+	cloned := make(map[string][]byte, len(delta))
+	for key, value := range delta {
+		if value == nil {
+			cloned[key] = nil
+			continue
+		}
+		cloned[key] = append([]byte(nil), value...)
+	}
+	return cloned
+}
+
 // callWithIsolatedRunner executes the agent in an isolated environment using
 // an in-memory session service. This is used as a fallback when no parent
 // invocation context is available.
@@ -508,9 +539,9 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 
 			for ev := range wrapped {
 				if subInv.RunOptions.DisableGraphCompletionEvent && isGraphCompletionEvent(ev) {
-					if result, ok := graphCompletionResult(ev); ok {
+					if chunk, ok := graphCompletionFinalChunk(ev); ok {
 						if stream.Writer.Send(tool.StreamChunk{
-							Content: tool.FinalResultChunk{Result: result},
+							Content: chunk,
 						}, nil) {
 							return
 						}

@@ -27,6 +27,15 @@ func WithGraphCompletionCapture(ctx context.Context) context.Context {
 	return context.WithValue(ctx, graphCompletionCaptureKey{}, true)
 }
 
+// WithoutGraphCompletionCapture clears any inherited capture flag for the
+// current visible stream while preserving the rest of the context.
+func WithoutGraphCompletionCapture(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, graphCompletionCaptureKey{}, false)
+}
+
 // ShouldCaptureGraphCompletion reports whether the current context keeps
 // terminal graph completion events available for internal consumers.
 func ShouldCaptureGraphCompletion(ctx context.Context) bool {
