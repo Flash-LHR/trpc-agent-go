@@ -1091,6 +1091,15 @@ func TestRunner_DisableGraphCompletionEvent_KeepsRunnerCompletion(t *testing.T) 
 	require.Equal(t, `"hidden graph completion"`, string(completion.StateDelta[graph.StateKeyLastResponse]))
 	require.Len(t, completion.Response.Choices, 1)
 	require.Equal(t, "hidden graph completion", completion.Response.Choices[0].Message.Content)
+	sess, err := svc.GetSession(context.Background(), session.Key{
+		AppName:   "app",
+		UserID:    "u",
+		SessionID: "s",
+	})
+	require.NoError(t, err)
+	for _, evt := range sess.Events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+	}
 }
 
 func TestRunner_GraphCompletion_DedupFinalChoices(t *testing.T) {

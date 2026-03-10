@@ -766,14 +766,17 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 
 	r.recordEmittedAssistantResponseID(loop, agentEvent)
 
-	// Append qualifying events to session and trigger summarization.
-	r.handleEventPersistence(ctx, loop.invocation, loop.sess, agentEvent)
-
 	// Capture graph-level completion snapshot for final event.
 	if isGraphCompletionEvent(agentEvent) {
 		loop.finalStateDelta, loop.finalChoices = r.captureGraphCompletion(agentEvent)
 	}
 	r.captureCompletionFallback(loop, agentEvent)
+	if shouldSuppressGraphCompletionEvent(loop, agentEvent) {
+		return nil
+	}
+
+	// Append qualifying events to session and trigger summarization.
+	r.handleEventPersistence(ctx, loop.invocation, loop.sess, agentEvent)
 
 	// Notify completion if required.
 	if agentEvent.RequiresCompletion {
@@ -782,11 +785,6 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 	}
 
 	r.recordRunEvent(loop)
-	if loop.invocation != nil &&
-		loop.invocation.RunOptions.DisableGraphCompletionEvent &&
-		isGraphCompletionEvent(agentEvent) {
-		return nil
-	}
 	if !loop.streamFilter.Allows(agentEvent) {
 		return nil
 	}
@@ -1014,6 +1012,19 @@ func isGraphCompletionEvent(agentEvent *event.Event) bool {
 	}
 	return agentEvent.Done &&
 		agentEvent.Object == graph.ObjectTypeGraphExecution
+}
+
+func shouldSuppressGraphCompletionEvent(
+	loop *eventLoopContext,
+	agentEvent *event.Event,
+) bool {
+	if loop == nil || loop.invocation == nil {
+		return false
+	}
+	if !loop.invocation.RunOptions.DisableGraphCompletionEvent {
+		return false
+	}
+	return isGraphCompletionEvent(agentEvent)
 }
 
 // captureGraphCompletion captures the final state delta and choices from a
