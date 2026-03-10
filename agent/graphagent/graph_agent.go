@@ -200,7 +200,11 @@ func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.In
 		}
 		if result != nil && result.CustomResponse != nil {
 			// Create a channel that returns the custom response and then closes.
-			eventChan := make(chan *event.Event, ga.eventChannelBufferSize(invocation))
+			bufferSize := ga.eventChannelBufferSize(invocation)
+			if bufferSize < 1 {
+				bufferSize = 1
+			}
+			eventChan := make(chan *event.Event, bufferSize)
 			// Create an event from the custom response.
 			customevent := event.NewResponseEvent(invocation.InvocationID, invocation.AgentName, result.CustomResponse)
 			agent.EmitEvent(ctx, invocation, eventChan, customevent)
@@ -357,7 +361,7 @@ func (ga *GraphAgent) wrapEventChannel(
 		var fullRespEvent *event.Event
 		// Forward all events from the original channel
 		for evt := range originalChan {
-			if evt != nil && evt.Response != nil && !evt.Response.IsPartial {
+			if isAfterAgentFullResponseEvent(evt) {
 				fullRespEvent = evt
 			}
 			if err := event.EmitEvent(ctx, wrappedChan, evt); err != nil {
@@ -410,6 +414,19 @@ func (ga *GraphAgent) wrapEventChannel(
 		agent.EmitEvent(ctx, invocation, wrappedChan, evt)
 	}(runCtx)
 	return wrappedChan
+}
+
+func isAfterAgentFullResponseEvent(evt *event.Event) bool {
+	if evt == nil || evt.Response == nil || evt.Response.IsPartial {
+		return false
+	}
+	if evt.Response.Error != nil {
+		return true
+	}
+	if evt.Object == graph.ObjectTypeGraphExecution {
+		return true
+	}
+	return evt.IsValidContent()
 }
 
 // Executor returns the graph executor for direct access to checkpoint management.

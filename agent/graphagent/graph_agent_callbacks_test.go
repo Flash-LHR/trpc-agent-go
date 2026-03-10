@@ -14,6 +14,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -77,6 +78,40 @@ func TestGraphAgent_BeforeCallback_CustomResponseUsesInvocationBufferSize(t *tes
 	require.NoError(t, err)
 	require.Equal(t, 7, cap(ch))
 	for range ch {
+	}
+}
+
+func TestGraphAgent_BeforeCallback_CustomResponseDoesNotBlockOnZeroBuffer(t *testing.T) {
+	g := buildTrivialGraph(t)
+	callbacks := agent.NewCallbacks().
+		RegisterBeforeAgent(func(ctx context.Context, inv *agent.Invocation) (*model.Response, error) {
+			return &model.Response{Choices: []model.Choice{{Message: model.NewAssistantMessage("short-circuit")}}}, nil
+		})
+	ga, err := New("ga", g, WithAgentCallbacks(callbacks), WithChannelBufferSize(0))
+	require.NoError(t, err)
+	inv := &agent.Invocation{Message: model.NewUserMessage("hi")}
+	resultCh := make(chan (<-chan *event.Event), 1)
+	errCh := make(chan error, 1)
+	go func() {
+		ch, runErr := ga.Run(context.Background(), inv)
+		if runErr != nil {
+			errCh <- runErr
+			return
+		}
+		resultCh <- ch
+	}()
+	select {
+	case runErr := <-errCh:
+		require.NoError(t, runErr)
+	case ch := <-resultCh:
+		var events []*event.Event
+		for evt := range ch {
+			events = append(events, evt)
+		}
+		require.Len(t, events, 1)
+		require.Equal(t, "short-circuit", events[0].Response.Choices[0].Message.Content)
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "graph agent run blocked on zero-buffer custom response")
 	}
 }
 
@@ -145,6 +180,48 @@ func TestGraphAgent_AfterCallbackWrapUsesInvocationBufferSize(t *testing.T) {
 	require.Equal(t, 7, cap(ch))
 	for range ch {
 	}
+}
+
+func TestGraphAgent_AfterCallbackReceivesGraphCompletionEvent(t *testing.T) {
+	g := buildTrivialGraph(t)
+	callbacks := agent.NewCallbacks()
+	var captured *event.Event
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		captured = args.FullResponseEvent
+		return nil, nil
+	})
+	ga, err := New("ga", g, WithAgentCallbacks(callbacks))
+	require.NoError(t, err)
+	inv := &agent.Invocation{Message: model.NewUserMessage("go")}
+	ch, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+	for range ch {
+	}
+	require.NotNil(t, captured)
+	require.Equal(t, graph.ObjectTypeGraphExecution, captured.Object)
+}
+
+func TestGraphAgent_AfterCallbackIgnoresLifecycleEventsWhenCompletionDisabled(t *testing.T) {
+	g := buildTrivialGraph(t)
+	callbacks := agent.NewCallbacks()
+	var captured *event.Event
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		captured = args.FullResponseEvent
+		return nil, nil
+	})
+	ga, err := New("ga", g, WithAgentCallbacks(callbacks))
+	require.NoError(t, err)
+	inv := &agent.Invocation{
+		Message: model.NewUserMessage("go"),
+		RunOptions: agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		},
+	}
+	ch, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+	for range ch {
+	}
+	require.Nil(t, captured)
 }
 
 func TestGraphAgent_AfterCallback_ErrorEmitsErrorEvent(t *testing.T) {

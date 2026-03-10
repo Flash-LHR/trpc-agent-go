@@ -1130,6 +1130,46 @@ func TestNewAgentNodeFunc_RunError(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestNewAgentNodeFunc_DisableGraphExecutorEvents_SuppressesAgentNodeEvents(t *testing.T) {
+	exec := &ExecutionContext{InvocationID: "inv", EventChan: make(chan *event.Event, 4)}
+	state := State{
+		StateKeyExecContext:   exec,
+		StateKeyCurrentNodeID: "agentNode",
+		StateKeyParentAgent:   &parentWithSubAgent{a: &dummyAgent{name: "child"}},
+	}
+	parentInvocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphExecutorEvents: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parentInvocation)
+	fn := NewAgentNodeFunc("child")
+	out, err := fn(ctx, state)
+	require.NoError(t, err)
+	_, ok := out.(State)
+	require.True(t, ok)
+	require.Len(t, exec.EventChan, 0)
+}
+
+func TestNewAgentNodeFunc_DisableGraphExecutorEvents_SuppressesAgentNodeErrorEvent(t *testing.T) {
+	exec := &ExecutionContext{InvocationID: "inv", EventChan: make(chan *event.Event, 4)}
+	state := State{
+		StateKeyExecContext:   exec,
+		StateKeyCurrentNodeID: "agentNode",
+		StateKeyParentAgent:   &parentWithSubAgent{a: &errAgent{name: "child"}},
+	}
+	parentInvocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphExecutorEvents: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parentInvocation)
+	fn := NewAgentNodeFunc("child")
+	_, err := fn(ctx, state)
+	require.Error(t, err)
+	require.Len(t, exec.EventChan, 0)
+}
+
 // Dummy model to test one-shot stage
 type dummyModel struct{}
 

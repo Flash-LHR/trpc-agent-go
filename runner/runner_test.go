@@ -117,6 +117,45 @@ func (m *staticModel) GenerateContent(
 
 func (m *staticModel) Info() model.Info { return model.Info{Name: m.name} }
 
+type childGraphCompletionAgent struct {
+	name       string
+	stateKey   string
+	stateValue string
+}
+
+func (a *childGraphCompletionAgent) Info() agent.Info {
+	return agent.Info{
+		Name:        a.name,
+		Description: "Child graph completion agent for runner tests",
+	}
+}
+
+func (a *childGraphCompletionAgent) SubAgents() []agent.Agent { return nil }
+
+func (a *childGraphCompletionAgent) FindSubAgent(name string) agent.Agent {
+	return nil
+}
+
+func (a *childGraphCompletionAgent) Run(
+	ctx context.Context,
+	invocation *agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event, 1)
+	go func() {
+		ch <- graph.NewGraphCompletionEvent(
+			graph.WithCompletionEventInvocationID(invocation.InvocationID),
+			graph.WithCompletionEventFinalState(graph.State{
+				a.stateKey:                 a.stateValue,
+				graph.StateKeyLastResponse: a.stateValue,
+			}),
+		)
+		close(ch)
+	}()
+	return ch, nil
+}
+
+func (a *childGraphCompletionAgent) Tools() []tool.Tool { return nil }
+
 func TestRunner_SessionIntegration(t *testing.T) {
 	// Create an in-memory session service.
 	sessionService := sessioninmemory.NewSessionService()
@@ -2035,6 +2074,61 @@ func TestRunner_GraphAgentPersistsLLMDoneResponses(t *testing.T) {
 		sess.Events[2].Choices[0].Message.Role)
 	require.Equal(t, "second",
 		sess.Events[2].Choices[0].Message.Content)
+}
+
+func TestRunner_GraphAgentDisableCompletionEvent_DoesNotUseChildCompletion(t *testing.T) {
+	const (
+		childAgentName = "child"
+		childStateKey  = "child_value"
+	)
+	schema := graph.NewStateSchema()
+	compiled, err := graph.NewStateGraph(schema).
+		AddAgentNode(
+			childAgentName,
+			graph.WithSubgraphOutputMapper(func(_ graph.State, result graph.SubgraphResult) graph.State {
+				value, ok := graph.GetStateValue[string](result.FinalState, childStateKey)
+				if !ok {
+					return nil
+				}
+				return graph.State{"mapped_child": value}
+			}),
+		).
+		SetEntryPoint(childAgentName).
+		SetFinishPoint(childAgentName).
+		Compile()
+	require.NoError(t, err)
+	childAgent := &childGraphCompletionAgent{
+		name:       childAgentName,
+		stateKey:   childStateKey,
+		stateValue: "child-only",
+	}
+	ga, err := graphagent.New(
+		"ga",
+		compiled,
+		graphagent.WithSubAgents([]agent.Agent{childAgent}),
+	)
+	require.NoError(t, err)
+	r := NewRunner("app", ga, WithSessionService(sessioninmemory.NewSessionService()))
+	ch, err := r.Run(
+		context.Background(),
+		"u",
+		"s",
+		model.NewUserMessage("hi"),
+		agent.WithDisableGraphCompletionEvent(true),
+	)
+	require.NoError(t, err)
+	var graphCompletionCount int
+	var last *event.Event
+	for e := range ch {
+		last = e
+		if e != nil && e.Done && e.Object == graph.ObjectTypeGraphExecution {
+			graphCompletionCount++
+		}
+	}
+	require.NotNil(t, last)
+	require.True(t, last.IsRunnerCompletion())
+	require.Zero(t, graphCompletionCount)
+	require.Empty(t, last.Response.Choices)
 }
 
 func TestPropagateGraphCompletion_NilStateValue(t *testing.T) {

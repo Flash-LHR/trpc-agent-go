@@ -2526,14 +2526,18 @@ func updateAgentFinalState(
 	res.rawDelta = rawDelta
 }
 
+func isGraphCompletionEvent(ev *event.Event) bool {
+	return ev != nil &&
+		ev.Done &&
+		ev.Response != nil &&
+		ev.Response.Object == ObjectTypeGraphExecution
+}
+
 func extractSubgraphFinalState(
 	ctx context.Context,
 	ev *event.Event,
 ) (State, map[string][]byte, bool) {
-	if ev == nil || !ev.Done || ev.Response == nil || ev.StateDelta == nil {
-		return nil, nil, false
-	}
-	if ev.Response.Object != ObjectTypeGraphExecution {
+	if !isGraphCompletionEvent(ev) || ev.StateDelta == nil {
 		return nil, nil, false
 	}
 	tmp := make(State)
@@ -2552,6 +2556,20 @@ func extractSubgraphFinalState(
 		)
 	}
 	return tmp, ev.StateDelta, true
+}
+
+func shouldForwardAgentEvent(
+	ctx context.Context,
+	agentEvent *event.Event,
+) bool {
+	if !isGraphCompletionEvent(agentEvent) {
+		return true
+	}
+	parentInvocation, ok := agent.InvocationFromContext(ctx)
+	if !ok || parentInvocation == nil {
+		return true
+	}
+	return !parentInvocation.RunOptions.DisableGraphCompletionEvent
 }
 
 // processAgentEventStream processes the event stream from the target agent.
@@ -2587,9 +2605,11 @@ func processAgentEventStream(
 			agentEvent,
 		)
 
-		// Forward the event to the parent event channel.
-		if err := event.EmitEvent(ctx, eventChan, agentEvent); err != nil {
-			return res, err
+		if shouldForwardAgentEvent(ctx, agentEvent) {
+			// Forward the event to the parent event channel.
+			if err := event.EmitEvent(ctx, eventChan, agentEvent); err != nil {
+				return res, err
+			}
 		}
 
 		tap.WriteDelta(agentEvent)
@@ -2645,6 +2665,7 @@ func buildAgentInvocationWithStateScopeAndInputKey(
 		parentInvocation != nil {
 		runOptions := parentInvocation.RunOptions
 		// Child graph agents must keep their terminal completion event for state handoff.
+		// Parent-level suppression is applied when forwarding child events outward.
 		runOptions.DisableGraphCompletionEvent = false
 		runOptions.RuntimeState = runtime
 		runOptions.CustomAgentConfigs = withScopedGraphCallOptions(
@@ -3703,17 +3724,16 @@ func emitAgentStartEvent(
 	invocationID, nodeID string,
 	startTime time.Time,
 ) {
-	if eventChan == nil {
+	invocation, _ := agent.InvocationFromContext(ctx)
+	if !shouldEmitGraphExecutorEvent(invocation, eventChan) {
 		return
 	}
-
 	agentStartEvent := NewNodeStartEvent(
 		WithNodeEventInvocationID(invocationID),
 		WithNodeEventNodeID(nodeID),
 		WithNodeEventNodeType(NodeTypeAgent),
 		WithNodeEventStartTime(startTime),
 	)
-	invocation, _ := agent.InvocationFromContext(ctx)
 	agent.EmitEvent(ctx, invocation, eventChan, agentStartEvent)
 }
 
@@ -3724,10 +3744,10 @@ func emitAgentCompleteEvent(
 	invocationID, nodeID string,
 	startTime, endTime time.Time,
 ) {
-	if eventChan == nil {
+	invocation, _ := agent.InvocationFromContext(ctx)
+	if !shouldEmitGraphExecutorEvent(invocation, eventChan) {
 		return
 	}
-
 	agentCompleteEvent := NewNodeCompleteEvent(
 		WithNodeEventInvocationID(invocationID),
 		WithNodeEventNodeID(nodeID),
@@ -3735,8 +3755,6 @@ func emitAgentCompleteEvent(
 		WithNodeEventStartTime(startTime),
 		WithNodeEventEndTime(endTime),
 	)
-
-	invocation, _ := agent.InvocationFromContext(ctx)
 	agent.EmitEvent(ctx, invocation, eventChan, agentCompleteEvent)
 }
 
@@ -3748,10 +3766,10 @@ func emitAgentErrorEvent(
 	startTime, endTime time.Time,
 	err error,
 ) {
-	if eventChan == nil {
+	invocation, _ := agent.InvocationFromContext(ctx)
+	if !shouldEmitGraphExecutorEvent(invocation, eventChan) {
 		return
 	}
-
 	agentErrorEvent := NewNodeErrorEvent(
 		WithNodeEventInvocationID(invocationID),
 		WithNodeEventNodeID(nodeID),
@@ -3760,9 +3778,17 @@ func emitAgentErrorEvent(
 		WithNodeEventEndTime(endTime),
 		WithNodeEventError(err.Error()),
 	)
-
-	invocation, _ := agent.InvocationFromContext(ctx)
 	agent.EmitEvent(ctx, invocation, eventChan, agentErrorEvent)
+}
+
+func shouldEmitGraphExecutorEvent(
+	invocation *agent.Invocation,
+	eventChan chan<- *event.Event,
+) bool {
+	if eventChan == nil {
+		return false
+	}
+	return invocation == nil || !invocation.RunOptions.DisableGraphExecutorEvents
 }
 
 // findSubAgentByName looks up a sub-agent by name from the parent agent.

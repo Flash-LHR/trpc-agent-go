@@ -317,6 +317,66 @@ func TestSubgraph_DisableGraphCompletionEvent_DoesNotDropOutput(t *testing.T) {
 	require.Equal(t, testChildValuePrefix, value)
 }
 
+func TestSubgraph_DisableGraphCompletionEvent_SuppressesChildCompletionForwarding(t *testing.T) {
+	parent := &parentWithSubAgent{a: &completionOptionalAgent{name: testChildAgentName}}
+	schema := NewStateSchema()
+	schema.AddField(
+		testValueFromChildKey,
+		StateField{Type: reflect.TypeOf(testEmptyString)},
+	)
+	schema.AddField(
+		StateKeyUserInput,
+		StateField{Type: reflect.TypeOf(testEmptyString)},
+	)
+	var observed string
+	parentGraph, err := NewStateGraph(schema).
+		AddAgentNode(
+			testChildAgentName,
+			WithSubgraphOutputMapper(func(_ State, r SubgraphResult) State {
+				value, ok := GetStateValue[string](r.FinalState, testChildValueKey)
+				if !ok {
+					return nil
+				}
+				return State{testValueFromChildKey: value}
+			}),
+		).
+		AddNode(testAfterNodeID, func(_ context.Context, state State) (any, error) {
+			value, ok := GetStateValue[string](state, testValueFromChildKey)
+			if !ok {
+				return nil, fmt.Errorf(testMissingStateKeyFmt, testValueFromChildKey)
+			}
+			observed = value
+			return nil, nil
+		}).
+		AddEdge(testChildAgentName, testAfterNodeID).
+		SetEntryPoint(testChildAgentName).
+		SetFinishPoint(testAfterNodeID).
+		Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(parentGraph)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationID(testInvocationID),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	initial := State{
+		StateKeyParentAgent: parent,
+		StateKeyUserInput:   testUserInput,
+	}
+	eventChan, err := exec.Execute(context.Background(), initial, inv)
+	require.NoError(t, err)
+	var graphCompletionCount int
+	for ev := range eventChan {
+		if ev != nil && ev.Done && ev.Object == ObjectTypeGraphExecution {
+			graphCompletionCount++
+		}
+	}
+	require.Zero(t, graphCompletionCount)
+	require.Equal(t, testChildValuePrefix, observed)
+}
+
 // TestSubgraph_InputFromLastResponse_MapsUserInput verifies that enabling
 // WithSubgraphInputFromLastResponse maps parent's last_response to child
 // invocation's user input. When last_response is empty, it falls back to the
