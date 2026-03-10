@@ -95,7 +95,7 @@ func TestCreateLLMResponseEvent_LongRunningIDs(t *testing.T) {
 		"slow": &mockLongRunnerTool{name: "slow", long: true},
 	}}
 	rsp := &model.Response{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{{ID: "x", Function: model.FunctionDefinitionParam{Name: "slow"}}}}}}}
-	evt := f.createLLMResponseEvent(inv, rsp, req)
+	evt := f.createLLMResponseEvent(inv, inv, rsp, req)
 	require.Contains(t, evt.LongRunningToolIDs, "x")
 }
 
@@ -186,8 +186,8 @@ func TestProcessStreamingResponses_UsesInvocationFromContextForResponseOptions(t
 	require.Nil(t, response.Usage)
 	require.Empty(t, lastEvent.ID)
 	require.True(t, lastEvent.Timestamp.IsZero())
-	require.Equal(t, updatedInvocation.InvocationID, lastEvent.InvocationID)
-	require.Equal(t, updatedInvocation.AgentName, lastEvent.Author)
+	require.Equal(t, baseInvocation.InvocationID, lastEvent.InvocationID)
+	require.Equal(t, baseInvocation.AgentName, lastEvent.Author)
 }
 
 func TestProcessStreamingResponses_DisableResponseUsageTrackingStillRecordsMetrics(t *testing.T) {
@@ -472,6 +472,113 @@ func TestProcessStreamingResponses_PreservesReasoningTimingWhenInvocationChanges
 	require.Greater(t, updatedInvocation.GetOrCreateTimingInfo().ReasoningDuration, time.Duration(0))
 }
 
+func TestProcessStreamingResponses_PreservesOriginalInvocationEventMetadata(t *testing.T) {
+	f := New(nil, nil, Options{
+		ModelCallbacks: model.NewCallbacks().RegisterAfterModel(
+			func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+				updatedInvocation := agent.NewInvocation(
+					agent.WithInvocationID("inv-updated-event"),
+					agent.WithInvocationRunOptions(agent.RunOptions{
+						DisablePartialEventIDs:        true,
+						DisablePartialEventTimestamps: true,
+					}),
+				)
+				return &model.AfterModelResult{
+					Context: agent.NewInvocationContext(ctx, updatedInvocation),
+				}, nil
+			},
+		),
+	})
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base-event"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID: "req-base",
+		}),
+		agent.WithInvocationEventFilterKey("filter-base"),
+	)
+	baseInvocation.AgentName = "base-agent"
+	req := &model.Request{}
+	response := &model.Response{
+		IsPartial: true,
+		Choices: []model.Choice{
+			{Message: model.NewAssistantMessage("partial")},
+		},
+	}
+	responseSeq := func(yield func(*model.Response) bool) {
+		yield(response)
+	}
+	eventChan := make(chan *event.Event, 10)
+	tracer := oteltrace.NewNoopTracerProvider().Tracer("t")
+	ctx, span := tracer.Start(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		"s",
+	)
+	defer span.End()
+
+	lastEvent, err := f.processStreamingResponses(
+		ctx,
+		baseInvocation,
+		req,
+		responseSeq,
+		eventChan,
+		span,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, lastEvent)
+	require.Equal(t, baseInvocation.InvocationID, lastEvent.InvocationID)
+	require.Equal(t, baseInvocation.AgentName, lastEvent.Author)
+	require.Equal(t, baseInvocation.RunOptions.RequestID, lastEvent.RequestID)
+	require.Equal(t, baseInvocation.GetEventFilterKey(), lastEvent.FilterKey)
+	require.Empty(t, lastEvent.ID)
+	require.True(t, lastEvent.Timestamp.IsZero())
+}
+
+func TestProcessStreamingResponses_PostprocessUsesOriginalInvocation(t *testing.T) {
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated-postprocess"),
+	)
+	f := New(nil, []flow.ResponseProcessor{&endInvocationResponseProcessor{}}, Options{
+		ModelCallbacks: model.NewCallbacks().RegisterAfterModel(
+			func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+				return &model.AfterModelResult{
+					Context: agent.NewInvocationContext(ctx, updatedInvocation),
+				}, nil
+			},
+		),
+	})
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base-postprocess"),
+	)
+	req := &model.Request{}
+	responseSeq := func(yield func(*model.Response) bool) {
+		yield(&model.Response{
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("done")},
+			},
+		})
+	}
+	eventChan := make(chan *event.Event, 10)
+	tracer := oteltrace.NewNoopTracerProvider().Tracer("t")
+	ctx, span := tracer.Start(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		"s",
+	)
+	defer span.End()
+
+	lastEvent, err := f.processStreamingResponses(
+		ctx,
+		baseInvocation,
+		req,
+		responseSeq,
+		eventChan,
+		span,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, lastEvent)
+	require.True(t, baseInvocation.EndInvocation)
+	require.False(t, updatedInvocation.EndInvocation)
+}
+
 // mockAgent implements agent.Agent for testing
 type mockAgent struct {
 	name  string
@@ -666,6 +773,20 @@ func (c *cancelResponseProcessor) ProcessResponse(
 	ch chan<- *event.Event,
 ) {
 	c.cancel()
+}
+
+type endInvocationResponseProcessor struct{}
+
+func (p *endInvocationResponseProcessor) ProcessResponse(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	req *model.Request,
+	resp *model.Response,
+	ch chan<- *event.Event,
+) {
+	if invocation != nil {
+		invocation.EndInvocation = true
+	}
 }
 
 func TestFlow_Interface(t *testing.T) {

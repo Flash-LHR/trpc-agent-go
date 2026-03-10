@@ -424,11 +424,12 @@ func (f *Flow) processStreamingResponses(
 		}
 		// 4. Create and send LLM response using the clean constructor.
 		llmResponseEvent := f.createLLMResponseEvent(
+			invocation,
 			currentInvocation,
 			response,
 			llmRequest,
 		)
-		agent.EmitEvent(ctx, currentInvocation, eventChan, llmResponseEvent)
+		agent.EmitEvent(ctx, invocation, eventChan, llmResponseEvent)
 		lastEvent = llmResponseEvent
 		if tracker != nil {
 			tracker.SetLastEvent(lastEvent)
@@ -440,7 +441,7 @@ func (f *Flow) processStreamingResponses(
 		// 6. Postprocess response.
 		f.postprocess(
 			ctx,
-			currentInvocation,
+			invocation,
 			llmRequest,
 			response,
 			eventChan,
@@ -504,11 +505,16 @@ func (f *Flow) handleAfterModelCallbacks(
 }
 
 // createLLMResponseEvent creates a new LLM response event.
-func (f *Flow) createLLMResponseEvent(invocation *agent.Invocation, response *model.Response, llmRequest *model.Request) *event.Event {
+func (f *Flow) createLLMResponseEvent(
+	eventInvocation *agent.Invocation,
+	optionsInvocation *agent.Invocation,
+	response *model.Response,
+	llmRequest *model.Request,
+) *event.Event {
 	invocationID, agentName := "", ""
-	if invocation != nil {
-		invocationID = invocation.InvocationID
-		agentName = invocation.AgentName
+	if eventInvocation != nil {
+		invocationID = eventInvocation.InvocationID
+		agentName = eventInvocation.AgentName
 	}
 	llmResponseEvent := event.New(
 		invocationID,
@@ -518,7 +524,7 @@ func (f *Flow) createLLMResponseEvent(invocation *agent.Invocation, response *mo
 	applyPartialEventMetadataOverrides(
 		llmResponseEvent,
 		response,
-		invocation,
+		optionsInvocation,
 	)
 	if len(response.Choices) > 0 && len(response.Choices[0].Message.ToolCalls) > 0 {
 		llmResponseEvent.LongRunningToolIDs = collectLongRunningToolIDs(response.Choices[0].Message.ToolCalls, llmRequest.Tools)
