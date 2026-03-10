@@ -661,7 +661,7 @@ func MessageReducer(existing, update any) any {
 
 	switch x := update.(type) {
 	case nil:
-		return cloneMessageSlicePreserveEmpty(existingMsgs)
+		return existingMsgs
 	case model.Message:
 		return appendOwnedMessage(existingMsgs, x)
 	case []model.Message:
@@ -688,6 +688,9 @@ func appendOwnedMessage(existing []model.Message, msg model.Message) []model.Mes
 }
 
 func appendOwnedMessages(existing, updates []model.Message) []model.Message {
+	if len(updates) == 0 {
+		return existing
+	}
 	out := cloneMessageSlicePreserveEmpty(existing)
 	return appendCopiedMessages(out, updates)
 }
@@ -762,7 +765,7 @@ func fastAppendMessageOps(existing []model.Message, ops []MessageOp) ([]model.Me
 		}
 	}
 	if totalAppend == 0 {
-		return cloneMessageSlicePreserveEmpty(existing), true
+		return existing, true
 	}
 	base := cloneMessageSlicePreserveEmpty(existing)
 	out := make([]model.Message, len(base)+totalAppend)

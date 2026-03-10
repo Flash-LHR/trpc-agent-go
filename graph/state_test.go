@@ -716,7 +716,7 @@ func TestMessageReducer_BuiltInOpsDoNotAliasExistingNestedState(t *testing.T) {
 	})
 }
 
-func TestMessageReducer_NoOpDoesNotAliasExistingNestedState(t *testing.T) {
+func TestMessageReducer_NoOpReusesExistingValue(t *testing.T) {
 	buildExisting := func() []model.Message {
 		text := "orig-part"
 		args := []byte("abc")
@@ -739,42 +739,46 @@ func TestMessageReducer_NoOpDoesNotAliasExistingNestedState(t *testing.T) {
 			},
 		}
 	}
-	mutateAndAssertOriginal := func(t *testing.T, out, existing []model.Message) {
+	assertSameValue := func(t *testing.T, out, existing []model.Message) {
 		t.Helper()
 		mutated := "mutated-part"
 		out[0].ContentParts[0].Text = &mutated
 		out[0].ToolCalls[0].Function.Arguments[0] = 'Q'
 		require.NotNil(t, existing[0].ContentParts[0].Text)
-		assert.Equal(t, "orig-part", *existing[0].ContentParts[0].Text)
-		assert.Equal(t, byte('a'), existing[0].ToolCalls[0].Function.Arguments[0])
+		assert.Equal(t, "mutated-part", *existing[0].ContentParts[0].Text)
+		assert.Equal(t, byte('Q'), existing[0].ToolCalls[0].Function.Arguments[0])
 	}
 	t.Run("nil update", func(t *testing.T) {
 		existing := buildExisting()
 		outAny := MessageReducer(existing, nil)
 		out, ok := outAny.([]model.Message)
 		require.True(t, ok)
-		mutateAndAssertOriginal(t, out, existing)
+		require.Equal(t, reflect.ValueOf(existing).Pointer(), reflect.ValueOf(out).Pointer())
+		assertSameValue(t, out, existing)
 	})
 	t.Run("nil message op batch", func(t *testing.T) {
 		existing := buildExisting()
 		outAny := MessageReducer(existing, []MessageOp{nil})
 		out, ok := outAny.([]model.Message)
 		require.True(t, ok)
-		mutateAndAssertOriginal(t, out, existing)
+		require.Equal(t, reflect.ValueOf(existing).Pointer(), reflect.ValueOf(out).Pointer())
+		assertSameValue(t, out, existing)
 	})
 	t.Run("empty message slice update", func(t *testing.T) {
 		existing := buildExisting()
 		outAny := MessageReducer(existing, []model.Message{})
 		out, ok := outAny.([]model.Message)
 		require.True(t, ok)
-		mutateAndAssertOriginal(t, out, existing)
+		require.Equal(t, reflect.ValueOf(existing).Pointer(), reflect.ValueOf(out).Pointer())
+		assertSameValue(t, out, existing)
 	})
 	t.Run("empty append messages update", func(t *testing.T) {
 		existing := buildExisting()
 		outAny := MessageReducer(existing, AppendMessages{Items: nil})
 		out, ok := outAny.([]model.Message)
 		require.True(t, ok)
-		mutateAndAssertOriginal(t, out, existing)
+		require.Equal(t, reflect.ValueOf(existing).Pointer(), reflect.ValueOf(out).Pointer())
+		assertSameValue(t, out, existing)
 	})
 	t.Run("empty append messages op fast path", func(t *testing.T) {
 		existing := buildExisting()
@@ -783,7 +787,8 @@ func TestMessageReducer_NoOpDoesNotAliasExistingNestedState(t *testing.T) {
 		})
 		out, ok := outAny.([]model.Message)
 		require.True(t, ok)
-		mutateAndAssertOriginal(t, out, existing)
+		require.Equal(t, reflect.ValueOf(existing).Pointer(), reflect.ValueOf(out).Pointer())
+		assertSameValue(t, out, existing)
 	})
 }
 
@@ -848,7 +853,7 @@ func TestMessageReducer_BuiltInOpsDoNotAliasUpdateNestedState(t *testing.T) {
 	})
 }
 
-func TestStateSchemaApplyUpdate_MessageReducerIsolation(t *testing.T) {
+func TestStateSchemaApplyUpdate_MessageReducerSemantics(t *testing.T) {
 	buildSchema := func() *StateSchema {
 		return NewStateSchema().AddField("messages", StateField{
 			Type:    reflect.TypeOf([]model.Message{}),
@@ -875,18 +880,19 @@ func TestStateSchemaApplyUpdate_MessageReducerIsolation(t *testing.T) {
 			},
 		}
 	}
-	t.Run("nil update does not alias current state", func(t *testing.T) {
+	t.Run("nil update reuses current state value", func(t *testing.T) {
 		schema := buildSchema()
 		current := []model.Message{buildMessage("current")}
 		next := schema.ApplyUpdate(State{"messages": current}, State{"messages": nil})
 		out, ok := next["messages"].([]model.Message)
 		require.True(t, ok)
+		require.Equal(t, reflect.ValueOf(current).Pointer(), reflect.ValueOf(out).Pointer())
 		mutated := "mutated-part"
 		out[0].ContentParts[0].Text = &mutated
 		out[0].ToolCalls[0].Function.Arguments[0] = 'Q'
 		require.NotNil(t, current[0].ContentParts[0].Text)
-		assert.Equal(t, "current-part", *current[0].ContentParts[0].Text)
-		assert.Equal(t, byte('c'), current[0].ToolCalls[0].Function.Arguments[0])
+		assert.Equal(t, "mutated-part", *current[0].ContentParts[0].Text)
+		assert.Equal(t, byte('Q'), current[0].ToolCalls[0].Function.Arguments[0])
 	})
 	t.Run("append messages op fast path does not alias update", func(t *testing.T) {
 		schema := buildSchema()
