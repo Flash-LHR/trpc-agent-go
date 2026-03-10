@@ -1588,6 +1588,64 @@ func TestAddLLMNode_MergesSparseUpdatedInvocationLineageInModelExecutionEvents(t
 	}
 }
 
+func TestAddLLMNode_DoesNotFallbackParentForUpdatedRootInvocationInModelExecutionEvents(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	sg.AddLLMNode("llm", &captureModel{}, "inst", nil)
+	n, ok := sg.graph.nodes["llm"]
+	require.True(t, ok)
+	parentInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-root-parent"),
+	)
+	baseInvocation := parentInvocation.Clone(
+		agent.WithInvocationID("inv-root-base"),
+		agent.WithInvocationBranch("graph/root-base"),
+		agent.WithInvocationEventFilterKey("graph/root-base/filter"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID: "req-root-base",
+		}),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-root-updated"),
+		agent.WithInvocationBranch("graph/root-updated"),
+		agent.WithInvocationEventFilterKey("graph/root-updated/filter"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID: "req-root-updated",
+		}),
+	)
+	callbacks := model.NewCallbacks().RegisterBeforeModel(
+		func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
+			return &model.BeforeModelResult{
+				Context: agent.NewInvocationContext(ctx, updatedInvocation),
+			}, nil
+		},
+	)
+	ch := make(chan *event.Event, 8)
+	exec := &ExecutionContext{InvocationID: "inv-llm", EventChan: ch}
+	state := State{
+		StateKeyExecContext:    exec,
+		StateKeyCurrentNodeID:  "llm",
+		StateKeyUserInput:      "hi",
+		StateKeyModelCallbacks: callbacks,
+	}
+	_, err := n.Function(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		state,
+	)
+	require.NoError(t, err)
+	events := collectModelExecutionEvents(ch)
+	require.Len(t, events, 2)
+	for _, evt := range events {
+		var meta ModelExecutionMetadata
+		require.NoError(t, json.Unmarshal(evt.StateDelta[MetadataKeyModel], &meta))
+		require.Equal(t, updatedInvocation.InvocationID, evt.InvocationID)
+		require.Equal(t, updatedInvocation.InvocationID, meta.InvocationID)
+		require.Empty(t, evt.ParentInvocationID)
+		require.Equal(t, updatedInvocation.Branch, evt.Branch)
+		require.Equal(t, updatedInvocation.GetEventFilterKey(), evt.FilterKey)
+		require.Equal(t, updatedInvocation.RunOptions.RequestID, evt.RequestID)
+	}
+}
+
 func TestAddLLMNode_EmitsModelExecutionEventsForPluginBeforeModelCustomResponse(t *testing.T) {
 	sg := NewStateGraph(MessagesStateSchema())
 	cm := &captureModel{}

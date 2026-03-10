@@ -3355,6 +3355,10 @@ func modelExecutionEventParentInvocationID(baseInvocation, currentInvocation *ag
 		if parent := currentInvocation.GetParentInvocation(); parent != nil {
 			return parent.InvocationID
 		}
+		if currentInvocation.Branch != "" ||
+			currentInvocation.GetEventFilterKey() != "" {
+			return ""
+		}
 	}
 	if baseInvocation != nil {
 		if parent := baseInvocation.GetParentInvocation(); parent != nil {
