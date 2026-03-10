@@ -174,7 +174,10 @@ func collectModelExecutionPhases(ch <-chan *event.Event) []ModelExecutionPhase {
 	var phases []ModelExecutionPhase
 	for {
 		select {
-		case e := <-ch:
+		case e, ok := <-ch:
+			if !ok {
+				return phases
+			}
 			if e == nil || e.StateDelta == nil {
 				continue
 			}
@@ -195,7 +198,10 @@ func collectModelExecutionEvents(ch <-chan *event.Event) []*event.Event {
 	var events []*event.Event
 	for {
 		select {
-		case e := <-ch:
+		case e, ok := <-ch:
+			if !ok {
+				return events
+			}
 			if e == nil || e.StateDelta == nil {
 				continue
 			}

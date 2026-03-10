@@ -1830,6 +1830,11 @@ func runModelStream(
 			span.SetStatus(codes.Error, err.Error())
 			return ctx, modelResponseStream{}, fmt.Errorf("failed to generate content: %w", err)
 		}
+		if seq == nil {
+			err = errors.New(errMsgNoModelResponse)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
 		return ctx, modelResponseStream{Seq: seq}, nil
 	}
 
@@ -1873,8 +1878,12 @@ func runModel(
 	go func() {
 		defer close(responseChan)
 		stream.Seq(func(response *model.Response) bool {
-			responseChan <- response
-			return true
+			select {
+			case responseChan <- response:
+				return true
+			case <-ctx.Done():
+				return false
+			}
 		})
 	}()
 	return ctx, responseChan, nil
