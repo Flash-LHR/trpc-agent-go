@@ -469,6 +469,16 @@ func TestDeepCopyAny_PreservesNilFastPathValues(t *testing.T) {
 			t.Fatalf("expected nil message slice copy, got %#v", copied)
 		}
 	})
+
+	t.Run("nested nil map[string]any", func(t *testing.T) {
+		copied, ok := deepCopyAny(map[string]any{
+			"nested": map[string]any(nil),
+		}).(map[string]any)
+		require.True(t, ok)
+		nested, ok := copied["nested"].(map[string]any)
+		require.True(t, ok)
+		assert.Nil(t, nested)
+	})
 }
 
 func TestDeepCopyFastPathHelperCoverage(t *testing.T) {
