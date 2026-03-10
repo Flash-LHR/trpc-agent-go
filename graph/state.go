@@ -331,6 +331,14 @@ func messageReducerCanUseRawUpdate(update any) bool {
 	}
 }
 
+func messageReducerCanUseRawCurrentValue(currentValue any) bool {
+	if currentValue == nil {
+		return true
+	}
+	_, ok := currentValue.([]model.Message)
+	return ok
+}
+
 // NewStateSchema creates a new state schema.
 func NewStateSchema() *StateSchema {
 	return &StateSchema{
@@ -390,7 +398,9 @@ func (s *StateSchema) ApplyUpdate(currentState State, update State) State {
 			result[key] = field.Reducer(currentValue, updateValue)
 			continue
 		}
-		if isMessageReducer(field.Reducer) && messageReducerCanUseRawUpdate(updateValue) {
+		if isMessageReducer(field.Reducer) &&
+			messageReducerCanUseRawCurrentValue(currentValue) &&
+			messageReducerCanUseRawUpdate(updateValue) {
 			result[key] = field.Reducer(currentValue, updateValue)
 			continue
 		}

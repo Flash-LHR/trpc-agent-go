@@ -999,6 +999,22 @@ func TestStateSchemaApplyUpdate_MessageReducerSemantics(t *testing.T) {
 		assert.Equal(t, "raw-slice-part", *out[0].ContentParts[0].Text)
 		assert.Equal(t, byte('r'), out[0].ToolCalls[0].Function.Arguments[0])
 	})
+	t.Run("unexpected current type does not alias raw update", func(t *testing.T) {
+		schema := buildSchema()
+		update := []model.Message{buildMessage("unexpected-current")}
+		next := schema.ApplyUpdate(State{"messages": "bad-current"}, State{
+			"messages": update,
+		})
+		out, ok := next["messages"].([]model.Message)
+		require.True(t, ok)
+		require.Len(t, out, 1)
+		mutated := "mutated-part"
+		update[0].ContentParts[0].Text = &mutated
+		update[0].ToolCalls[0].Function.Arguments[0] = 'Q'
+		require.NotNil(t, out[0].ContentParts[0].Text)
+		assert.Equal(t, "unexpected-current-part", *out[0].ContentParts[0].Text)
+		assert.Equal(t, byte('u'), out[0].ToolCalls[0].Function.Arguments[0])
+	})
 	t.Run("custom message op does not mutate update", func(t *testing.T) {
 		schema := buildSchema()
 		update := &mutatingReceiverMessageOp{
