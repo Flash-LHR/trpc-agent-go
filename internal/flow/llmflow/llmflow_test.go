@@ -400,6 +400,76 @@ func TestProcessStreamingResponses_PreservesTimingInfoWhenInvocationChanges(t *t
 	)
 }
 
+func TestProcessStreamingResponses_PreservesReasoningTimingWhenInvocationChanges(t *testing.T) {
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated-reasoning"),
+	)
+	var callbackCount int
+	f := New(nil, nil, Options{
+		ModelCallbacks: model.NewCallbacks().RegisterAfterModel(
+			func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+				callbackCount++
+				if callbackCount == 1 {
+					return &model.AfterModelResult{
+						Context: agent.NewInvocationContext(ctx, updatedInvocation),
+					}, nil
+				}
+				return &model.AfterModelResult{}, nil
+			},
+		),
+	})
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base-reasoning"),
+	)
+	req := &model.Request{
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+	response1 := &model.Response{
+		IsPartial: true,
+		Choices: []model.Choice{
+			{Delta: model.Message{ReasoningContent: "thinking"}},
+		},
+	}
+	response2 := &model.Response{
+		IsPartial: true,
+		Choices: []model.Choice{
+			{Delta: model.Message{ReasoningContent: "thinking-more"}},
+		},
+	}
+	response3 := &model.Response{
+		Choices: []model.Choice{
+			{Delta: model.Message{Content: "done"}},
+		},
+	}
+	responseSeq := func(yield func(*model.Response) bool) {
+		time.Sleep(time.Millisecond)
+		yield(response1)
+		yield(response2)
+		yield(response3)
+	}
+	eventChan := make(chan *event.Event, 10)
+	tracer := oteltrace.NewNoopTracerProvider().Tracer("t")
+	ctx, span := tracer.Start(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		"s",
+	)
+	defer span.End()
+	lastEvent, err := f.processStreamingResponses(
+		ctx,
+		baseInvocation,
+		req,
+		responseSeq,
+		eventChan,
+		span,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, lastEvent)
+	require.Zero(t, baseInvocation.GetOrCreateTimingInfo().ReasoningDuration)
+	require.Greater(t, updatedInvocation.GetOrCreateTimingInfo().ReasoningDuration, time.Duration(0))
+}
+
 // mockAgent implements agent.Agent for testing
 type mockAgent struct {
 	name  string

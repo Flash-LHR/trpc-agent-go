@@ -753,6 +753,12 @@ func TestExecuteModelAndProcessResponses_PreservesTimingInfoWhenInvocationChange
 			},
 		},
 		{
+			IsPartial: true,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("partial-updated")},
+			},
+		},
+		{
 			Done: true,
 			Choices: []model.Choice{
 				{Message: model.NewAssistantMessage("done")},
@@ -799,6 +805,70 @@ func TestExecuteModelAndProcessResponses_PreservesTimingInfoWhenInvocationChange
 		responses[0].Usage.TimingInfo.FirstTokenDuration,
 		responses[1].Usage.TimingInfo.FirstTokenDuration,
 	)
+}
+
+func TestExecuteModelAndProcessResponses_PreservesReasoningTimingWhenInvocationChanges(t *testing.T) {
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-reasoning-base"),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-reasoning-updated"),
+	)
+	responses := []*model.Response{
+		{
+			IsPartial: true,
+			Choices: []model.Choice{
+				{Delta: model.Message{ReasoningContent: "thinking"}},
+			},
+		},
+		{
+			IsPartial: true,
+			Choices: []model.Choice{
+				{Delta: model.Message{ReasoningContent: "thinking-more"}},
+			},
+		},
+		{
+			Done: true,
+			Choices: []model.Choice{
+				{Delta: model.Message{Content: "done"}},
+			},
+		},
+	}
+	var callbackCount int
+	callbacks := model.NewCallbacks().RegisterAfterModel(
+		func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+			callbackCount++
+			if callbackCount == 1 {
+				return &model.AfterModelResult{
+					Context: agent.NewInvocationContext(ctx, updatedInvocation),
+				}, nil
+			}
+			return &model.AfterModelResult{}, nil
+		},
+	)
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		modelExecutionConfig{
+			Invocation:     baseInvocation,
+			ModelCallbacks: callbacks,
+			LLMModel: &multiResponseModel{
+				responses: responses,
+				delay:     time.Millisecond,
+			},
+			Request: &model.Request{
+				GenerationConfig: model.GenerationConfig{
+					Stream: true,
+				},
+			},
+			InvocationID: baseInvocation.InvocationID,
+			Span:         noop.Span{},
+			NodeID:       "llm",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Zero(t, baseInvocation.GetOrCreateTimingInfo().ReasoningDuration)
+	require.Greater(t, updatedInvocation.GetOrCreateTimingInfo().ReasoningDuration, time.Duration(0))
 }
 
 func TestAddLLMNode_SkipsModelExecutionEventsWhenCallbackDisablesModelExecutionEvents(t *testing.T) {
@@ -873,6 +943,55 @@ func TestAddLLMNode_EmitsCompleteWhenAfterModelDisablesModelExecutionEvents(t *t
 		state,
 	)
 	require.NoError(t, err)
+	phases := collectModelExecutionPhases(ch)
+	require.Equal(t, []ModelExecutionPhase{
+		ModelExecutionPhaseStart,
+		ModelExecutionPhaseComplete,
+	}, phases)
+}
+
+func TestAddLLMNode_EmitsModelExecutionEventsForPluginBeforeModelCustomResponse(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	cm := &captureModel{}
+	sg.AddLLMNode("llm", cm, "inst", nil)
+	n, ok := sg.graph.nodes["llm"]
+	require.True(t, ok)
+	p := &hookPlugin{
+		name: "p",
+		reg: func(r *plugin.Registry) {
+			r.BeforeModel(func(
+				ctx context.Context,
+				args *model.BeforeModelArgs,
+			) (*model.BeforeModelResult, error) {
+				return &model.BeforeModelResult{
+					CustomResponse: &model.Response{
+						Done: true,
+						Choices: []model.Choice{
+							{Message: model.NewAssistantMessage("plugin-custom")},
+						},
+					},
+				}, nil
+			})
+		},
+	}
+	pm := plugin.MustNewManager(p)
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-plugin-base"),
+	)
+	baseInvocation.Plugins = pm
+	ch := make(chan *event.Event, 8)
+	exec := &ExecutionContext{InvocationID: "inv-llm", EventChan: ch}
+	state := State{
+		StateKeyExecContext:   exec,
+		StateKeyCurrentNodeID: "llm",
+		StateKeyUserInput:     "hi",
+	}
+	_, err := n.Function(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		state,
+	)
+	require.NoError(t, err)
+	require.Nil(t, cm.lastReq)
 	phases := collectModelExecutionPhases(ch)
 	require.Equal(t, []ModelExecutionPhase{
 		ModelExecutionPhaseStart,
