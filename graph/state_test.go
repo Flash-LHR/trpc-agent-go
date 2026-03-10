@@ -967,6 +967,38 @@ func TestStateSchemaApplyUpdate_MessageReducerSemantics(t *testing.T) {
 		assert.Equal(t, "direct-update-part", *out[0].ContentParts[0].Text)
 		assert.Equal(t, byte('d'), out[0].ToolCalls[0].Function.Arguments[0])
 	})
+	t.Run("raw message does not alias update", func(t *testing.T) {
+		schema := buildSchema()
+		update := buildMessage("raw-message")
+		next := schema.ApplyUpdate(State{"messages": []model.Message{}}, State{
+			"messages": update,
+		})
+		out, ok := next["messages"].([]model.Message)
+		require.True(t, ok)
+		require.Len(t, out, 1)
+		mutated := "mutated-part"
+		update.ContentParts[0].Text = &mutated
+		update.ToolCalls[0].Function.Arguments[0] = 'Q'
+		require.NotNil(t, out[0].ContentParts[0].Text)
+		assert.Equal(t, "raw-message-part", *out[0].ContentParts[0].Text)
+		assert.Equal(t, byte('r'), out[0].ToolCalls[0].Function.Arguments[0])
+	})
+	t.Run("raw message slice does not alias update", func(t *testing.T) {
+		schema := buildSchema()
+		update := []model.Message{buildMessage("raw-slice")}
+		next := schema.ApplyUpdate(State{"messages": []model.Message{}}, State{
+			"messages": update,
+		})
+		out, ok := next["messages"].([]model.Message)
+		require.True(t, ok)
+		require.Len(t, out, 1)
+		mutated := "mutated-part"
+		update[0].ContentParts[0].Text = &mutated
+		update[0].ToolCalls[0].Function.Arguments[0] = 'Q'
+		require.NotNil(t, out[0].ContentParts[0].Text)
+		assert.Equal(t, "raw-slice-part", *out[0].ContentParts[0].Text)
+		assert.Equal(t, byte('r'), out[0].ToolCalls[0].Function.Arguments[0])
+	})
 	t.Run("custom message op does not mutate update", func(t *testing.T) {
 		schema := buildSchema()
 		update := &mutatingReceiverMessageOp{
@@ -1213,12 +1245,38 @@ func BenchmarkStateSchemaApplyUpdateMessageReducer(b *testing.B) {
 		Reducer: MessageReducer,
 	})
 	current := State{"messages": buildBenchmarkMessages(64)}
+	rawMessageUpdate := State{
+		"messages": model.NewAssistantMessage("next"),
+	}
+	rawMessageSliceUpdate := State{
+		"messages": []model.Message{model.NewAssistantMessage("next")},
+	}
 	appendUpdate := State{
 		"messages": AppendMessages{Items: []model.Message{model.NewAssistantMessage("next")}},
 	}
 	appendFastPathUpdate := State{
 		"messages": []MessageOp{AppendMessages{Items: []model.Message{model.NewAssistantMessage("next")}}},
 	}
+	replaceUpdate := State{
+		"messages": ReplaceLastUser{Content: "replacement"},
+	}
+	nilUpdate := State{"messages": nil}
+	emptySliceUpdate := State{"messages": []model.Message{}}
+	customUpdate := State{
+		"messages": MessageOp(benchmarkAppendMessageOp{msg: model.NewAssistantMessage("next")}),
+	}
+	b.Run("raw_message", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			schema.ApplyUpdate(current, rawMessageUpdate)
+		}
+	})
+	b.Run("raw_message_slice", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			schema.ApplyUpdate(current, rawMessageSliceUpdate)
+		}
+	})
 	b.Run("append_messages", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
@@ -1229,6 +1287,30 @@ func BenchmarkStateSchemaApplyUpdateMessageReducer(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			schema.ApplyUpdate(current, appendFastPathUpdate)
+		}
+	})
+	b.Run("replace_last_user", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			schema.ApplyUpdate(current, replaceUpdate)
+		}
+	})
+	b.Run("nil_update", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			schema.ApplyUpdate(current, nilUpdate)
+		}
+	})
+	b.Run("empty_slice_update", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			schema.ApplyUpdate(current, emptySliceUpdate)
+		}
+	})
+	b.Run("custom_message_op", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			schema.ApplyUpdate(current, customUpdate)
 		}
 	})
 }

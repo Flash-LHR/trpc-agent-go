@@ -1178,11 +1178,88 @@ func BenchmarkDeepCopyAny(b *testing.B) {
 			"config":  []int{1, 2, 3, 4, 5},
 		},
 	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		deepCopyAny(complexData)
+	messageOps := func() []MessageOp {
+		ops := make([]MessageOp, 2)
+		ops[0] = AppendMessages{
+			Items: []model.Message{
+				{
+					Role: model.RoleAssistant,
+					ToolCalls: []model.ToolCall{
+						{
+							Type: "function",
+							ID:   "call-1",
+							ExtraFields: map[string]any{
+								"self": ops,
+							},
+						},
+					},
+				},
+			},
+		}
+		ops[1] = testMessageOp{out: []model.Message{model.NewAssistantMessage("custom")}}
+		return ops
 	}
+	bytesDistinctHeaders := func() []any {
+		backing := []byte("ab")
+		return []any{backing[:1], backing[:2]}
+	}
+	mapStringBytesDistinctHeaders := func() map[string]any {
+		backing := []byte("ab")
+		return map[string]any{
+			"short": map[string][]byte{"k": backing[:1]},
+			"long":  map[string][]byte{"k": backing[:2]},
+		}
+	}
+	modelMessagesDistinctHeaders := func() []any {
+		backing := []model.Message{
+			model.NewAssistantMessage("a"),
+			model.NewAssistantMessage("b"),
+		}
+		return []any{backing[:1], backing[:2]}
+	}
+	modelToolCallsDistinctHeaders := func() []any {
+		backing := []model.ToolCall{
+			{Type: "function", ID: "call-1"},
+			{Type: "function", ID: "call-2"},
+		}
+		return []any{backing[:1], backing[:2]}
+	}
+	b.Run("mixed_payload", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			deepCopyAny(complexData)
+		}
+	})
+	b.Run("message_ops_mixed_fallback_self_reference", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			deepCopyAny(messageOps())
+		}
+	})
+	b.Run("bytes_distinct_headers", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			deepCopyAny(bytesDistinctHeaders())
+		}
+	})
+	b.Run("map_string_bytes_distinct_headers", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			deepCopyAny(mapStringBytesDistinctHeaders())
+		}
+	})
+	b.Run("model_messages_distinct_headers", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			deepCopyAny(modelMessagesDistinctHeaders())
+		}
+	})
+	b.Run("model_tool_calls_distinct_headers", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			deepCopyAny(modelToolCallsDistinctHeaders())
+		}
+	})
 }
 
 // ---------- jsonSafeCopy tests ----------
