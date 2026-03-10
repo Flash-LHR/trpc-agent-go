@@ -337,6 +337,75 @@ func TestDeepCopyAny_PreservesNilFastPathValues(t *testing.T) {
 	})
 }
 
+func TestDeepCopyFastPathHelperCoverage(t *testing.T) {
+	t.Run("primitive and numeric fast path values", func(t *testing.T) {
+		for _, value := range []any{
+			time.Duration(time.Second),
+			int8(1),
+			int16(2),
+			int32(3),
+			int64(4),
+			uint(5),
+			uint8(6),
+			uint16(7),
+			uint32(8),
+			uint64(9),
+			uintptr(10),
+			float32(1.5),
+			complex64(2 + 3i),
+			complex128(4 + 5i),
+		} {
+			copied, ok := deepCopyPrimitiveFastPath(value)
+			require.True(t, ok)
+			require.Equal(t, value, copied)
+		}
+	})
+
+	t.Run("map string bytes deep copy", func(t *testing.T) {
+		in := map[string][]byte{"k": []byte("value")}
+		out := deepCopyMapStringBytes(in)
+		require.Equal(t, "value", string(out["k"]))
+
+		in["k"][0] = 'X'
+		require.Equal(t, "value", string(out["k"]))
+		require.Nil(t, deepCopyMapStringBytes(nil))
+	})
+
+	t.Run("content parts deep copy nested media", func(t *testing.T) {
+		text := "hello"
+		in := []model.ContentPart{
+			{
+				Type:  model.ContentTypeText,
+				Text:  &text,
+				Image: &model.Image{Data: []byte("img")},
+				Audio: &model.Audio{Data: []byte("aud"), Format: "wav"},
+				File:  &model.File{Name: "f.txt", Data: []byte("file")},
+			},
+		}
+
+		out := deepCopyModelContentParts(in)
+		require.Len(t, out, 1)
+		require.NotSame(t, in[0].Image, out[0].Image)
+		require.NotSame(t, in[0].Audio, out[0].Audio)
+		require.NotSame(t, in[0].File, out[0].File)
+
+		in[0].Image.Data[0] = 'X'
+		in[0].Audio.Data[0] = 'Y'
+		in[0].File.Data[0] = 'Z'
+		require.Equal(t, "img", string(out[0].Image.Data))
+		require.Equal(t, "aud", string(out[0].Audio.Data))
+		require.Equal(t, "file", string(out[0].File.Data))
+	})
+
+	t.Run("unsupported message ops return false", func(t *testing.T) {
+		_, ok := deepCopyFastPath(testMessageOp{out: []model.Message{model.NewAssistantMessage("x")}})
+		require.False(t, ok)
+
+		_, ok = deepCopyFastPath([]MessageOp{testMessageOp{out: []model.Message{model.NewAssistantMessage("x")}}})
+		require.False(t, ok)
+	})
+}
+
 func TestDeepCopyAny_MessageZeroLenSlicesDoNotAlias(t *testing.T) {
 	msgs := []model.Message{
 		{

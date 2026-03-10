@@ -22,6 +22,14 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
+type testMessageOp struct {
+	out []model.Message
+}
+
+func (o testMessageOp) Apply(_ []model.Message) []model.Message {
+	return o.out
+}
+
 func TestGetStateValue(t *testing.T) {
 	t.Run("key not found", func(t *testing.T) {
 		state := State{}
@@ -460,6 +468,105 @@ func TestOneShotMessagesByNodeCoveragePaths(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, "hi", merged["llm1"][0].Content)
 	})
+}
+
+func TestMessageReducerHelperFastPaths(t *testing.T) {
+	existing := []model.Message{
+		model.NewAssistantMessage("a1"),
+		model.NewUserMessage("u1"),
+		model.NewAssistantMessage("a2"),
+	}
+
+	replaced := replaceLastUserOwned(existing, "u2")
+	require.Len(t, replaced, 3)
+	require.Equal(t, "u2", replaced[1].Content)
+	require.Equal(t, model.RoleUser, replaced[1].Role)
+	require.Equal(t, "a2", replaced[2].Content)
+
+	appended := replaceLastUserOwned([]model.Message{model.NewAssistantMessage("a1")}, "u-new")
+	require.Len(t, appended, 2)
+	require.Equal(t, "u-new", appended[1].Content)
+	require.Equal(t, model.RoleUser, appended[1].Role)
+
+	custom := applyGenericMessageOp(existing, testMessageOp{
+		out: append(make([]model.Message, 0, 4), model.NewAssistantMessage("trimmed")),
+	})
+	require.Len(t, custom, 1)
+	require.Equal(t, 1, cap(custom))
+
+	fast, ok := fastAppendMessageOps(existing, []MessageOp{
+		nil,
+		AppendMessages{Items: []model.Message{model.NewAssistantMessage("a3")}},
+	})
+	require.True(t, ok)
+	require.Len(t, fast, 4)
+	require.Equal(t, "a3", fast[3].Content)
+
+	_, ok = fastAppendMessageOps(existing, []MessageOp{
+		testMessageOp{out: existing[:1]},
+	})
+	require.False(t, ok)
+
+	replacedOwned := applyOwnedMessageOp(existing, ReplaceLastUser{Content: "u3"})
+	require.Equal(t, "u3", replacedOwned[1].Content)
+
+	cleared := applyOwnedMessageOp(existing, RemoveAllMessages{})
+	require.Nil(t, cleared)
+
+	tightened := tightenMessageCapacity(make([]model.Message, 1, 4))
+	require.Equal(t, 1, len(tightened))
+	require.Equal(t, 1, cap(tightened))
+}
+
+func TestMergeReducerAndMessageReducerCoveragePaths(t *testing.T) {
+	require.False(t, isMergeReducer(nil))
+	require.True(t, isMergeReducer(MergeReducer))
+
+	left := map[string]any{"a": 1}
+	right := map[string]any{"b": 2}
+	require.Equal(t, right, MergeReducer(map[string]any{}, right))
+	require.Equal(t, left, MergeReducer(left, map[string]any{}))
+
+	existing := []model.Message{
+		model.NewAssistantMessage("a1"),
+		model.NewUserMessage("u1"),
+		model.NewAssistantMessage("a2"),
+	}
+
+	replacedAny := MessageReducer(existing, ReplaceLastUser{Content: "u2"})
+	replaced, ok := replacedAny.([]model.Message)
+	require.True(t, ok)
+	require.Len(t, replaced, 3)
+	require.Equal(t, "u2", replaced[1].Content)
+
+	require.Nil(t, MessageReducer(existing, RemoveAllMessages{}))
+
+	customAny := MessageReducer(existing, testMessageOp{
+		out: []model.Message{model.NewAssistantMessage("custom")},
+	})
+	custom, ok := customAny.([]model.Message)
+	require.True(t, ok)
+	require.Len(t, custom, 1)
+	require.Equal(t, "custom", custom[0].Content)
+
+	ops := []MessageOp{
+		AppendMessages{Items: []model.Message{model.NewAssistantMessage("a3")}},
+		ReplaceLastUser{Content: "u3"},
+	}
+	outAny := MessageReducer(existing, ops)
+	out, ok := outAny.([]model.Message)
+	require.True(t, ok)
+	require.Len(t, out, 4)
+	require.Equal(t, "u3", out[1].Content)
+
+	same := MessageReducer(existing, []MessageOp{nil})
+	require.Equal(t, existing, same)
+
+	defaulted := applyOwnedMessageOp(existing, testMessageOp{
+		out: []model.Message{model.NewAssistantMessage("default")},
+	})
+	require.Len(t, defaulted, 1)
+	require.Equal(t, "default", defaulted[0].Content)
 }
 
 func TestSafeClone_FiltersUnsafeKeys(t *testing.T) {
