@@ -344,20 +344,6 @@ DONE:
 	require.True(t, found, "expected model event input to contain instruction and user input: %v", modelInputs)
 }
 
-func TestAddLLMNode_IgnoresNodeTypeOverrides(t *testing.T) {
-	sg := NewStateGraph(MessagesStateSchema())
-	sg.AddLLMNode(
-		"llm",
-		&captureModel{},
-		"inst",
-		nil,
-		WithNodeType(NodeTypeTool),
-	)
-	n, ok := sg.graph.nodes["llm"]
-	require.True(t, ok)
-	require.Equal(t, NodeTypeLLM, n.Type)
-}
-
 func TestAddLLMNode_GenerationConfigOption(t *testing.T) {
 	schema := MessagesStateSchema()
 	cm := &captureModel{}

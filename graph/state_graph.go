@@ -505,7 +505,6 @@ func (sg *StateGraph) AddLLMNode(
 	for _, opt := range opts {
 		opt(node)
 	}
-	node.Type = NodeTypeLLM
 	runner := &llmRunner{
 		llmModel:             llmModel,
 		instruction:          instruction,
