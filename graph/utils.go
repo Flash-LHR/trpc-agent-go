@@ -125,6 +125,9 @@ func deepCopyFastPathWithVisited(value any, visited visitedMap) (any, bool) {
 		}
 		return op, true
 	case []MessageOp:
+		if !canDeepCopyMessageOpsFastPath(v) {
+			return nil, false
+		}
 		out, ok := deepCopyMessageOpsWithVisited(v, visited)
 		if !ok {
 			return nil, false
@@ -285,6 +288,30 @@ func cloneSlice[T any](in []T) []T {
 func deepCopyMessageOps(in []MessageOp) ([]MessageOp, bool) {
 	visited := newVisitedMap()
 	return deepCopyMessageOpsWithVisited(in, visited)
+}
+
+func canDeepCopyMessageOpFastPath(op MessageOp) bool {
+	switch op.(type) {
+	case nil:
+		return true
+	case AppendMessages:
+		return true
+	case ReplaceLastUser:
+		return true
+	case RemoveAllMessages:
+		return true
+	default:
+		return false
+	}
+}
+
+func canDeepCopyMessageOpsFastPath(in []MessageOp) bool {
+	for _, op := range in {
+		if !canDeepCopyMessageOpFastPath(op) {
+			return false
+		}
+	}
+	return true
 }
 
 func deepCopyMessageOpsWithVisited(
