@@ -596,6 +596,81 @@ func TestProcessStreamingResponses_PreservesReasoningTimingWhenInvocationChanges
 	require.Greater(t, updatedInvocation.GetOrCreateTimingInfo().ReasoningDuration, time.Duration(0))
 }
 
+func TestProcessStreamingResponses_PreservesReasoningTimingWhenTrackingDisabledMidStream(t *testing.T) {
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated-disable-reasoning"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableResponseUsageTracking: true,
+		}),
+	)
+	var callbackCount int
+	f := New(nil, nil, Options{
+		ModelCallbacks: model.NewCallbacks().RegisterAfterModel(
+			func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+				callbackCount++
+				if callbackCount == 1 {
+					return &model.AfterModelResult{
+						Context: agent.NewInvocationContext(ctx, updatedInvocation),
+					}, nil
+				}
+				return &model.AfterModelResult{}, nil
+			},
+		),
+	})
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base-disable-reasoning"),
+	)
+	req := &model.Request{
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+	response1 := &model.Response{
+		IsPartial: true,
+		Choices: []model.Choice{
+			{Delta: model.Message{ReasoningContent: "thinking"}},
+		},
+	}
+	response2 := &model.Response{
+		IsPartial: true,
+		Choices: []model.Choice{
+			{Delta: model.Message{ReasoningContent: "thinking-more"}},
+		},
+	}
+	response3 := &model.Response{
+		Choices: []model.Choice{
+			{Delta: model.Message{Content: "done"}},
+		},
+	}
+	responseSeq := func(yield func(*model.Response) bool) {
+		time.Sleep(time.Millisecond)
+		yield(response1)
+		time.Sleep(time.Millisecond)
+		yield(response2)
+		yield(response3)
+	}
+	eventChan := make(chan *event.Event, 10)
+	tracer := oteltrace.NewNoopTracerProvider().Tracer("t")
+	ctx, span := tracer.Start(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		"s",
+	)
+	defer span.End()
+	lastEvent, err := f.processStreamingResponses(
+		ctx,
+		baseInvocation,
+		req,
+		responseSeq,
+		eventChan,
+		span,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, lastEvent)
+	require.Greater(t, baseInvocation.GetOrCreateTimingInfo().ReasoningDuration, time.Duration(0))
+	require.Nil(t, response2.Usage)
+	require.Nil(t, response3.Usage)
+}
+
 func TestProcessStreamingResponses_PreservesOriginalInvocationEventMetadata(t *testing.T) {
 	f := New(nil, nil, Options{
 		ModelCallbacks: model.NewCallbacks().RegisterAfterModel(
@@ -1481,7 +1556,7 @@ func (m *noResponseModel) GenerateContent(ctx context.Context, req *model.Reques
 	return ch, nil
 }
 
-func TestRun_NoResponseModelEmitsErrorEvent(t *testing.T) {
+func TestRun_NoPanicWhenModelReturnsNoResponses(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	f := New(nil, nil, Options{})
@@ -1502,10 +1577,8 @@ func TestRun_NoResponseModelEmitsErrorEvent(t *testing.T) {
 			errorEvent = evt
 		}
 	}
-	require.GreaterOrEqual(t, count, 1)
-	require.NotNil(t, errorEvent)
-	require.Equal(t, model.ErrorTypeFlowError, errorEvent.Error.Type)
-	require.Contains(t, errorEvent.Error.Message, errMsgNoModelResponse)
+	require.Equal(t, 1, count)
+	require.Nil(t, errorEvent)
 }
 
 func TestRun_NilIterModelEmitsErrorEvent(t *testing.T) {
@@ -2163,6 +2236,7 @@ func TestRun_WithResumeExecutesPendingToolCalls(t *testing.T) {
 		if evt.Response != nil && evt.Response.IsToolResultResponse() {
 			sawToolResult = true
 		}
+		require.Nil(t, evt.Error)
 	}
 
 	require.True(t, sawToolResult, "expected tool result event when resuming")

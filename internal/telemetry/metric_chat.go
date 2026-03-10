@@ -241,20 +241,21 @@ func (t *ChatMetricsTracker) SetInvocationState(
 		t.invocation = mergeInvocationForMetrics(t.invocation, invocation)
 		t.sourceInvocation = invocation
 	}
+	if timingInfo == nil {
+		return
+	}
 	if timingInfo == t.timingInfo {
 		return
 	}
-	if timingInfo != nil {
-		if timingInfo.FirstTokenDuration == 0 &&
-			!t.isFirstToken &&
-			t.firstTokenTimeDuration != 0 {
-			timingInfo.FirstTokenDuration = t.firstTokenTimeDuration
-		}
-		if timingInfo.ReasoningDuration == 0 &&
-			t.timingInfo != nil &&
-			t.timingInfo.ReasoningDuration != 0 {
-			timingInfo.ReasoningDuration = t.timingInfo.ReasoningDuration
-		}
+	if timingInfo.FirstTokenDuration == 0 &&
+		!t.isFirstToken &&
+		t.firstTokenTimeDuration != 0 {
+		timingInfo.FirstTokenDuration = t.firstTokenTimeDuration
+	}
+	if timingInfo.ReasoningDuration == 0 &&
+		t.timingInfo != nil &&
+		t.timingInfo.ReasoningDuration != 0 {
+		timingInfo.ReasoningDuration = t.timingInfo.ReasoningDuration
 	}
 	t.timingInfo = timingInfo
 }

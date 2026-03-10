@@ -477,12 +477,6 @@ func (f *Flow) processStreamingResponses(
 	if err != nil {
 		return nil, err
 	}
-	if lastEvent == nil {
-		if ctxErr := agent.CheckContextCancelled(ctx); ctxErr != nil {
-			return nil, ctxErr
-		}
-		return nil, errors.New(errMsgNoModelResponse)
-	}
 	return lastEvent, nil
 }
 

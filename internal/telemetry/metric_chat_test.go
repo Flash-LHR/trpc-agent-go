@@ -150,3 +150,44 @@ func TestChatMetricsTracker_SetInvocationState_PreservesMetricsAttributes(t *tes
 	require.Nil(t, updatedInvocation.Session)
 	require.Empty(t, updatedInvocation.AgentName)
 }
+
+func TestChatMetricsTracker_SetInvocationState_PreservesReasoningTimingWhenDisabled(t *testing.T) {
+	req := &model.Request{
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+	timingInfo := &model.TimingInfo{}
+	tracker := NewChatMetricsTracker(context.Background(), nil, req, timingInfo, nil, nil)
+	tracker.TrackResponse(&model.Response{
+		Choices: []model.Choice{
+			{
+				Delta: model.Message{ReasoningContent: "r1"},
+			},
+		},
+	})
+	time.Sleep(10 * time.Millisecond)
+	tracker.TrackResponse(&model.Response{
+		Choices: []model.Choice{
+			{
+				Delta: model.Message{ReasoningContent: "r2"},
+			},
+		},
+	})
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disabled"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableResponseUsageTracking: true,
+		}),
+	)
+	tracker.SetInvocationState(updatedInvocation, nil)
+	tracker.TrackResponse(&model.Response{
+		Choices: []model.Choice{
+			{
+				Delta: model.Message{Content: "done"},
+			},
+		},
+	})
+	require.Same(t, timingInfo, tracker.GetTimingInfo())
+	require.Greater(t, timingInfo.ReasoningDuration, time.Duration(0))
+}

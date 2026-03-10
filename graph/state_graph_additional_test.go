@@ -1099,6 +1099,74 @@ func TestExecuteModelAndProcessResponses_PreservesReasoningTimingWhenInvocationC
 	require.Greater(t, updatedInvocation.GetOrCreateTimingInfo().ReasoningDuration, time.Duration(0))
 }
 
+func TestExecuteModelAndProcessResponses_PreservesReasoningTimingWhenTrackingDisabledMidStream(t *testing.T) {
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-reasoning-base"),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-reasoning-updated"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableResponseUsageTracking: true,
+		}),
+	)
+	responses := []*model.Response{
+		{
+			IsPartial: true,
+			Choices: []model.Choice{
+				{Delta: model.Message{ReasoningContent: "thinking"}},
+			},
+		},
+		{
+			IsPartial: true,
+			Choices: []model.Choice{
+				{Delta: model.Message{ReasoningContent: "thinking-more"}},
+			},
+		},
+		{
+			Done: true,
+			Choices: []model.Choice{
+				{Delta: model.Message{Content: "done"}},
+			},
+		},
+	}
+	var callbackCount int
+	callbacks := model.NewCallbacks().RegisterAfterModel(
+		func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+			callbackCount++
+			if callbackCount == 1 {
+				return &model.AfterModelResult{
+					Context: agent.NewInvocationContext(ctx, updatedInvocation),
+				}, nil
+			}
+			return &model.AfterModelResult{}, nil
+		},
+	)
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		modelExecutionConfig{
+			Invocation:     baseInvocation,
+			ModelCallbacks: callbacks,
+			LLMModel: &multiResponseModel{
+				responses: responses,
+				delay:     time.Millisecond,
+			},
+			Request: &model.Request{
+				GenerationConfig: model.GenerationConfig{
+					Stream: true,
+				},
+			},
+			InvocationID: baseInvocation.InvocationID,
+			Span:         noop.Span{},
+			NodeID:       "llm",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Greater(t, baseInvocation.GetOrCreateTimingInfo().ReasoningDuration, time.Duration(0))
+	require.Nil(t, responses[1].Usage)
+	require.Nil(t, responses[2].Usage)
+}
+
 func TestExecuteModelAndProcessResponses_PreservesStableEventMetadataOnFastPath(t *testing.T) {
 	baseInvocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-fast-base"),
