@@ -502,7 +502,7 @@ func (f *Flow) handleAfterModelCallbacks(
 		log.ErrorfContext(
 			ctx,
 			"After model callback failed for agent %s: %v",
-			flowAgentName(invocation),
+			flowAgentName(eventInvocation),
 			err,
 		)
 		agent.EmitEvent(ctx, eventInvocation, eventChan, event.NewErrorEvent(
