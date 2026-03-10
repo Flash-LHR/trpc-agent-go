@@ -305,15 +305,31 @@ func TestExecutor_DisableGraphExecutorEvents_SuppressesEventHelpers(t *testing.T
 			DisableGraphExecutorEvents: true,
 		}),
 	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
 
-	exec.emitExecutionStepEvent(context.Background(), invocation, execCtx, []*Task{{NodeID: "node-a"}}, 1)
-	exec.emitNodeStartEvent(context.Background(), invocation, execCtx, "node-a", NodeTypeFunction, 1, time.Now())
-	exec.emitNodeErrorEvent(context.Background(), invocation, execCtx, "node-a", NodeTypeFunction, 1, errors.New("boom"))
-	exec.emitChannelUpdateEvent(context.Background(), invocation, execCtx, "messages", ichannel.BehaviorLastValue, []string{"node-a"})
-	exec.emitNodeCompleteEvent(context.Background(), invocation, execCtx, "node-a", NodeTypeFunction, 1, time.Now(), false)
-	exec.emitUpdateStepEvent(context.Background(), invocation, execCtx, 1)
-	exec.emitStateUpdateEvent(context.Background(), invocation, execCtx)
+	exec.emitExecutionStepEvent(ctx, invocation, execCtx, []*Task{{NodeID: "node-a"}}, 1)
+	exec.emitNodeStartEvent(ctx, invocation, execCtx, "node-a", NodeTypeFunction, 1, time.Now())
+	exec.emitNodeErrorEvent(ctx, invocation, execCtx, "node-a", NodeTypeFunction, 1, errors.New("boom"))
+	exec.emitChannelUpdateEvent(ctx, invocation, execCtx, "messages", ichannel.BehaviorLastValue, []string{"node-a"})
+	exec.emitNodeCompleteEvent(ctx, invocation, execCtx, "node-a", NodeTypeFunction, 1, time.Now(), false)
+	exec.emitUpdateStepEvent(ctx, invocation, execCtx, 1)
+	exec.emitStateUpdateEvent(ctx, invocation, execCtx)
+	emitModelStartEvent(ctx, eventCh, "inv-disable-events", "test-model", "node-a", "input", time.Now())
+	emitModelCompleteEvent(ctx, eventCh, "inv-disable-events", "test-model", "node-a", "input", "output", "resp-id", time.Now(), time.Now(), nil)
+	emitToolStartEvent(ctx, eventCh, "inv-disable-events", "test-tool", "tool-id", "node-a", time.Now(), []byte(`{"x":1}`), "resp-id")
+	completeEvent := emitToolCompleteEvent(ctx, toolCompleteEventConfig{
+		EventChan:    eventCh,
+		InvocationID: "inv-disable-events",
+		ToolName:     "test-tool",
+		ToolID:       "tool-id",
+		NodeID:       "node-a",
+		ResponseID:   "resp-id",
+		StartTime:    time.Now(),
+		Result:       map[string]any{"ok": true},
+		Arguments:    []byte(`{"x":1}`),
+	})
 
+	require.Nil(t, completeEvent)
 	require.Len(t, eventCh, 0)
 }
 

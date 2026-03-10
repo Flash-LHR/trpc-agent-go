@@ -14,6 +14,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 type graphCompletionCaptureKey struct{}
@@ -58,6 +59,21 @@ func IsGraphCompletionEvent(evt *event.Event) bool {
 
 func isGraphCompletionEvent(evt *event.Event) bool {
 	return evt != nil && evt.Done && evt.Object == ObjectTypeGraphExecution
+}
+
+// VisibleGraphCompletionEvent rewrites a terminal graph completion event into a
+// caller-visible response event while preserving the final state delta.
+func VisibleGraphCompletionEvent(evt *event.Event) (*event.Event, bool) {
+	if !IsGraphCompletionEvent(evt) {
+		return nil, false
+	}
+	visible := evt.Clone()
+	if visible.Response == nil {
+		visible.Response = &model.Response{}
+	}
+	visible.Object = model.ObjectTypeChatCompletion
+	visible.Response.Object = model.ObjectTypeChatCompletion
+	return visible, true
 }
 
 // ShouldSuppressGraphCompletionEvent reports whether the caller-visible stream

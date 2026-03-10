@@ -2985,6 +2985,46 @@ func TestExecuteStreamableTool_FinalResultChunkEmitsStateDelta(t *testing.T) {
 	require.Equal(t, []byte(`"ok"`), second.StateDelta["final"])
 }
 
+func TestExecuteStreamableTool_FinalResultChunkStateDeltaUsesAgentInjection(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	parentInv := agent.NewInvocation(
+		agent.WithInvocationID("parent-inv"),
+		agent.WithInvocationBranch("root"),
+		agent.WithInvocationEventFilterKey("root"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID: "req-final-delta",
+		}),
+	)
+	inv := parentInv.Clone(
+		agent.WithInvocationID("child-inv"),
+		agent.WithInvocationBranch("root/tester"),
+		agent.WithInvocationEventFilterKey("root/tester"),
+		agent.WithInvocationModel(&mockModel{}),
+	)
+	inv.AgentName = "tester"
+	tc := model.ToolCall{
+		ID:       "c1",
+		Function: model.FunctionDefinitionParam{Name: "final"},
+	}
+	st := &finalResultStreamTool{
+		name:       "final",
+		stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
+	}
+	ch := make(chan *event.Event, 4)
+	_, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.NoError(t, err)
+	<-ch
+	second := <-ch
+	require.NotNil(t, second)
+	require.Equal(t, "req-final-delta", second.RequestID)
+	require.Equal(t, "child-inv", second.InvocationID)
+	require.Equal(t, "parent-inv", second.ParentInvocationID)
+	require.Equal(t, "root/tester", second.Branch)
+	require.Equal(t, "root/tester", second.FilterKey)
+	require.Equal(t, []byte(`"ok"`), second.StateDelta["final"])
+}
+
 // stream tool forwarding inner *event.Event
 type innerEventStreamTool struct{ name string }
 

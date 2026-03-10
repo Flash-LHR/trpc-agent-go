@@ -1701,7 +1701,7 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 				toolCall,
 				v.StateDelta,
 			)
-			if err := event.EmitEvent(ctx, eventChan, deltaEvent); err != nil {
+			if err := agent.EmitEvent(ctx, invocation, eventChan, deltaEvent); err != nil {
 				return err
 			}
 		}
@@ -1716,7 +1716,7 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 				toolCall,
 				v.StateDelta,
 			)
-			if err := event.EmitEvent(ctx, eventChan, deltaEvent); err != nil {
+			if err := agent.EmitEvent(ctx, invocation, eventChan, deltaEvent); err != nil {
 				return err
 			}
 		}

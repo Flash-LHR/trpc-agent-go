@@ -1592,6 +1592,43 @@ func TestGraphAgent_DisableGraphCompletionEvent_SuppressesOutputWithCaptureConte
 	}
 }
 
+func TestGraphAgent_DisableGraphCompletionEvent_PreservesVisibleResponseWithoutCallbacks(t *testing.T) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+			return graph.State{
+				graph.StateKeyLastResponse: "child-final",
+				"child_state":              "child-state",
+			}, nil
+		}).
+		SetEntryPoint("done").
+		SetFinishPoint("done").
+		Compile()
+	require.NoError(t, err)
+	ga, err := New("test-hidden-completion-visible-response", g)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	events, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+	var visibleEvent *event.Event
+	for evt := range events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if evt != nil && evt.Response != nil && !evt.Response.IsPartial && len(evt.StateDelta) > 0 {
+			visibleEvent = evt
+		}
+	}
+	require.NotNil(t, visibleEvent)
+	require.Equal(t, model.ObjectTypeChatCompletion, visibleEvent.Object)
+	require.Len(t, visibleEvent.Response.Choices, 1)
+	require.Equal(t, "child-final", visibleEvent.Response.Choices[0].Message.Content)
+	require.Equal(t, []byte(`"child-final"`), visibleEvent.StateDelta[graph.StateKeyLastResponse])
+	require.Equal(t, []byte(`"child-state"`), visibleEvent.StateDelta["child_state"])
+}
+
 func TestGraphAgent_BarrierWaitsForCompletion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

@@ -221,6 +221,11 @@ func (a *ChainAgent) executeSubAgents(
 				}
 			}
 			if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, subEvent) {
+				if visibleEvent, ok := graph.VisibleGraphCompletionEvent(subEvent); ok {
+					if err := event.EmitEvent(ctx, eventChan, visibleEvent); err != nil {
+						return nil, tokenUsage
+					}
+				}
 				continue
 			}
 			if err := event.EmitEvent(ctx, eventChan, subEvent); err != nil {

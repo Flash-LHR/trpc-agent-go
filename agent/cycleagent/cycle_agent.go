@@ -201,6 +201,11 @@ func (a *CycleAgent) runSubAgent(
 			*fullRespEvent = subEvent
 		}
 		if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, subEvent) {
+			if visibleEvent, ok := graph.VisibleGraphCompletionEvent(subEvent); ok {
+				if err := event.EmitEvent(ctx, eventChan, visibleEvent); err != nil {
+					return true
+				}
+			}
 			continue
 		}
 		if err := event.EmitEvent(ctx, eventChan, subEvent); err != nil {

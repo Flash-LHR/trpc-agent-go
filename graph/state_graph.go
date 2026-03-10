@@ -3047,7 +3047,10 @@ func emitModelStartEvent(
 	if eventChan == nil {
 		return
 	}
-
+	invocation, _ := agent.InvocationFromContext(ctx)
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return
+	}
 	modelStartEvent := NewModelExecutionEvent(
 		WithModelEventInvocationID(invocationID),
 		WithModelEventModelName(modelName),
@@ -3056,7 +3059,6 @@ func emitModelStartEvent(
 		WithModelEventStartTime(startTime),
 		WithModelEventInput(modelInput),
 	)
-	invocation, _ := agent.InvocationFromContext(ctx)
 	agent.EmitEvent(ctx, invocation, eventChan, modelStartEvent)
 }
 
@@ -3071,7 +3073,10 @@ func emitModelCompleteEvent(
 	if eventChan == nil {
 		return
 	}
-
+	invocation, _ := agent.InvocationFromContext(ctx)
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return
+	}
 	modelCompleteEvent := NewModelExecutionEvent(
 		WithModelEventInvocationID(invocationID),
 		WithModelEventModelName(modelName),
@@ -3084,8 +3089,6 @@ func emitModelCompleteEvent(
 		WithModelEventError(err),
 		WithModelEventResponseID(responseID),
 	)
-
-	invocation, _ := agent.InvocationFromContext(ctx)
 	agent.EmitEvent(ctx, invocation, eventChan, modelCompleteEvent)
 }
 
@@ -3581,7 +3584,10 @@ func emitToolStartEvent(
 	if eventChan == nil {
 		return
 	}
-
+	invocation, _ := agent.InvocationFromContext(ctx)
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return
+	}
 	toolStartEvent := NewToolExecutionEvent(
 		WithToolEventInvocationID(invocationID),
 		WithToolEventToolName(toolName),
@@ -3592,8 +3598,6 @@ func emitToolStartEvent(
 		WithToolEventStartTime(startTime),
 		WithToolEventInput(string(arguments)),
 	)
-
-	invocation, _ := agent.InvocationFromContext(ctx)
 	agent.EmitEvent(ctx, invocation, eventChan, toolStartEvent)
 }
 
@@ -3616,7 +3620,10 @@ func emitToolCompleteEvent(ctx context.Context, config toolCompleteEventConfig) 
 	if config.EventChan == nil {
 		return nil
 	}
-
+	invocation, _ := agent.InvocationFromContext(ctx)
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return nil
+	}
 	endTime := time.Now()
 	var outputStr string
 	if config.Error == nil && config.Result != nil {
@@ -3639,7 +3646,6 @@ func emitToolCompleteEvent(ctx context.Context, config toolCompleteEventConfig) 
 		WithToolEventError(config.Error),
 		WithToolEventIncludeResponse(true),
 	)
-	invocation, _ := agent.InvocationFromContext(ctx)
 	agent.EmitEvent(ctx, invocation, config.EventChan, toolCompleteEvent)
 	return toolCompleteEvent
 }

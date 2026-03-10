@@ -225,16 +225,18 @@ func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.In
 
 	// Execute the graph.
 	executeCtx := ctx
-	if ga.agentCallbacks != nil &&
-		invocation != nil &&
-		invocation.RunOptions.DisableGraphCompletionEvent {
+	shouldWrapHiddenCompletion := false
+	if invocation != nil &&
+		invocation.RunOptions.DisableGraphCompletionEvent &&
+		!graph.ShouldCaptureGraphCompletion(ctx) {
 		executeCtx = graph.WithGraphCompletionCapture(ctx)
+		shouldWrapHiddenCompletion = true
 	}
 	eventChan, err := ga.executor.Execute(executeCtx, initialState, invocation)
 	if err != nil {
 		return nil, err
 	}
-	if ga.agentCallbacks != nil {
+	if ga.agentCallbacks != nil || shouldWrapHiddenCompletion {
 		return ga.wrapEventChannel(ctx, invocation, eventChan), nil
 	}
 	return eventChan, nil
@@ -377,11 +379,19 @@ func (ga *GraphAgent) wrapEventChannel(
 				fullRespEvent = evt
 			}
 			if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, evt) {
+				if visibleEvent, ok := graph.VisibleGraphCompletionEvent(evt); ok {
+					if err := event.EmitEvent(ctx, wrappedChan, visibleEvent); err != nil {
+						return
+					}
+				}
 				continue
 			}
 			if err := event.EmitEvent(ctx, wrappedChan, evt); err != nil {
 				return
 			}
+		}
+		if ga.agentCallbacks == nil {
+			return
 		}
 
 		// Collect error from the final response event so after-agent

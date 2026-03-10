@@ -317,6 +317,11 @@ func (a *ParallelAgent) mergeEventStreams(
 					mu.Unlock()
 				}
 				if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, evt) {
+					if visibleEvent, ok := graph.VisibleGraphCompletionEvent(evt); ok {
+						if err := event.EmitEvent(ctx, outputChan, visibleEvent); err != nil {
+							return
+						}
+					}
 					continue
 				}
 				if err := event.EmitEvent(ctx, outputChan, evt); err != nil {

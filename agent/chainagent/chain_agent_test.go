@@ -756,3 +756,40 @@ func TestChainAgent_DisableGraphCompletionEvent_SuppressesChildCompletionWithCap
 		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
 	}
 }
+
+func TestChainAgent_DisableGraphCompletionEvent_PreservesVisibleChildResponse(t *testing.T) {
+	sg := graph.NewStateGraph(graph.MessagesStateSchema())
+	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		return graph.State{
+			graph.StateKeyLastResponse: "child-final",
+			"child_state":              "child-state",
+		}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	child, err := graphagent.New("graph-child", compiled)
+	require.NoError(t, err)
+	chainAgent := New(
+		"test-chain",
+		WithSubAgents([]agent.Agent{child}),
+	)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	events, err := chainAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	var visibleEvent *event.Event
+	for evt := range events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if evt != nil && evt.Response != nil && !evt.Response.IsPartial && len(evt.StateDelta) > 0 {
+			visibleEvent = evt
+		}
+	}
+	require.NotNil(t, visibleEvent)
+	require.Equal(t, model.ObjectTypeChatCompletion, visibleEvent.Object)
+	require.Len(t, visibleEvent.Response.Choices, 1)
+	require.Equal(t, "child-final", visibleEvent.Response.Choices[0].Message.Content)
+	require.Equal(t, []byte(`"child-final"`), visibleEvent.StateDelta[graph.StateKeyLastResponse])
+	require.Equal(t, []byte(`"child-state"`), visibleEvent.StateDelta["child_state"])
+}
