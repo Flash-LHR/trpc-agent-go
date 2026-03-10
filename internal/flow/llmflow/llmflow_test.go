@@ -136,6 +136,56 @@ func TestProcessStreamingResponses_RepairsToolCallArgumentsWhenEnabled(t *testin
 	require.Equal(t, "{\"a\":2}", string(response.Choices[0].Message.ToolCalls[0].Function.Arguments))
 }
 
+func TestProcessStreamingResponses_UsesInvocationFromContextForResponseOptions(t *testing.T) {
+	f := New(nil, nil, Options{})
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base"),
+	)
+	baseInvocation.AgentName = "base-agent"
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableResponseUsageTracking:  true,
+			DisablePartialEventIDs:        true,
+			DisablePartialEventTimestamps: true,
+		}),
+	)
+	updatedInvocation.AgentName = "updated-agent"
+	req := &model.Request{}
+	response := &model.Response{
+		IsPartial: true,
+		Choices: []model.Choice{
+			{Message: model.NewAssistantMessage("partial")},
+		},
+	}
+	responseSeq := func(yield func(*model.Response) bool) {
+		yield(response)
+	}
+	eventChan := make(chan *event.Event, 10)
+	tracer := oteltrace.NewNoopTracerProvider().Tracer("t")
+	ctx, span := tracer.Start(
+		agent.NewInvocationContext(context.Background(), updatedInvocation),
+		"s",
+	)
+	defer span.End()
+
+	lastEvent, err := f.processStreamingResponses(
+		ctx,
+		baseInvocation,
+		req,
+		responseSeq,
+		eventChan,
+		span,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, lastEvent)
+	require.Nil(t, response.Usage)
+	require.Empty(t, lastEvent.ID)
+	require.True(t, lastEvent.Timestamp.IsZero())
+	require.Equal(t, updatedInvocation.InvocationID, lastEvent.InvocationID)
+	require.Equal(t, updatedInvocation.AgentName, lastEvent.Author)
+}
+
 // mockAgent implements agent.Agent for testing
 type mockAgent struct {
 	name  string

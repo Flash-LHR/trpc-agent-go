@@ -1265,7 +1265,7 @@ func (r *llmRunner) executeModel(
 	}
 	// Sanitize invalid tool calls in history to avoid poisoning future requests.
 	request.Messages = toolcall.SanitizeMessagesWithTools(request.Messages, request.Tools)
-	invocation, _ := agent.InvocationFromContext(ctx)
+	invocation := invocationFromContextOrDefault(ctx, nil)
 	if invocation != nil {
 		if opts := graphCallOptionsFromConfigs(
 			invocation.RunOptions.CustomAgentConfigs,
@@ -1282,8 +1282,8 @@ func (r *llmRunner) executeModel(
 	}
 	invocationID, sessionID, appName, userID, eventChan := extractExecutionContext(state)
 	modelCallbacks, _ := state[StateKeyModelCallbacks].(*model.Callbacks)
-
-	disableModelExecutionEvents := invocation != nil && invocation.RunOptions.DisableModelExecutionEvents
+	modelExecutionEventsDisabled := shouldDisableModelExecutionEvents(invocation)
+	emittedModelStartEvent := false
 
 	var streamWriter *agent.StreamWriter
 	if r.streamOutputName != "" {
@@ -1299,16 +1299,16 @@ func (r *llmRunner) executeModel(
 		modelName  string
 		startTime  time.Time
 	)
-	if !disableModelExecutionEvents {
+	if !modelExecutionEventsDisabled {
 		// Build model input metadata from the original state and instruction
 		// so events accurately reflect both instruction and user input.
 		modelInput = extractModelInput(state, instructionUsed, r.userInputKey)
-
 		startTime = time.Now()
 		modelName = getModelName(r.llmModel)
 		emitModelStartEvent(ctx, eventChan, invocationID, modelName, nodeID, modelInput, startTime)
+		emittedModelStartEvent = true
 	}
-	result, err := executeModelAndProcessResponses(ctx, modelExecutionConfig{
+	ctx, invocation, result, err := executeModelAndProcessResponsesWithContext(ctx, modelExecutionConfig{
 		Invocation:     invocation,
 		ModelCallbacks: modelCallbacks,
 		LLMModel:       r.llmModel,
@@ -1331,8 +1331,8 @@ func (r *llmRunner) executeModel(
 			_ = streamWriter.Close()
 		}
 	}
-
-	if !disableModelExecutionEvents {
+	modelExecutionEventsDisabled = shouldDisableModelExecutionEvents(invocation)
+	if emittedModelStartEvent && !modelExecutionEventsDisabled {
 		var modelOutput string
 		var responseID string
 		if err == nil && result != nil {
@@ -1463,6 +1463,21 @@ func responseModelError(rsp *model.Response) error {
 		return nil
 	}
 	return fmt.Errorf("%s: %s", rsp.Error.Type, rsp.Error.Message)
+}
+
+func invocationFromContextOrDefault(
+	ctx context.Context,
+	invocation *agent.Invocation,
+) *agent.Invocation {
+	if updatedInvocation, ok := agent.InvocationFromContext(ctx); ok &&
+		updatedInvocation != nil {
+		return updatedInvocation
+	}
+	return invocation
+}
+
+func shouldDisableModelExecutionEvents(invocation *agent.Invocation) bool {
+	return invocation != nil && invocation.RunOptions.DisableModelExecutionEvents
 }
 
 func applyAfterModelPluginCallbacks(
@@ -3522,8 +3537,6 @@ func newModelResponseProcessor(
 		!needAfterCallbacks &&
 		!jsonRepairEnabled &&
 		invocation != nil &&
-		p.partialEventIDsDisabled &&
-		p.partialEventTimestampsDisabled &&
 		!emitFinalModelResponses
 
 	return p
@@ -3636,21 +3649,18 @@ func (p *modelResponseProcessor) finalize() (*model.Response, error) {
 // response assembly. DisableModelExecutionEvents only controls the model
 // lifecycle events emitted around this call site; it does not bypass model
 // execution or response processing.
-func executeModelAndProcessResponses(ctx context.Context, config modelExecutionConfig) (any, error) {
-	invocation := config.Invocation
-	if invocation == nil {
-		invocation, _ = agent.InvocationFromContext(ctx)
-	}
-
+func executeModelAndProcessResponsesWithContext(
+	ctx context.Context,
+	config modelExecutionConfig,
+) (context.Context, *agent.Invocation, any, error) {
+	invocation := invocationFromContextOrDefault(ctx, config.Invocation)
 	ctx, stream, err := runModelStream(ctx, invocation, config.ModelCallbacks, config.LLMModel, config.Request)
 	if err != nil {
 		config.Span.RecordError(err)
 		config.Span.SetStatus(codes.Error, err.Error())
-		return nil, fmt.Errorf("failed to run model: %w", err)
+		return ctx, invocation, nil, fmt.Errorf("failed to run model: %w", err)
 	}
-	if updatedInvocation, ok := agent.InvocationFromContext(ctx); ok && updatedInvocation != nil {
-		invocation = updatedInvocation
-	}
+	invocation = invocationFromContextOrDefault(ctx, invocation)
 	if invocation == nil {
 		invocation = agent.NewInvocation(
 			agent.WithInvocationID(config.InvocationID),
@@ -3663,17 +3673,25 @@ func executeModelAndProcessResponses(ctx context.Context, config modelExecutionC
 	defer processor.close()
 
 	if err = processor.consume(stream); err != nil {
-		return nil, err
+		return processor.ctx, invocationFromContextOrDefault(processor.ctx, invocation), nil, err
 	}
 	if err != nil {
-		return nil, err
+		return processor.ctx, invocationFromContextOrDefault(processor.ctx, invocation), nil, err
 	}
 	finalResponse, finalizeErr := processor.finalize()
 	err = finalizeErr
 	if err != nil {
-		return nil, err
+		return processor.ctx, invocationFromContextOrDefault(processor.ctx, invocation), nil, err
 	}
-	return finalResponse, nil
+	return processor.ctx, invocationFromContextOrDefault(processor.ctx, invocation), finalResponse, nil
+}
+
+func executeModelAndProcessResponses(
+	ctx context.Context,
+	config modelExecutionConfig,
+) (any, error) {
+	_, _, result, err := executeModelAndProcessResponsesWithContext(ctx, config)
+	return result, err
 }
 
 // executeModelWithEvents preserves the previous helper name for existing

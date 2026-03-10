@@ -335,6 +335,49 @@ func TestModelResponseProcessorConsume_FastPathSeq(t *testing.T) {
 	require.Same(t, processor.lastEvent, <-ch)
 }
 
+func TestNewModelResponseProcessor_FastPathWhenOnlyOnePartialToggleIsDisabled(t *testing.T) {
+	tests := []struct {
+		name       string
+		runOptions agent.RunOptions
+	}{
+		{
+			name: "disable partial ids only",
+			runOptions: agent.RunOptions{
+				DisablePartialEventIDs: true,
+			},
+		},
+		{
+			name: "disable partial timestamps only",
+			runOptions: agent.RunOptions{
+				DisablePartialEventTimestamps: true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			invocation := agent.NewInvocation(
+				agent.WithInvocationID("inv-fast-path"),
+				agent.WithInvocationRunOptions(tt.runOptions),
+			)
+			var runErr error
+			processor := newModelResponseProcessor(
+				context.Background(),
+				modelExecutionConfig{
+					Invocation:   invocation,
+					InvocationID: invocation.InvocationID,
+					EventChan:    make(chan *event.Event, 1),
+					Request:      &model.Request{},
+					Span:         noop.Span{},
+					NodeID:       "llm",
+				},
+				invocation,
+				&runErr,
+			)
+			require.True(t, processor.fastResponsePath)
+		})
+	}
+}
+
 func TestProcessModelResponse_DisablesPartialMetadataOnSlowPath(t *testing.T) {
 	ch := make(chan *event.Event, 1)
 	invocation := agent.NewInvocation(
@@ -401,6 +444,58 @@ func TestExecuteModelAndProcessResponses_UsesInvocationFromCallbackContext(t *te
 	finalResponse, ok := resp.(*model.Response)
 	require.True(t, ok)
 	require.Nil(t, finalResponse.Usage)
+}
+
+func TestAddLLMNode_SkipsModelCompleteEventWhenCallbackDisablesModelExecutionEvents(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	sg.AddLLMNode("llm", &captureModel{}, "inst", nil)
+	n, ok := sg.graph.nodes["llm"]
+	require.True(t, ok)
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base"),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableModelExecutionEvents: true,
+		}),
+	)
+	callbacks := model.NewCallbacks().RegisterBeforeModel(
+		func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
+			return &model.BeforeModelResult{
+				Context: agent.NewInvocationContext(ctx, updatedInvocation),
+			}, nil
+		},
+	)
+	ch := make(chan *event.Event, 8)
+	exec := &ExecutionContext{InvocationID: "inv-llm", EventChan: ch}
+	state := State{
+		StateKeyExecContext:    exec,
+		StateKeyCurrentNodeID:  "llm",
+		StateKeyUserInput:      "hi",
+		StateKeyModelCallbacks: callbacks,
+	}
+	_, err := n.Function(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		state,
+	)
+	require.NoError(t, err)
+	var phases []ModelExecutionPhase
+	for {
+		select {
+		case e := <-ch:
+			if e != nil && e.StateDelta != nil {
+				if b, ok := e.StateDelta[MetadataKeyModel]; ok {
+					var meta ModelExecutionMetadata
+					_ = json.Unmarshal(b, &meta)
+					phases = append(phases, meta.Phase)
+				}
+			}
+		default:
+			require.Equal(t, []ModelExecutionPhase{ModelExecutionPhaseStart}, phases)
+			return
+		}
+	}
 }
 
 func TestExecuteModelAndProcessResponses_TracksFinalizeErrors(t *testing.T) {
