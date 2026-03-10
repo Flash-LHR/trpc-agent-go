@@ -272,12 +272,43 @@ type StateSchema struct {
 }
 
 var mergeReducerPtr = reflect.ValueOf(StateReducer(MergeReducer)).Pointer()
+var messageReducerPtr = reflect.ValueOf(StateReducer(MessageReducer)).Pointer()
 
 func isMergeReducer(reducer StateReducer) bool {
 	if reducer == nil {
 		return false
 	}
 	return reflect.ValueOf(reducer).Pointer() == mergeReducerPtr
+}
+
+func isMessageReducer(reducer StateReducer) bool {
+	if reducer == nil {
+		return false
+	}
+	return reflect.ValueOf(reducer).Pointer() == messageReducerPtr
+}
+
+func messageReducerCanUseRawUpdate(update any) bool {
+	switch update.(type) {
+	case nil:
+		return true
+	case model.Message:
+		return true
+	case []model.Message:
+		return true
+	case AppendMessages:
+		return true
+	case ReplaceLastUser:
+		return true
+	case RemoveAllMessages:
+		return true
+	case MessageOp:
+		return true
+	case []MessageOp:
+		return true
+	default:
+		return false
+	}
 }
 
 // NewStateSchema creates a new state schema.
@@ -336,6 +367,10 @@ func (s *StateSchema) ApplyUpdate(currentState State, update State) State {
 		// MergeReducer already deep-copies map entries and values, so we can
 		// safely skip the generic deep-copy path here to avoid redundant work.
 		if isMergeReducer(field.Reducer) {
+			result[key] = field.Reducer(currentValue, updateValue)
+			continue
+		}
+		if isMessageReducer(field.Reducer) && messageReducerCanUseRawUpdate(updateValue) {
 			result[key] = field.Reducer(currentValue, updateValue)
 			continue
 		}

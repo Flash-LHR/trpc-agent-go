@@ -49,6 +49,31 @@ func (o benchmarkAppendMessageOp) Apply(dst []model.Message) []model.Message {
 	return append(dst, o.msg)
 }
 
+func buildBenchmarkMessages(n int) []model.Message {
+	msgs := make([]model.Message, n)
+	for i := range msgs {
+		text := fmt.Sprintf("part-%d", i)
+		args := []byte(fmt.Sprintf("{\"i\":%d}", i))
+		msgs[i] = model.Message{
+			Role:    model.RoleAssistant,
+			Content: fmt.Sprintf("message-%d", i),
+			ContentParts: []model.ContentPart{
+				{Type: model.ContentTypeText, Text: &text},
+			},
+			ToolCalls: []model.ToolCall{
+				{
+					Type: "function",
+					ID:   fmt.Sprintf("call-%d", i),
+					Function: model.FunctionDefinitionParam{
+						Arguments: args,
+					},
+				},
+			},
+		}
+	}
+	return msgs
+}
+
 func TestGetStateValue(t *testing.T) {
 	t.Run("key not found", func(t *testing.T) {
 		state := State{}
@@ -909,11 +934,28 @@ func TestStateSchemaApplyUpdate_MessageReducerSemantics(t *testing.T) {
 		assert.Equal(t, "update-part", *out[0].ContentParts[0].Text)
 		assert.Equal(t, byte('u'), out[0].ToolCalls[0].Function.Arguments[0])
 	})
+	t.Run("append messages direct path does not alias update", func(t *testing.T) {
+		schema := buildSchema()
+		update := []model.Message{buildMessage("direct-update")}
+		next := schema.ApplyUpdate(State{"messages": []model.Message{}}, State{
+			"messages": AppendMessages{Items: update},
+		})
+		out, ok := next["messages"].([]model.Message)
+		require.True(t, ok)
+		mutated := "mutated-part"
+		update[0].ContentParts[0].Text = &mutated
+		update[0].ToolCalls[0].Function.Arguments[0] = 'Q'
+		require.NotNil(t, out[0].ContentParts[0].Text)
+		assert.Equal(t, "direct-update-part", *out[0].ContentParts[0].Text)
+		assert.Equal(t, byte('d'), out[0].ToolCalls[0].Function.Arguments[0])
+	})
 }
 
 func TestMergeReducerAndMessageReducerCoveragePaths(t *testing.T) {
 	require.False(t, isMergeReducer(nil))
 	require.True(t, isMergeReducer(MergeReducer))
+	require.False(t, isMessageReducer(nil))
+	require.True(t, isMessageReducer(MessageReducer))
 
 	left := map[string]any{"a": 1}
 	right := map[string]any{"b": 2}
@@ -1036,31 +1078,7 @@ func TestMessageReducer_CustomOpSeesNonNilEmptySlice(t *testing.T) {
 }
 
 func BenchmarkMessageReducer(b *testing.B) {
-	buildMessages := func(n int) []model.Message {
-		msgs := make([]model.Message, n)
-		for i := range msgs {
-			text := fmt.Sprintf("part-%d", i)
-			args := []byte(fmt.Sprintf("{\"i\":%d}", i))
-			msgs[i] = model.Message{
-				Role:    model.RoleAssistant,
-				Content: fmt.Sprintf("message-%d", i),
-				ContentParts: []model.ContentPart{
-					{Type: model.ContentTypeText, Text: &text},
-				},
-				ToolCalls: []model.ToolCall{
-					{
-						Type: "function",
-						ID:   fmt.Sprintf("call-%d", i),
-						Function: model.FunctionDefinitionParam{
-							Arguments: args,
-						},
-					},
-				},
-			}
-		}
-		return msgs
-	}
-	existing := buildMessages(64)
+	existing := buildBenchmarkMessages(64)
 	appendSliceUpdate := []model.Message{model.NewAssistantMessage("next")}
 	appendUpdate := AppendMessages{Items: []model.Message{model.NewAssistantMessage("next")}}
 	appendFastPathUpdate := []MessageOp{AppendMessages{Items: appendSliceUpdate}}
@@ -1122,6 +1140,32 @@ func BenchmarkMessageReducer(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			MessageReducer(existing, customUpdate)
+		}
+	})
+}
+
+func BenchmarkStateSchemaApplyUpdateMessageReducer(b *testing.B) {
+	schema := NewStateSchema().AddField("messages", StateField{
+		Type:    reflect.TypeOf([]model.Message{}),
+		Reducer: MessageReducer,
+	})
+	current := State{"messages": buildBenchmarkMessages(64)}
+	appendUpdate := State{
+		"messages": AppendMessages{Items: []model.Message{model.NewAssistantMessage("next")}},
+	}
+	appendFastPathUpdate := State{
+		"messages": []MessageOp{AppendMessages{Items: []model.Message{model.NewAssistantMessage("next")}}},
+	}
+	b.Run("append_messages", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			schema.ApplyUpdate(current, appendUpdate)
+		}
+	})
+	b.Run("append_messages_op_fast_path", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			schema.ApplyUpdate(current, appendFastPathUpdate)
 		}
 	})
 }
