@@ -505,7 +505,11 @@ func cloneMergedMap(in map[string]any) map[string]any {
 	if len(in) == 0 {
 		return map[string]any{}
 	}
-	return deepCopyMapStringAny(in)
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = deepCopyAny(v)
+	}
+	return out
 }
 
 // OneShotMessagesByNodeReducer merges targeted one-shot inputs scoped by node

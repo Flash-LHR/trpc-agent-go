@@ -644,6 +644,38 @@ func TestApplyUpdate_MergeReducerPreservesLegacyNilMapSemantics(t *testing.T) {
 	require.Equal(t, "v", meta["k"])
 }
 
+func TestMergeReducer_EmptySideFastPathDoesNotPreserveCrossKeyAliases(t *testing.T) {
+	makeSharedUpdate := func() map[string]any {
+		shared := map[string]any{"items": []any{"x"}}
+		return map[string]any{
+			"left":  shared,
+			"right": shared,
+		}
+	}
+	t.Run("empty existing", func(t *testing.T) {
+		mergedAny := MergeReducer(map[string]any{}, makeSharedUpdate())
+		merged, ok := mergedAny.(map[string]any)
+		require.True(t, ok)
+		left, ok := merged["left"].(map[string]any)
+		require.True(t, ok)
+		right, ok := merged["right"].(map[string]any)
+		require.True(t, ok)
+		left["items"].([]any)[0] = "mutated-left"
+		assert.Equal(t, "x", right["items"].([]any)[0])
+	})
+	t.Run("empty update", func(t *testing.T) {
+		mergedAny := MergeReducer(makeSharedUpdate(), map[string]any{})
+		merged, ok := mergedAny.(map[string]any)
+		require.True(t, ok)
+		left, ok := merged["left"].(map[string]any)
+		require.True(t, ok)
+		right, ok := merged["right"].(map[string]any)
+		require.True(t, ok)
+		left["items"].([]any)[0] = "mutated-left"
+		assert.Equal(t, "x", right["items"].([]any)[0])
+	})
+}
+
 func TestMessageReducer_CustomOpSeesNonNilEmptySlice(t *testing.T) {
 	out := MessageReducer([]model.Message{}, []MessageOp{observeEmptyMessageOp{}})
 	msgs, ok := out.([]model.Message)
