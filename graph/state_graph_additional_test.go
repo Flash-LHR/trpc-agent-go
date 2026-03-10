@@ -119,6 +119,28 @@ func (m *multiResponseModel) Info() model.Info {
 	return model.Info{Name: "multi-response-model"}
 }
 
+// collectModelExecutionPhases drains model execution events from the channel.
+func collectModelExecutionPhases(ch <-chan *event.Event) []ModelExecutionPhase {
+	var phases []ModelExecutionPhase
+	for {
+		select {
+		case e := <-ch:
+			if e == nil || e.StateDelta == nil {
+				continue
+			}
+			b, ok := e.StateDelta[MetadataKeyModel]
+			if !ok {
+				continue
+			}
+			var meta ModelExecutionMetadata
+			_ = json.Unmarshal(b, &meta)
+			phases = append(phases, meta.Phase)
+		default:
+			return phases
+		}
+	}
+}
+
 func (a *stubAgent) Run(
 	ctx context.Context,
 	inv *agent.Invocation,
@@ -740,22 +762,91 @@ func TestAddLLMNode_SkipsModelExecutionEventsWhenCallbackDisablesModelExecutionE
 		state,
 	)
 	require.NoError(t, err)
-	var phases []ModelExecutionPhase
-	for {
-		select {
-		case e := <-ch:
-			if e != nil && e.StateDelta != nil {
-				if b, ok := e.StateDelta[MetadataKeyModel]; ok {
-					var meta ModelExecutionMetadata
-					_ = json.Unmarshal(b, &meta)
-					phases = append(phases, meta.Phase)
-				}
-			}
-		default:
-			require.Empty(t, phases)
-			return
-		}
+	phases := collectModelExecutionPhases(ch)
+	require.Empty(t, phases)
+}
+
+func TestAddLLMNode_EmitsCompleteWhenAfterModelDisablesModelExecutionEvents(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	sg.AddLLMNode("llm", &captureModel{}, "inst", nil)
+	n, ok := sg.graph.nodes["llm"]
+	require.True(t, ok)
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base"),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableModelExecutionEvents: true,
+		}),
+	)
+	callbacks := model.NewCallbacks().RegisterAfterModel(
+		func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+			return &model.AfterModelResult{
+				Context: agent.NewInvocationContext(ctx, updatedInvocation),
+			}, nil
+		},
+	)
+	ch := make(chan *event.Event, 8)
+	exec := &ExecutionContext{InvocationID: "inv-llm", EventChan: ch}
+	state := State{
+		StateKeyExecContext:    exec,
+		StateKeyCurrentNodeID:  "llm",
+		StateKeyUserInput:      "hi",
+		StateKeyModelCallbacks: callbacks,
 	}
+	_, err := n.Function(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		state,
+	)
+	require.NoError(t, err)
+	phases := collectModelExecutionPhases(ch)
+	require.Equal(t, []ModelExecutionPhase{
+		ModelExecutionPhaseStart,
+		ModelExecutionPhaseComplete,
+	}, phases)
+}
+
+func TestAddLLMNode_EmitsModelExecutionEventsForBeforeModelCustomResponse(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	cm := &captureModel{}
+	sg.AddLLMNode("llm", cm, "inst", nil)
+	n, ok := sg.graph.nodes["llm"]
+	require.True(t, ok)
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base"),
+	)
+	callbacks := model.NewCallbacks().RegisterBeforeModel(
+		func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
+			return &model.BeforeModelResult{
+				CustomResponse: &model.Response{
+					Done: true,
+					Choices: []model.Choice{
+						{Message: model.NewAssistantMessage("custom")},
+					},
+				},
+			}, nil
+		},
+	)
+	ch := make(chan *event.Event, 8)
+	exec := &ExecutionContext{InvocationID: "inv-llm", EventChan: ch}
+	state := State{
+		StateKeyExecContext:    exec,
+		StateKeyCurrentNodeID:  "llm",
+		StateKeyUserInput:      "hi",
+		StateKeyModelCallbacks: callbacks,
+	}
+	_, err := n.Function(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		state,
+	)
+	require.NoError(t, err)
+	require.Nil(t, cm.lastReq)
+	phases := collectModelExecutionPhases(ch)
+	require.Equal(t, []ModelExecutionPhase{
+		ModelExecutionPhaseStart,
+		ModelExecutionPhaseComplete,
+	}, phases)
 }
 
 func TestExecuteModelAndProcessResponses_TracksFinalizeErrors(t *testing.T) {

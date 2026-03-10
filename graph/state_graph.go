@@ -1342,7 +1342,7 @@ func (r *llmRunner) executeModel(
 			_ = streamWriter.Close()
 		}
 	}
-	if emittedModelStartEvent && !shouldDisableModelExecutionEvents(invocation) {
+	if emittedModelStartEvent {
 		var modelOutput string
 		var responseID string
 		if err == nil && result != nil {
@@ -1747,6 +1747,9 @@ func runModelStream(
 				ctx = result.Context
 			}
 			if result != nil && result.CustomResponse != nil {
+				if beforeGenerate != nil {
+					beforeGenerate(ctx)
+				}
 				return ctx, modelResponseStream{
 					Seq: func(yield func(*model.Response) bool) {
 						yield(result.CustomResponse)
@@ -1769,6 +1772,9 @@ func runModelStream(
 			ctx = result.Context
 		}
 		if result != nil && result.CustomResponse != nil {
+			if beforeGenerate != nil {
+				beforeGenerate(ctx)
+			}
 			return ctx, modelResponseStream{
 				Seq: func(yield func(*model.Response) bool) {
 					yield(result.CustomResponse)
