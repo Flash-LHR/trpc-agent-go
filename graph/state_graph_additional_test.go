@@ -1713,6 +1713,72 @@ func TestAddLLMNode_EmitsModelExecutionEventsForPluginBeforeModelCustomResponse(
 	)
 }
 
+func TestAddLLMNode_MergesSparseExecutionMetadataForBeforeModelCustomResponseContext(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	cm := &captureModel{}
+	sg.AddLLMNode("llm", cm, "inst", nil)
+	n, ok := sg.graph.nodes["llm"]
+	require.True(t, ok)
+	parentInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-before-custom-context-parent"),
+	)
+	baseInvocation := parentInvocation.Clone(
+		agent.WithInvocationID("inv-before-custom-context-base"),
+		agent.WithInvocationBranch("graph/before-custom-context"),
+		agent.WithInvocationEventFilterKey("graph/before-custom-context/filter"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID: "req-before-custom-context-base",
+		}),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-before-custom-context-updated"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID: "req-before-custom-context-updated",
+		}),
+	)
+	callbacks := model.NewCallbacks().RegisterBeforeModel(
+		func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
+			return &model.BeforeModelResult{
+				Context: agent.NewInvocationContext(ctx, updatedInvocation),
+				CustomResponse: &model.Response{
+					Done: true,
+					Choices: []model.Choice{
+						{Message: model.NewAssistantMessage("custom")},
+					},
+				},
+			}, nil
+		},
+	)
+	ch := make(chan *event.Event, 8)
+	exec := &ExecutionContext{InvocationID: "inv-llm", EventChan: ch}
+	state := State{
+		StateKeyExecContext:    exec,
+		StateKeyCurrentNodeID:  "llm",
+		StateKeyUserInput:      "hi",
+		StateKeyModelCallbacks: callbacks,
+	}
+	_, err := n.Function(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		state,
+	)
+	require.NoError(t, err)
+	events := collectModelExecutionEvents(ch)
+	require.Nil(t, cm.lastReq)
+	require.Equal(t, []ModelExecutionPhase{
+		ModelExecutionPhaseStart,
+		ModelExecutionPhaseComplete,
+	}, collectModelExecutionPhasesFromEvents(events))
+	requireModelExecutionEventMetadata(
+		t,
+		events,
+		updatedInvocation.InvocationID,
+		parentInvocation.InvocationID,
+		baseInvocation.Branch,
+		baseInvocation.GetEventFilterKey(),
+		updatedInvocation.RunOptions.RequestID,
+	)
+}
+
 func TestAddLLMNode_EmitsModelExecutionEventsForBeforeModelCustomResponse(t *testing.T) {
 	sg := NewStateGraph(MessagesStateSchema())
 	cm := &captureModel{}
@@ -1771,6 +1837,83 @@ func TestAddLLMNode_EmitsModelExecutionEventsForBeforeModelCustomResponse(t *tes
 		baseInvocation.GetEventFilterKey(),
 		baseInvocation.RunOptions.RequestID,
 	)
+}
+
+func TestAddLLMNode_UsesRootExecutionMetadataForPluginBeforeModelCustomResponseContext(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	cm := &captureModel{}
+	sg.AddLLMNode("llm", cm, "inst", nil)
+	n, ok := sg.graph.nodes["llm"]
+	require.True(t, ok)
+	p := &hookPlugin{
+		name: "p",
+		reg: func(r *plugin.Registry) {
+			r.BeforeModel(func(
+				ctx context.Context,
+				args *model.BeforeModelArgs,
+			) (*model.BeforeModelResult, error) {
+				updatedInvocation := agent.NewInvocation(
+					agent.WithInvocationID("inv-plugin-custom-context-updated"),
+					agent.WithInvocationBranch("graph/plugin-custom-context-updated"),
+					agent.WithInvocationEventFilterKey("graph/plugin-custom-context-updated/filter"),
+					agent.WithInvocationRunOptions(agent.RunOptions{
+						RequestID: "req-plugin-custom-context-updated",
+					}),
+				)
+				return &model.BeforeModelResult{
+					Context: agent.NewInvocationContext(ctx, updatedInvocation),
+					CustomResponse: &model.Response{
+						Done: true,
+						Choices: []model.Choice{
+							{Message: model.NewAssistantMessage("plugin-custom")},
+						},
+					},
+				}, nil
+			})
+		},
+	}
+	pm := plugin.MustNewManager(p)
+	parentInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-plugin-custom-context-parent"),
+	)
+	baseInvocation := parentInvocation.Clone(
+		agent.WithInvocationID("inv-plugin-custom-context-base"),
+		agent.WithInvocationBranch("graph/plugin-custom-context-base"),
+		agent.WithInvocationEventFilterKey("graph/plugin-custom-context-base/filter"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID: "req-plugin-custom-context-base",
+		}),
+	)
+	baseInvocation.Plugins = pm
+	ch := make(chan *event.Event, 8)
+	exec := &ExecutionContext{InvocationID: "inv-llm", EventChan: ch}
+	state := State{
+		StateKeyExecContext:   exec,
+		StateKeyCurrentNodeID: "llm",
+		StateKeyUserInput:     "hi",
+	}
+	_, err := n.Function(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		state,
+	)
+	require.NoError(t, err)
+	events := collectModelExecutionEvents(ch)
+	require.Nil(t, cm.lastReq)
+	require.Equal(t, []ModelExecutionPhase{
+		ModelExecutionPhaseStart,
+		ModelExecutionPhaseComplete,
+	}, collectModelExecutionPhasesFromEvents(events))
+	require.Len(t, events, 2)
+	for _, evt := range events {
+		var meta ModelExecutionMetadata
+		require.NoError(t, json.Unmarshal(evt.StateDelta[MetadataKeyModel], &meta))
+		require.Equal(t, "inv-plugin-custom-context-updated", evt.InvocationID)
+		require.Equal(t, "inv-plugin-custom-context-updated", meta.InvocationID)
+		require.Empty(t, evt.ParentInvocationID)
+		require.Equal(t, "graph/plugin-custom-context-updated", evt.Branch)
+		require.Equal(t, "graph/plugin-custom-context-updated/filter", evt.FilterKey)
+		require.Equal(t, "req-plugin-custom-context-updated", evt.RequestID)
+	}
 }
 
 func TestAddLLMNode_EmitsModelExecutionEventsForBeforeModelError(t *testing.T) {
