@@ -17,6 +17,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -24,6 +26,7 @@ import (
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	teletrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -59,6 +62,21 @@ func (s *simpleToolSet) Tools(ctx context.Context) []tool.Tool {
 }
 func (s *simpleToolSet) Close() error { return nil }
 func (s *simpleToolSet) Name() string { return s.name }
+
+func useSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	originalProvider := teletrace.TracerProvider
+	originalTracer := teletrace.Tracer
+	teletrace.TracerProvider = provider
+	teletrace.Tracer = provider.Tracer("state-graph-disable-tracing-test")
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+		teletrace.TracerProvider = originalProvider
+		teletrace.Tracer = originalTracer
+	})
+	return recorder
+}
 
 // stubAgent is a minimal agent implementation used for subgraph tests.
 type stubAgent struct {
@@ -400,6 +418,36 @@ func TestTraceProcessedModelResponse_DisableTracing(t *testing.T) {
 		&model.Response{Choices: []model.Choice{{Message: model.NewAssistantMessage("ok")}}},
 		&event.Event{ID: "evt-1"},
 	)
+}
+
+func TestToolsNode_DisableTracingSkipsSpanCreation(t *testing.T) {
+	recorder := useSpanRecorder(t)
+	sg := NewStateGraph(MessagesStateSchema())
+	sg.AddToolsNode("tools", map[string]tool.Tool{"echo": &echoTool{name: "echo"}})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{DisableTracing: true}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	node := sg.graph.nodes["tools"]
+	state := State{
+		StateKeyMessages: []model.Message{
+			model.NewUserMessage("hi"),
+			{
+				Role: model.RoleAssistant,
+				ToolCalls: []model.ToolCall{{
+					Type: "function",
+					ID:   "call-1",
+					Function: model.FunctionDefinitionParam{
+						Name:      "echo",
+						Arguments: []byte(`{}`),
+					},
+				}},
+			},
+		},
+	}
+	_, err := node.Function(ctx, state)
+	require.NoError(t, err)
+	require.Empty(t, recorder.Ended())
 }
 
 // Verify StateSchema.ApplyUpdate skips unknown internal keys while still

@@ -58,6 +58,21 @@ func (m *disableTracingModel) Info() model.Info {
 	return model.Info{Name: "disable-tracing-model"}
 }
 
+func useSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
+	recorder := tracetest.NewSpanRecorder()
+	provider := tracesdk.NewTracerProvider(tracesdk.WithSpanProcessor(recorder))
+	originalProvider := trace.TracerProvider
+	originalTracer := trace.Tracer
+	trace.TracerProvider = provider
+	trace.Tracer = provider.Tracer("graph-agent-disable-tracing-test")
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+		trace.TracerProvider = originalProvider
+		trace.Tracer = originalTracer
+	})
+	return recorder
+}
+
 func TestNewGraphAgent(t *testing.T) {
 	// Create a simple graph using the new API.
 	schema := graph.NewStateSchema().
@@ -193,6 +208,71 @@ func TestGraphAgentRun_DisableTracingFastPath(t *testing.T) {
 	}
 
 	require.True(t, sawResponse)
+}
+
+func TestGraphAgentRun_DisableTracingWithCallbacksSkipsSpanCreation(t *testing.T) {
+	recorder := useSpanRecorder(t)
+	stateGraph := graph.NewStateGraph(graph.MessagesStateSchema())
+	stateGraph.AddNode("done", func(context.Context, graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "ok"}, nil
+	})
+	stateGraph.SetEntryPoint("done")
+	stateGraph.SetFinishPoint("done")
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+	callbacks := agent.NewCallbacks().RegisterBeforeAgent(func(
+		ctx context.Context,
+		args *agent.BeforeAgentArgs,
+	) (*agent.BeforeAgentResult, error) {
+		return &agent.BeforeAgentResult{}, nil
+	})
+	graphAgent, err := New("test-agent", g, WithAgentCallbacks(callbacks))
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-tracing-callbacks"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableTracing: true,
+		}),
+	)
+	events, err := graphAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	for range events {
+	}
+	require.Empty(t, recorder.Ended())
+}
+
+func TestGraphAgentRun_DisableTracingSubAgentSkipsSpanCreation(t *testing.T) {
+	recorder := useSpanRecorder(t)
+	childGraph := graph.NewStateGraph(graph.MessagesStateSchema())
+	childGraph.AddNode("child_done", func(context.Context, graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "child ok"}, nil
+	})
+	childGraph.SetEntryPoint("child_done")
+	childGraph.SetFinishPoint("child_done")
+	compiledChild, err := childGraph.Compile()
+	require.NoError(t, err)
+	childAgent, err := New("child", compiledChild)
+	require.NoError(t, err)
+	parentGraph := graph.NewStateGraph(graph.MessagesStateSchema())
+	parentGraph.AddAgentNode("child")
+	parentGraph.SetEntryPoint("child")
+	parentGraph.SetFinishPoint("child")
+	compiledParent, err := parentGraph.Compile()
+	require.NoError(t, err)
+	parentAgent, err := New("parent", compiledParent, WithSubAgents([]agent.Agent{childAgent}))
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-tracing-subagent"),
+		agent.WithInvocationMessage(model.NewUserMessage("hi")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableTracing: true,
+		}),
+	)
+	events, err := parentAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	for range events {
+	}
+	require.Empty(t, recorder.Ended())
 }
 
 func TestGraphAgent_WithMaxConcurrency(t *testing.T) {
