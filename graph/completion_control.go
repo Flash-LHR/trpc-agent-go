@@ -61,6 +61,23 @@ func isGraphCompletionEvent(evt *event.Event) bool {
 	return evt != nil && evt.Done && evt.Object == ObjectTypeGraphExecution
 }
 
+// IsVisibleGraphCompletionEvent reports whether the event is a caller-visible
+// response rewritten from a terminal graph completion event.
+func IsVisibleGraphCompletionEvent(evt *event.Event) bool {
+	return isVisibleGraphCompletionEvent(evt)
+}
+
+func isVisibleGraphCompletionEvent(evt *event.Event) bool {
+	if evt == nil || !evt.Done || evt.Object != model.ObjectTypeChatCompletion {
+		return false
+	}
+	if evt.Response == nil || evt.Response.Object != model.ObjectTypeChatCompletion {
+		return false
+	}
+	metadata, ok := evt.StateDelta[MetadataKeyCompletion]
+	return ok && len(metadata) > 0
+}
+
 // VisibleGraphCompletionEvent rewrites a terminal graph completion event into a
 // caller-visible response event while preserving the final state delta.
 func VisibleGraphCompletionEvent(evt *event.Event) (*event.Event, bool) {

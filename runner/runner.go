@@ -768,7 +768,7 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 	r.recordEmittedAssistantResponseID(loop, agentEvent)
 
 	// Capture graph-level completion snapshot for final event.
-	if isGraphCompletionEvent(agentEvent) {
+	if isGraphCompletionSnapshotEvent(agentEvent) {
 		loop.graphCompletionSeen = true
 		loop.finalStateDelta, loop.finalChoices = r.captureGraphCompletion(agentEvent)
 	}
@@ -1016,6 +1016,11 @@ func isGraphCompletionEvent(agentEvent *event.Event) bool {
 		agentEvent.Object == graph.ObjectTypeGraphExecution
 }
 
+func isGraphCompletionSnapshotEvent(agentEvent *event.Event) bool {
+	return isGraphCompletionEvent(agentEvent) ||
+		graph.IsVisibleGraphCompletionEvent(agentEvent)
+}
+
 func shouldSuppressGraphCompletionEvent(
 	loop *eventLoopContext,
 	agentEvent *event.Event,
@@ -1050,7 +1055,7 @@ func (r *runner) captureCompletionFallback(
 	if loop == nil || agentEvent == nil {
 		return
 	}
-	graphCompletionEvent := isGraphCompletionEvent(agentEvent)
+	graphCompletionEvent := isGraphCompletionSnapshotEvent(agentEvent)
 	if !graphCompletionEvent && len(agentEvent.StateDelta) > 0 {
 		loop.fallbackStateDelta = mergeCompletionFallbackStateDelta(
 			loop.fallbackStateDelta,

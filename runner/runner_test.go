@@ -20,7 +20,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/agent/chainagent"
+	"trpc.group/trpc-go/trpc-agent-go/agent/cycleagent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/graphagent"
+	"trpc.group/trpc-go/trpc-agent-go/agent/parallelagent"
 	artifactinmemory "trpc.group/trpc-go/trpc-agent-go/artifact/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
@@ -1248,6 +1251,81 @@ func TestRunner_DisableGraphCompletionEvent_DropsCapturedGraphCompletionAfterCal
 	require.NotNil(t, completion)
 	require.Empty(t, completion.StateDelta)
 	require.Empty(t, completion.Response.Choices)
+}
+
+func TestRunner_DisableGraphCompletionEvent_KeepsRunnerCompletionWithWrappedGraphAgent(t *testing.T) {
+	tests := []struct {
+		name  string
+		build func(child agent.Agent) agent.Agent
+	}{
+		{
+			name: "chain",
+			build: func(child agent.Agent) agent.Agent {
+				return chainagent.New("chain", chainagent.WithSubAgents([]agent.Agent{child}))
+			},
+		},
+		{
+			name: "cycle",
+			build: func(child agent.Agent) agent.Agent {
+				return cycleagent.New(
+					"cycle",
+					cycleagent.WithSubAgents([]agent.Agent{child}),
+					cycleagent.WithMaxIterations(1),
+				)
+			},
+		},
+		{
+			name: "parallel",
+			build: func(child agent.Agent) agent.Agent {
+				return parallelagent.New("parallel", parallelagent.WithSubAgents([]agent.Agent{child}))
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			child := newWrappedGraphChildAgent(t)
+			svc := sessioninmemory.NewSessionService()
+			r := NewRunner("app", tt.build(child), WithSessionService(svc))
+			ch, err := r.Run(
+				context.Background(),
+				"u",
+				tt.name,
+				model.NewUserMessage("hi"),
+				agent.WithDisableGraphCompletionEvent(true),
+			)
+			require.NoError(t, err)
+
+			var completion *event.Event
+			for evt := range ch {
+				require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+				if evt.IsRunnerCompletion() {
+					completion = evt
+				}
+			}
+
+			require.NotNil(t, completion)
+			require.NotNil(t, completion.StateDelta)
+			require.Equal(t, `"child-final"`, string(completion.StateDelta[graph.StateKeyLastResponse]))
+			require.Equal(t, `"child-state"`, string(completion.StateDelta["child_state"]))
+			require.Len(t, completion.Response.Choices, 1)
+			require.Equal(t, "child-final", completion.Response.Choices[0].Message.Content)
+		})
+	}
+}
+
+func newWrappedGraphChildAgent(t *testing.T) agent.Agent {
+	t.Helper()
+	sg := graph.NewStateGraph(graph.MessagesStateSchema())
+	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		return graph.State{
+			graph.StateKeyLastResponse: "child-final",
+			"child_state":              "child-state",
+		}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	child, err := graphagent.New("graph-child", compiled)
+	require.NoError(t, err)
+	return child
 }
 
 func TestRunner_GraphCompletion_DedupFinalChoices(t *testing.T) {
