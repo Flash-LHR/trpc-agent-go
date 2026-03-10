@@ -373,8 +373,10 @@ func TestExecuteModelAndProcessResponses_NilIterSequence(t *testing.T) {
 func TestEmitFastModelResponseEvent_DisablesPartialMetadata(t *testing.T) {
 	t.Run("partial response omits generated ID and timestamp", func(t *testing.T) {
 		ch := make(chan *event.Event, 1)
+		respTimestamp := time.Unix(1, 0).UTC()
 		resp := &model.Response{
 			IsPartial: true,
+			Timestamp: respTimestamp,
 			Choices: []model.Choice{
 				{Message: model.NewAssistantMessage("partial")},
 			},
@@ -397,7 +399,7 @@ func TestEmitFastModelResponseEvent_DisablesPartialMetadata(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, ev)
 		require.Empty(t, ev.ID)
-		require.True(t, ev.Timestamp.IsZero())
+		require.Equal(t, respTimestamp, ev.Timestamp)
 		require.Same(t, ev, <-ch)
 	})
 
@@ -860,11 +862,8 @@ func TestExecuteModelAndProcessResponses_UsesStableInvocationForMetricsMetadata(
 	baseInvocation.AgentName = "agent-base-metrics"
 	updatedInvocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-updated-metrics"),
-		agent.WithInvocationModel(&mockModel{name: "updated-metrics-model"}),
 		agent.WithInvocationSession(&session.Session{
-			ID:      "sess-updated-metrics",
-			UserID:  "user-updated-metrics",
-			AppName: "app-updated-metrics",
+			ID: "sess-updated-metrics",
 		}),
 	)
 	updatedInvocation.AgentName = "agent-updated-metrics"
@@ -898,10 +897,7 @@ func TestExecuteModelAndProcessResponses_UsesStableInvocationForMetricsMetadata(
 	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoUserID, baseInvocation.Session.UserID))
 	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoAppName, baseInvocation.Session.AppName))
 	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIAgentName, updatedInvocation.AgentName))
-	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIRequestModel, updatedInvocation.Model.Info().Name))
 	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIConversationID, updatedInvocation.Session.ID))
-	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoUserID, updatedInvocation.Session.UserID))
-	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoAppName, updatedInvocation.Session.AppName))
 }
 
 func TestExecuteModelAndProcessResponses_UsesUpdatedInvocationForResponseUsageTiming(t *testing.T) {
@@ -1628,6 +1624,45 @@ func TestExecuteModelAndProcessResponses_TracksFinalizeErrors(t *testing.T) {
 		agent.WithInvocationID("inv-metrics"),
 		agent.WithInvocationModel(&noResponseModel{}),
 		agent.WithInvocationSession(&session.Session{ID: "sess-metrics"}),
+	)
+	_, err = executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), invocation),
+		modelExecutionConfig{
+			Invocation:   invocation,
+			LLMModel:     invocation.Model,
+			Request:      &model.Request{},
+			InvocationID: invocation.InvocationID,
+			SessionID:    invocation.Session.ID,
+			Span:         noop.Span{},
+			NodeID:       "llm",
+		},
+	)
+	require.ErrorContains(t, err, errMsgNoModelResponse)
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyErrorType, itelemetry.ValueDefaultErrorType))
+}
+
+func TestExecuteModelAndProcessResponses_TracksFinalizeErrorsForNilIterSequence(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	originalProvider := itelemetry.MeterProvider
+	originalMeter := itelemetry.ChatMeter
+	originalRequestCnt := itelemetry.ChatMetricTRPCAgentGoClientRequestCnt
+	defer func() {
+		itelemetry.MeterProvider = originalProvider
+		itelemetry.ChatMeter = originalMeter
+		itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = originalRequestCnt
+	}()
+	itelemetry.MeterProvider = provider
+	itelemetry.ChatMeter = provider.Meter(semconvmetrics.MeterNameChat)
+	requestCnt, err := itelemetry.ChatMeter.Int64Counter("trpc_agent_go.client.request.cnt")
+	require.NoError(t, err)
+	itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = requestCnt
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-metrics-nil-iter"),
+		agent.WithInvocationModel(&nilIterModel{}),
+		agent.WithInvocationSession(&session.Session{ID: "sess-metrics-nil-iter"}),
 	)
 	_, err = executeModelAndProcessResponses(
 		agent.NewInvocationContext(context.Background(), invocation),

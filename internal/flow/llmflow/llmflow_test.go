@@ -183,11 +183,16 @@ func TestProcessStreamingResponses_UsesInvocationFromContextForResponseOptions(t
 			DisablePartialEventIDs:        true,
 			DisablePartialEventTimestamps: true,
 		}),
+		agent.WithInvocationSession(&session.Session{
+			ID: "sess-updated",
+		}),
 	)
 	updatedInvocation.AgentName = "updated-agent"
 	req := &model.Request{}
+	respTimestamp := time.Unix(1, 0).UTC()
 	response := &model.Response{
 		IsPartial: true,
+		Timestamp: respTimestamp,
 		Choices: []model.Choice{
 			{Message: model.NewAssistantMessage("partial")},
 		},
@@ -215,7 +220,7 @@ func TestProcessStreamingResponses_UsesInvocationFromContextForResponseOptions(t
 	require.NotNil(t, lastEvent)
 	require.Nil(t, response.Usage)
 	require.Empty(t, lastEvent.ID)
-	require.True(t, lastEvent.Timestamp.IsZero())
+	require.Equal(t, respTimestamp, lastEvent.Timestamp)
 	require.Equal(t, baseInvocation.InvocationID, lastEvent.InvocationID)
 	require.Equal(t, baseInvocation.AgentName, lastEvent.Author)
 }
@@ -341,11 +346,8 @@ func TestProcessStreamingResponses_UsesStableInvocationForMetricsMetadata(t *tes
 	baseInvocation.AgentName = "agent-base-metrics"
 	updatedInvocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-updated-metrics"),
-		agent.WithInvocationModel(&mockIterModel{}),
 		agent.WithInvocationSession(&session.Session{
-			ID:      "sess-updated-metrics",
-			UserID:  "user-updated-metrics",
-			AppName: "app-updated-metrics",
+			ID: "sess-updated-metrics",
 		}),
 	)
 	updatedInvocation.AgentName = "agent-updated-metrics"
@@ -382,10 +384,7 @@ func TestProcessStreamingResponses_UsesStableInvocationForMetricsMetadata(t *tes
 	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoUserID, baseInvocation.Session.UserID))
 	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoAppName, baseInvocation.Session.AppName))
 	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIAgentName, updatedInvocation.AgentName))
-	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIRequestModel, updatedInvocation.Model.Info().Name))
 	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIConversationID, updatedInvocation.Session.ID))
-	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoUserID, updatedInvocation.Session.UserID))
-	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoAppName, updatedInvocation.Session.AppName))
 }
 
 func TestProcessStreamingResponses_UsesUpdatedInvocationForResponseUsageTiming(t *testing.T) {

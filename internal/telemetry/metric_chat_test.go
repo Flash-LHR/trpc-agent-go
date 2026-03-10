@@ -151,6 +151,44 @@ func TestChatMetricsTracker_SetInvocationState_PreservesMetricsAttributes(t *tes
 	require.Empty(t, updatedInvocation.AgentName)
 }
 
+func TestChatMetricsTracker_SetInvocationState_MergesSparseSessionAttributes(t *testing.T) {
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base"),
+		agent.WithInvocationModel(&telemetryTestModel{}),
+		agent.WithInvocationSession(&session.Session{
+			ID:      "sess-base",
+			UserID:  "user-base",
+			AppName: "app-base",
+		}),
+	)
+	baseInvocation.AgentName = "agent-base"
+	tracker := NewChatMetricsTracker(
+		context.Background(),
+		baseInvocation,
+		&model.Request{},
+		&model.TimingInfo{},
+		nil,
+		nil,
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated"),
+		agent.WithInvocationSession(&session.Session{
+			ID: "sess-updated",
+		}),
+	)
+	tracker.SetInvocationState(updatedInvocation, &model.TimingInfo{})
+	attrs := tracker.buildAttributes()
+	require.Equal(t, baseInvocation.AgentName, attrs.AgentName)
+	require.Equal(t, baseInvocation.Model.Info().Name, attrs.RequestModelName)
+	require.Equal(t, updatedInvocation.Session.ID, attrs.SessionID)
+	require.Equal(t, baseInvocation.Session.UserID, attrs.UserID)
+	require.Equal(t, baseInvocation.Session.AppName, attrs.AppName)
+	require.Nil(t, updatedInvocation.Model)
+	require.Equal(t, "sess-updated", updatedInvocation.Session.ID)
+	require.Empty(t, updatedInvocation.Session.UserID)
+	require.Empty(t, updatedInvocation.Session.AppName)
+}
+
 func TestChatMetricsTracker_SetInvocationState_PreservesReasoningTimingWhenDisabled(t *testing.T) {
 	req := &model.Request{
 		GenerationConfig: model.GenerationConfig{

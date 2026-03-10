@@ -1828,10 +1828,6 @@ func runModelStream(
 			span.SetStatus(codes.Error, err.Error())
 			return ctx, modelResponseStream{}, fmt.Errorf("failed to generate content: %w", err)
 		}
-		if seq == nil {
-			span.SetAttributes(attribute.String("trpc.go.agent.error", errMsgNoModelResponse))
-			return ctx, modelResponseStream{}, errors.New(errMsgNoModelResponse)
-		}
 		return ctx, modelResponseStream{Seq: seq}, nil
 	}
 
@@ -1867,13 +1863,13 @@ func runModel(
 	if stream.Ch != nil {
 		return ctx, stream.Ch, nil
 	}
+	if stream.Seq == nil {
+		return ctx, nil, errors.New(errMsgNoModelResponse)
+	}
 
 	responseChan := make(chan *model.Response, 1)
 	go func() {
 		defer close(responseChan)
-		if stream.Seq == nil {
-			return
-		}
 		stream.Seq(func(response *model.Response) bool {
 			responseChan <- response
 			return true
