@@ -1652,6 +1652,9 @@ func shouldEmitCheckpointLifecycleEvents(
 		return false
 	}
 	ro := invocation.RunOptions
+	if ro.DisableGraphExecutorEvents {
+		return false
+	}
 	if !ro.StreamModeEnabled {
 		return false
 	}

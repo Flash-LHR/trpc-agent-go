@@ -58,6 +58,28 @@ func TestGraphAgent_BeforeCallback_CustomResponse(t *testing.T) {
 	require.Equal(t, "short-circuit", events[0].Response.Choices[0].Message.Content)
 }
 
+func TestGraphAgent_BeforeCallback_CustomResponseUsesInvocationBufferSize(t *testing.T) {
+	g := buildTrivialGraph(t)
+	callbacks := agent.NewCallbacks().
+		RegisterBeforeAgent(func(ctx context.Context, inv *agent.Invocation) (*model.Response, error) {
+			return &model.Response{Choices: []model.Choice{{Message: model.NewAssistantMessage("short-circuit")}}}, nil
+		})
+	ga, err := New("ga", g, WithAgentCallbacks(callbacks), WithChannelBufferSize(1))
+	require.NoError(t, err)
+	inv := &agent.Invocation{
+		Message: model.NewUserMessage("hi"),
+		RunOptions: agent.RunOptions{
+			EventChannelBufferSize: 7,
+		},
+	}
+	ga.setupInvocation(inv)
+	ch, err := ga.runWithCallbacks(context.Background(), inv)
+	require.NoError(t, err)
+	require.Equal(t, 7, cap(ch))
+	for range ch {
+	}
+}
+
 func TestGraphAgent_BeforeCallback_Error(t *testing.T) {
 	g := buildTrivialGraph(t)
 	callbacks := agent.NewCallbacks().
@@ -101,6 +123,28 @@ func TestGraphAgent_AfterCallback_CustomResponseAppended(t *testing.T) {
 	require.NotNil(t, last)
 	require.Equal(t, model.RoleAssistant, last.Response.Choices[0].Message.Role)
 	require.Equal(t, "tail", last.Response.Choices[0].Message.Content)
+}
+
+func TestGraphAgent_AfterCallbackWrapUsesInvocationBufferSize(t *testing.T) {
+	g := buildTrivialGraph(t)
+	callbacks := agent.NewCallbacks().
+		RegisterAfterAgent(func(ctx context.Context, inv *agent.Invocation, runErr error) (*model.Response, error) {
+			return nil, nil
+		})
+	ga, err := New("ga", g, WithAgentCallbacks(callbacks), WithChannelBufferSize(1))
+	require.NoError(t, err)
+	inv := &agent.Invocation{
+		Message: model.NewUserMessage("go"),
+		RunOptions: agent.RunOptions{
+			EventChannelBufferSize: 7,
+		},
+	}
+	ga.setupInvocation(inv)
+	ch, err := ga.runWithCallbacks(context.Background(), inv)
+	require.NoError(t, err)
+	require.Equal(t, 7, cap(ch))
+	for range ch {
+	}
 }
 
 func TestGraphAgent_AfterCallback_ErrorEmitsErrorEvent(t *testing.T) {

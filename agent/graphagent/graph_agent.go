@@ -104,15 +104,18 @@ func (ga *GraphAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-
 	}
 	// Setup invocation
 	ga.setupInvocation(invocation)
-
-	outSize := ga.channelBufferSize
-	if invocation.RunOptions.EventChannelBufferSize > 0 {
-		outSize = invocation.RunOptions.EventChannelBufferSize
-	}
-	out := make(chan *event.Event, outSize)
+	out := make(chan *event.Event, ga.eventChannelBufferSize(invocation))
 	runCtx := agent.CloneContext(ctx)
 	go ga.runWithBarrier(runCtx, invocation, out)
 	return out, nil
+}
+
+// eventChannelBufferSize returns the effective event channel buffer size for a run.
+func (ga *GraphAgent) eventChannelBufferSize(invocation *agent.Invocation) int {
+	if invocation != nil && invocation.RunOptions.EventChannelBufferSize > 0 {
+		return invocation.RunOptions.EventChannelBufferSize
+	}
+	return ga.channelBufferSize
 }
 
 // runWithBarrier emits a start barrier, waits for completion, then runs the graph with callbacks
@@ -197,7 +200,7 @@ func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.In
 		}
 		if result != nil && result.CustomResponse != nil {
 			// Create a channel that returns the custom response and then closes.
-			eventChan := make(chan *event.Event, 1)
+			eventChan := make(chan *event.Event, ga.eventChannelBufferSize(invocation))
 			// Create an event from the custom response.
 			customevent := event.NewResponseEvent(invocation.InvocationID, invocation.AgentName, result.CustomResponse)
 			agent.EmitEvent(ctx, invocation, eventChan, customevent)
@@ -347,7 +350,7 @@ func (ga *GraphAgent) wrapEventChannel(
 	invocation *agent.Invocation,
 	originalChan <-chan *event.Event,
 ) <-chan *event.Event {
-	wrappedChan := make(chan *event.Event, ga.channelBufferSize)
+	wrappedChan := make(chan *event.Event, ga.eventChannelBufferSize(invocation))
 	runCtx := agent.CloneContext(ctx)
 	go func(ctx context.Context) {
 		defer close(wrappedChan)
