@@ -2535,7 +2535,7 @@ func extractSubgraphFinalState(
 	if ev == nil || !ev.Done || ev.Response == nil || ev.StateDelta == nil {
 		return nil, nil, false
 	}
-	if ev.Response.Object != ObjectTypeGraphExecution {
+	if !isGraphCompletionEvent(ev) && !IsVisibleGraphCompletionEvent(ev) {
 		return nil, nil, false
 	}
 	tmp := make(State)
@@ -2651,9 +2651,9 @@ func buildAgentInvocationWithStateScopeAndInputKey(
 	if parentInvocation, ok := agent.InvocationFromContext(ctx); ok &&
 		parentInvocation != nil {
 		runOptions := parentInvocation.RunOptions
-		// Child graph agents must keep their terminal completion event for state handoff.
-		// Parent-side forwarding still respects the parent's visibility preference.
-		runOptions.DisableGraphCompletionEvent = false
+		// Preserve the parent's visibility preference.
+		// The agent node captures completion snapshots from either raw
+		// graph.execution events or visible rewritten completion snapshots.
 		runOptions.RuntimeState = runtime
 		runOptions.CustomAgentConfigs = withScopedGraphCallOptions(
 			runOptions.CustomAgentConfigs,

@@ -175,12 +175,14 @@ func (a *completionOptionalAgent) FindSubAgent(name string) agent.Agent {
 }
 
 func (a *completionOptionalAgent) Run(
-	_ context.Context,
+	ctx context.Context,
 	inv *agent.Invocation,
 ) (<-chan *event.Event, error) {
 	ch := make(chan *event.Event, 1)
 	go func() {
-		if inv == nil || !inv.RunOptions.DisableGraphCompletionEvent {
+		if inv == nil ||
+			!inv.RunOptions.DisableGraphCompletionEvent ||
+			ShouldCaptureGraphCompletion(ctx) {
 			ch <- NewGraphCompletionEvent(
 				WithCompletionEventInvocationID(inv.InvocationID),
 				WithCompletionEventFinalState(State{
