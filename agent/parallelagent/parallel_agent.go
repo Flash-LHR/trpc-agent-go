@@ -234,7 +234,7 @@ func (a *ParallelAgent) Run(
 	ctx context.Context,
 	invocation *agent.Invocation,
 ) (<-chan *event.Event, error) {
-	eventChan := make(chan *event.Event, a.channelBufferSize)
+	eventChan := make(chan *event.Event, a.eventChannelBufferSize(invocation))
 
 	runCtx := agent.CloneContext(ctx)
 	go func(ctx context.Context) {
@@ -243,6 +243,13 @@ func (a *ParallelAgent) Run(
 	}(runCtx)
 
 	return eventChan, nil
+}
+
+func (a *ParallelAgent) eventChannelBufferSize(invocation *agent.Invocation) int {
+	if invocation != nil && invocation.RunOptions.EventChannelBufferSize > 0 {
+		return invocation.RunOptions.EventChannelBufferSize
+	}
+	return a.channelBufferSize
 }
 
 // executeParallelRun handles the main execution logic for parallel agent.

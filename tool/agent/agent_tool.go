@@ -507,15 +507,15 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 			wrapped := at.wrapWithStreamSemantics(subCtx, subInv, evCh)
 
 			for ev := range wrapped {
-				if subInv.RunOptions.DisableGraphCompletionEvent {
+				if subInv.RunOptions.DisableGraphCompletionEvent && isGraphCompletionEvent(ev) {
 					if result, ok := graphCompletionResult(ev); ok {
 						if stream.Writer.Send(tool.StreamChunk{
 							Content: tool.FinalResultChunk{Result: result},
 						}, nil) {
 							return
 						}
-						continue
 					}
+					continue
 				}
 				if stream.Writer.Send(tool.StreamChunk{Content: ev}, nil) {
 					return

@@ -292,7 +292,8 @@ const (
 )
 
 type graphCompletionMockAgent struct {
-	name string
+	name      string
+	stateOnly bool
 }
 
 func (m *graphCompletionMockAgent) Run(
@@ -309,13 +310,15 @@ func (m *graphCompletionMockAgent) Run(
 			&model.Response{
 				Object: graph.ObjectTypeGraphExecution,
 				Done:   true,
-				Choices: []model.Choice{{
-					Message: model.NewAssistantMessage(
-						graphCompletionMsg,
-					),
-				}},
 			},
 		)
+		if !m.stateOnly {
+			evt.Response.Choices = []model.Choice{{
+				Message: model.NewAssistantMessage(
+					graphCompletionMsg,
+				),
+			}}
+		}
 		evt.StateDelta = map[string][]byte{
 			graphStateKey: []byte(graphStateValue),
 		}
@@ -1374,6 +1377,43 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_KeepsFinalResult(t *tes
 		finalResult = resultChunk.Result
 	}
 	require.Equal(t, "child-final", finalResult)
+}
+
+func TestTool_StreamableCall_DisableGraphCompletionEvent_SuppressesStateOnlyCompletion(t *testing.T) {
+	at := NewTool(
+		&graphCompletionMockAgent{name: graphCompletionAgent, stateOnly: true},
+		WithStreamInner(true),
+		WithHistoryScope(HistoryScopeParentBranch),
+	)
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	defer reader.Close()
+	eventChunks := 0
+	resultChunks := 0
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		if evt, ok := chunk.Content.(*event.Event); ok {
+			eventChunks++
+			require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+			continue
+		}
+		_, ok := chunk.Content.(tool.FinalResultChunk)
+		require.True(t, ok)
+		resultChunks++
+	}
+	require.Zero(t, eventChunks)
+	require.Zero(t, resultChunks)
 }
 
 func TestTool_StreamInner_FlagFalse(t *testing.T) {

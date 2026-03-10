@@ -223,6 +223,24 @@ func TestParallelAgent_ChannelBufferSize(t *testing.T) {
 	require.Equal(t, 100, agent2.channelBufferSize)
 }
 
+func TestParallelAgentRun_UsesInvocationEventChannelBufferSize(t *testing.T) {
+	parallelAgent := newFromLegacy(legacyOptions{
+		Name:              "test-parallel",
+		SubAgents:         []agent.Agent{&mockAgent{name: "agent-1", eventCount: 1}},
+		ChannelBufferSize: 1,
+	})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			EventChannelBufferSize: 7,
+		}),
+	)
+	events, err := parallelAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	require.Equal(t, 7, cap(events))
+	for range events {
+	}
+}
+
 func TestParallelAgent_WithCallbacks(t *testing.T) {
 	// Create agent callbacks.
 	callbacks := agent.NewCallbacks()

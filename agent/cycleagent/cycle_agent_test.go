@@ -434,6 +434,26 @@ func TestCycleAgent_ChannelBufferSize(t *testing.T) {
 	require.Equal(t, 100, agent2.channelBufferSize)
 }
 
+func TestCycleAgentRun_UsesInvocationEventChannelBufferSize(t *testing.T) {
+	maxIterations := 1
+	cycleAgent := newFromLegacy(legacyOptions{
+		Name:              "test-cycle",
+		SubAgents:         []agent.Agent{&mockAgent{name: "agent-1", eventCount: 1}},
+		MaxIterations:     &maxIterations,
+		ChannelBufferSize: 1,
+	})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			EventChannelBufferSize: 7,
+		}),
+	)
+	events, err := cycleAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	require.Equal(t, 7, cap(events))
+	for range events {
+	}
+}
+
 func TestCycleAgent_WithCallbacks(t *testing.T) {
 	// Create agent callbacks.
 	callbacks := agent.NewCallbacks()

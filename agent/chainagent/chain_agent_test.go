@@ -350,6 +350,24 @@ func TestChainAgent_ChannelBufferSize(t *testing.T) {
 	require.Equal(t, customSize, chainAgent2.channelBufferSize)
 }
 
+func TestChainAgentRun_UsesInvocationEventChannelBufferSize(t *testing.T) {
+	chainAgent := New(
+		"test-chain",
+		WithSubAgents([]agent.Agent{&mockAgent{name: "agent-1", eventCount: 1}}),
+		WithChannelBufferSize(1),
+	)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			EventChannelBufferSize: 7,
+		}),
+	)
+	events, err := chainAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	require.Equal(t, 7, cap(events))
+	for range events {
+	}
+}
+
 func TestChainAgent_WithCallbacks(t *testing.T) {
 	// Create agent callbacks.
 	callbacks := agent.NewCallbacks()

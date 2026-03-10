@@ -69,7 +69,7 @@ func (a *ChainAgent) createSubAgentInvocation(
 // Run implements the agent.Agent interface.
 // It executes sub-agents in sequence, passing events through as they are generated.
 func (a *ChainAgent) Run(ctx context.Context, invocation *agent.Invocation) (e <-chan *event.Event, err error) {
-	eventChan := make(chan *event.Event, a.channelBufferSize)
+	eventChan := make(chan *event.Event, a.eventChannelBufferSize(invocation))
 	runCtx := agent.CloneContext(ctx)
 	go func(ctx context.Context) {
 		defer close(eventChan)
@@ -77,6 +77,13 @@ func (a *ChainAgent) Run(ctx context.Context, invocation *agent.Invocation) (e <
 	}(runCtx)
 
 	return eventChan, nil
+}
+
+func (a *ChainAgent) eventChannelBufferSize(invocation *agent.Invocation) int {
+	if invocation != nil && invocation.RunOptions.EventChannelBufferSize > 0 {
+		return invocation.RunOptions.EventChannelBufferSize
+	}
+	return a.channelBufferSize
 }
 
 // executeChainRun handles the main execution logic for chain agent.

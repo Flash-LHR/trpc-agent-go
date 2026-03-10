@@ -288,7 +288,7 @@ func (a *CycleAgent) handleAfterAgentCallbacks(
 // Run implements the agent.Agent interface.
 // It executes sub-agents in a loop until escalation or max iterations.
 func (a *CycleAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
-	eventChan := make(chan *event.Event, a.channelBufferSize)
+	eventChan := make(chan *event.Event, a.eventChannelBufferSize(invocation))
 
 	// Setup invocation.
 	a.setupInvocation(invocation)
@@ -327,6 +327,13 @@ func (a *CycleAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-c
 	}(runCtx)
 
 	return eventChan, nil
+}
+
+func (a *CycleAgent) eventChannelBufferSize(invocation *agent.Invocation) int {
+	if invocation != nil && invocation.RunOptions.EventChannelBufferSize > 0 {
+		return invocation.RunOptions.EventChannelBufferSize
+	}
+	return a.channelBufferSize
 }
 
 // Tools implements the agent.Agent interface.
