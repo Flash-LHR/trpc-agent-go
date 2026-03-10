@@ -747,6 +747,62 @@ func TestDeepCopyMapStringAnyWithVisited_DistinctSliceHeadersDoNotTruncate(
 	assert.Equal(t, []any{"a", "b"}, longSlice)
 }
 
+func TestDeepCopyBytesWithVisited_DistinctSliceHeadersDoNotTruncate(t *testing.T) {
+	backing := []byte("ab")
+	visited := newVisitedMap()
+	shortSlice := deepCopyBytesWithVisited(backing[:1], visited)
+	longSlice := deepCopyBytesWithVisited(backing[:2], visited)
+	assert.Len(t, shortSlice, 1)
+	assert.Len(t, longSlice, 2)
+	assert.Equal(t, []byte("ab"), longSlice)
+}
+
+func TestDeepCopyMapStringBytesWithVisited_DistinctSliceHeadersDoNotTruncate(
+	t *testing.T,
+) {
+	backing := []byte("ab")
+	in := map[string][]byte{
+		"short": backing[:1],
+		"long":  backing[:2],
+	}
+	copied := deepCopyMapStringBytes(in)
+	assert.Len(t, copied["short"], 1)
+	assert.Len(t, copied["long"], 2)
+	assert.Equal(t, []byte("ab"), copied["long"])
+}
+
+func TestDeepCopyModelMessagesWithVisited_DistinctSliceHeadersDoNotTruncate(
+	t *testing.T,
+) {
+	backing := []model.Message{
+		model.NewAssistantMessage("a"),
+		model.NewAssistantMessage("b"),
+	}
+	visited := newVisitedMap()
+	shortSlice := deepCopyModelMessagesWithVisited(backing[:1], visited)
+	longSlice := deepCopyModelMessagesWithVisited(backing[:2], visited)
+	assert.Len(t, shortSlice, 1)
+	assert.Len(t, longSlice, 2)
+	assert.Equal(t, "a", longSlice[0].Content)
+	assert.Equal(t, "b", longSlice[1].Content)
+}
+
+func TestDeepCopyModelToolCallsWithVisited_DistinctSliceHeadersDoNotTruncate(
+	t *testing.T,
+) {
+	backing := []model.ToolCall{
+		{Type: "function", ID: "call-1"},
+		{Type: "function", ID: "call-2"},
+	}
+	visited := newVisitedMap()
+	shortSlice := deepCopyModelToolCallsWithVisited(backing[:1], visited)
+	longSlice := deepCopyModelToolCallsWithVisited(backing[:2], visited)
+	assert.Len(t, shortSlice, 1)
+	assert.Len(t, longSlice, 2)
+	assert.Equal(t, "call-1", longSlice[0].ID)
+	assert.Equal(t, "call-2", longSlice[1].ID)
+}
+
 func TestDeepCopySliceAnyWithVisited_DistinctSliceHeadersDoNotTruncate(
 	t *testing.T,
 ) {

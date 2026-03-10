@@ -896,6 +896,13 @@ func TestStateSchemaApplyUpdate_MessageReducerSemantics(t *testing.T) {
 			Reducer: MessageReducer,
 		})
 	}
+	buildDisableDeepCopySchema := func() *StateSchema {
+		return NewStateSchema().AddField("messages", StateField{
+			Type:            reflect.TypeOf([]model.Message{}),
+			Reducer:         MessageReducer,
+			DisableDeepCopy: true,
+		})
+	}
 	buildMessage := func(content string) model.Message {
 		text := content + "-part"
 		args := []byte(content)
@@ -989,6 +996,21 @@ func TestStateSchemaApplyUpdate_MessageReducerSemantics(t *testing.T) {
 		assert.Equal(t, "mutated-1", out[0].Content)
 		assert.Equal(t, 0, update.Applied)
 		assert.Equal(t, "custom-batch", update.Out[0].Content)
+	})
+	t.Run("disable deep copy allows custom message op to mutate update", func(t *testing.T) {
+		schema := buildDisableDeepCopySchema()
+		update := &mutatingReceiverMessageOp{
+			Out: []model.Message{buildMessage("custom-disable")},
+		}
+		next := schema.ApplyUpdate(State{"messages": []model.Message{}}, State{
+			"messages": MessageOp(update),
+		})
+		out, ok := next["messages"].([]model.Message)
+		require.True(t, ok)
+		require.Len(t, out, 1)
+		assert.Equal(t, "mutated-1", out[0].Content)
+		assert.Equal(t, 1, update.Applied)
+		assert.Equal(t, "mutated-1", update.Out[0].Content)
 	})
 }
 
