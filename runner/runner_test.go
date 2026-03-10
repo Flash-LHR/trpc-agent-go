@@ -1587,6 +1587,46 @@ func TestRunner_StreamModeUpdates_WithFinalModelResponses_EmptyResponseIDDedupsS
 	)
 }
 
+func TestRunner_GraphEmitFinalModelResponses_EmptyResponseIDDedupsRunnerCompletion(
+	t *testing.T,
+) {
+	child := newWrappedGraphLLMEmptyIDChildAgent(t)
+	svc := sessioninmemory.NewSessionService()
+	r := NewRunner("app", child, WithSessionService(svc))
+	ch, err := r.Run(
+		context.Background(),
+		"u",
+		"messages-mode-empty-id",
+		model.NewUserMessage("hi"),
+		agent.WithGraphEmitFinalModelResponses(true),
+	)
+	require.NoError(t, err)
+
+	var chatCompletionCount int
+	var completion *event.Event
+	for evt := range ch {
+		if evt.Response != nil &&
+			len(evt.Response.Choices) > 0 &&
+			len(evt.StateDelta) == 0 &&
+			evt.Response.Choices[0].Message.Content == "empty-id-final" {
+			chatCompletionCount++
+		}
+		if evt.IsRunnerCompletion() {
+			completion = evt
+		}
+	}
+
+	require.Equal(t, 1, chatCompletionCount)
+	require.NotNil(t, completion)
+	require.Empty(t, completion.Response.Choices)
+	assertSessionKeepsSingleFinalAssistantEvent(
+		t,
+		svc,
+		"messages-mode-empty-id",
+		"empty-id-final",
+	)
+}
+
 func TestRunner_StreamMode_FiltersEvents(t *testing.T) {
 	const (
 		appName   = "stream-mode-app"

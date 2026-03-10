@@ -675,6 +675,7 @@ type eventLoopContext struct {
 	graphCompletionSeen                        bool
 	filteredPersistedAssistantResponseIDs      map[string]struct{}
 	filteredPersistedAssistantChoiceSignatures map[string]struct{}
+	emittedAssistantChoiceSignatures           map[string]struct{}
 	// visibleCompletionChoicesEmitted tracks whether this run already emitted a
 	// caller-visible completion snapshot with assistant text.
 	//
@@ -928,13 +929,20 @@ func (r *runner) recordEmittedAssistantResponseID(
 	if !eventHasAssistantMessageContent(e) {
 		return
 	}
-	if e.Response.ID == "" {
+	if e.Response.ID != "" {
+		if loop.emittedAssistantResponseIDs == nil {
+			loop.emittedAssistantResponseIDs = make(map[string]struct{})
+		}
+		loop.emittedAssistantResponseIDs[e.Response.ID] = struct{}{}
+	}
+	signature := assistantChoiceSignature(e.Response.Choices)
+	if signature == "" {
 		return
 	}
-	if loop.emittedAssistantResponseIDs == nil {
-		loop.emittedAssistantResponseIDs = make(map[string]struct{})
+	if loop.emittedAssistantChoiceSignatures == nil {
+		loop.emittedAssistantChoiceSignatures = make(map[string]struct{})
 	}
-	loop.emittedAssistantResponseIDs[e.Response.ID] = struct{}{}
+	loop.emittedAssistantChoiceSignatures[signature] = struct{}{}
 }
 
 func eventHasAssistantMessageContent(e *event.Event) bool {
@@ -1408,11 +1416,17 @@ func (r *runner) shouldEchoFinalChoicesInCompletion(
 	}
 
 	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)
-	if finalResponseID == "" {
+	if finalResponseID != "" {
+		_, alreadyEmitted := loop.emittedAssistantResponseIDs[finalResponseID]
+		if alreadyEmitted {
+			return false
+		}
+	}
+	signature := assistantChoiceSignature(finalChoices)
+	if signature == "" {
 		return true
 	}
-
-	_, alreadyEmitted := loop.emittedAssistantResponseIDs[finalResponseID]
+	_, alreadyEmitted := loop.emittedAssistantChoiceSignatures[signature]
 	return !alreadyEmitted
 }
 

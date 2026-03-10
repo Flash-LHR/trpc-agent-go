@@ -89,6 +89,12 @@ func VisibleGraphCompletionEvent(evt *event.Event) (*event.Event, bool) {
 		return nil, false
 	}
 	visible := evt.Clone()
+	if visible.StateDelta == nil {
+		visible.StateDelta = make(map[string][]byte)
+	}
+	if len(visible.StateDelta[MetadataKeyCompletion]) == 0 {
+		visible.StateDelta[MetadataKeyCompletion] = []byte("{}")
+	}
 	if visible.Response == nil {
 		visible.Response = &model.Response{}
 	}
@@ -97,14 +103,14 @@ func VisibleGraphCompletionEvent(evt *event.Event) (*event.Event, bool) {
 	return visible, true
 }
 
-// RecordAssistantResponseID stores the response ID when the event contains a
-// non-partial assistant message so visible completion snapshots can avoid
-// re-emitting the same final answer text.
+// RecordAssistantResponseID stores stable dedup identifiers when the event
+// contains a non-partial assistant message so visible completion snapshots can
+// avoid re-emitting the same final answer text.
 func RecordAssistantResponseID(
 	emitted map[string]struct{},
 	evt *event.Event,
 ) map[string]struct{} {
-	if evt == nil || evt.Response == nil || evt.IsPartial || evt.Response.ID == "" {
+	if evt == nil || evt.Response == nil || evt.IsPartial {
 		return emitted
 	}
 	for _, choice := range evt.Response.Choices {
@@ -115,7 +121,12 @@ func RecordAssistantResponseID(
 		if emitted == nil {
 			emitted = make(map[string]struct{})
 		}
-		emitted[evt.Response.ID] = struct{}{}
+		if evt.Response.ID != "" {
+			emitted["id:"+evt.Response.ID] = struct{}{}
+		}
+		if signature := assistantChoiceSignature(evt.Response.Choices); signature != "" {
+			emitted["sig:"+signature] = struct{}{}
+		}
 		return emitted
 	}
 	return emitted
@@ -166,10 +177,17 @@ func shouldClearVisibleGraphCompletionChoices(
 		return false
 	}
 	responseID := completionResponseIDFromStateDelta(evt.StateDelta)
-	if responseID == "" {
+	if responseID != "" {
+		_, ok := emittedAssistantResponseIDs["id:"+responseID]
+		if ok {
+			return true
+		}
+	}
+	signature := assistantChoiceSignature(evt.Response.Choices)
+	if signature == "" {
 		return false
 	}
-	_, ok := emittedAssistantResponseIDs[responseID]
+	_, ok := emittedAssistantResponseIDs["sig:"+signature]
 	return ok
 }
 
@@ -186,4 +204,15 @@ func completionResponseIDFromStateDelta(stateDelta map[string][]byte) string {
 		return ""
 	}
 	return responseID
+}
+
+func assistantChoiceSignature(choices []model.Choice) string {
+	if len(choices) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(choices)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }

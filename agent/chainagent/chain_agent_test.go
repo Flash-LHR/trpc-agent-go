@@ -139,6 +139,10 @@ type completionResponseIDAgent struct {
 	name string
 }
 
+type manualCompletionAgent struct {
+	name string
+}
+
 func (m *completionResponseIDAgent) Info() agent.Info {
 	return agent.Info{Name: m.name}
 }
@@ -172,6 +176,49 @@ func (m *completionResponseIDAgent) Run(
 		)
 		evt.Author = m.name
 		evt.Response.ID = "resp-1"
+		_ = agent.EmitEvent(ctx, inv, ch, evt)
+	}()
+	return ch, nil
+}
+
+func (m *manualCompletionAgent) Info() agent.Info {
+	return agent.Info{Name: m.name}
+}
+
+func (m *manualCompletionAgent) SubAgents() []agent.Agent {
+	return nil
+}
+
+func (m *manualCompletionAgent) FindSubAgent(string) agent.Agent {
+	return nil
+}
+
+func (m *manualCompletionAgent) Tools() []tool.Tool {
+	return nil
+}
+
+func (m *manualCompletionAgent) Run(
+	ctx context.Context,
+	inv *agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event, 1)
+	go func() {
+		defer close(ch)
+		evt := &event.Event{
+			Response: &model.Response{
+				ID:     "manual-graph-completion",
+				Object: graph.ObjectTypeGraphExecution,
+				Done:   true,
+				Choices: []model.Choice{{
+					Message: model.NewAssistantMessage("manual-final"),
+				}},
+			},
+			StateDelta: map[string][]byte{
+				"child_state": []byte(`"child-state"`),
+			},
+			InvocationID: inv.InvocationID,
+			Author:       m.name,
+		}
 		_ = agent.EmitEvent(ctx, inv, ch, evt)
 	}()
 	return ch, nil
@@ -898,4 +945,33 @@ func TestChainAgent_DisableGraphCompletionEvent_PreservesStateOnlyChildCompletio
 	require.NotNil(t, visibleEvent)
 	require.Empty(t, visibleEvent.Response.Choices)
 	require.Equal(t, []byte(`"child-state"`), visibleEvent.StateDelta["child_state"])
+}
+
+func TestChainAgent_DisableGraphCompletionEvent_AddsVisibleCompletionMetadataForManualRawCompletion(
+	t *testing.T,
+) {
+	child := &manualCompletionAgent{name: "graph-child"}
+	chainAgent := New(
+		"test-chain",
+		WithSubAgents([]agent.Agent{child}),
+	)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	events, err := chainAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+
+	var visibleEvent *event.Event
+	for evt := range events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if graph.IsVisibleGraphCompletionEvent(evt) {
+			visibleEvent = evt
+		}
+	}
+
+	require.NotNil(t, visibleEvent)
+	require.Equal(t, []byte("{}"), visibleEvent.StateDelta[graph.MetadataKeyCompletion])
+	require.Equal(t, "manual-final", visibleEvent.Response.Choices[0].Message.Content)
 }

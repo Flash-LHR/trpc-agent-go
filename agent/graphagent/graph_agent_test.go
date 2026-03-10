@@ -43,6 +43,11 @@ type staticGraphAgentModel struct {
 	content string
 }
 
+type emptyIDGraphAgentModel struct {
+	name    string
+	content string
+}
+
 func (m *staticGraphAgentModel) GenerateContent(
 	_ context.Context,
 	_ *model.Request,
@@ -61,6 +66,27 @@ func (m *staticGraphAgentModel) GenerateContent(
 }
 
 func (m *staticGraphAgentModel) Info() model.Info {
+	return model.Info{Name: m.name}
+}
+
+func (m *emptyIDGraphAgentModel) GenerateContent(
+	_ context.Context,
+	_ *model.Request,
+) (<-chan *model.Response, error) {
+	ch := make(chan *model.Response, 1)
+	ch <- &model.Response{
+		ID:   "",
+		Done: true,
+		Choices: []model.Choice{{
+			Index:   0,
+			Message: model.NewAssistantMessage(m.content),
+		}},
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *emptyIDGraphAgentModel) Info() model.Info {
 	return model.Info{Name: m.name}
 }
 
@@ -1727,6 +1753,52 @@ func TestGraphAgent_DisableGraphCompletionEvent_GraphEmitFinalModelResponses_Ded
 			visibleEvent = evt
 		}
 	}
+	require.Equal(t, 1, assistantResponses)
+	require.NotNil(t, visibleEvent)
+	require.Empty(t, visibleEvent.Response.Choices)
+	require.Equal(t, []byte(`"answer"`), visibleEvent.StateDelta[graph.StateKeyLastResponse])
+}
+
+func TestGraphAgent_DisableGraphCompletionEvent_GraphEmitFinalModelResponses_DedupsVisibleCompletionWhenResponseIDEmpty(
+	t *testing.T,
+) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddLLMNode(
+			"n1",
+			&emptyIDGraphAgentModel{name: "m-empty", content: "answer"},
+			"i1",
+			nil,
+		).
+		SetEntryPoint("n1").
+		SetFinishPoint("n1").
+		Compile()
+	require.NoError(t, err)
+	ga, err := New("test-hidden-completion-dedup-empty-id", g)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent:  true,
+			GraphEmitFinalModelResponses: true,
+		}),
+	)
+	events, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+
+	var assistantResponses int
+	var visibleEvent *event.Event
+	for evt := range events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if evt != nil && evt.Response != nil && len(evt.Response.Choices) > 0 && len(evt.StateDelta) == 0 {
+			require.Len(t, evt.Response.Choices, 1)
+			require.Equal(t, "answer", evt.Response.Choices[0].Message.Content)
+			assistantResponses++
+		}
+		if graph.IsVisibleGraphCompletionEvent(evt) {
+			visibleEvent = evt
+		}
+	}
+
 	require.Equal(t, 1, assistantResponses)
 	require.NotNil(t, visibleEvent)
 	require.Empty(t, visibleEvent.Response.Choices)
