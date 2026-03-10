@@ -59,7 +59,10 @@ func IsGraphCompletionEvent(evt *event.Event) bool {
 }
 
 func isGraphCompletionEvent(evt *event.Event) bool {
-	return evt != nil && evt.Done && evt.Object == ObjectTypeGraphExecution
+	return evt != nil &&
+		evt.Response != nil &&
+		evt.Response.Done &&
+		evt.Response.Object == ObjectTypeGraphExecution
 }
 
 // IsVisibleGraphCompletionEvent reports whether the event is a caller-visible
@@ -69,10 +72,10 @@ func IsVisibleGraphCompletionEvent(evt *event.Event) bool {
 }
 
 func isVisibleGraphCompletionEvent(evt *event.Event) bool {
-	if evt == nil || !evt.Done || evt.Object != model.ObjectTypeChatCompletion {
-		return false
-	}
-	if evt.Response == nil || evt.Response.Object != model.ObjectTypeChatCompletion {
+	if evt == nil ||
+		evt.Response == nil ||
+		!evt.Response.Done ||
+		evt.Response.Object != model.ObjectTypeChatCompletion {
 		return false
 	}
 	metadata, ok := evt.StateDelta[MetadataKeyCompletion]

@@ -1360,6 +1360,40 @@ func TestRunner_DisableGraphCompletionEvent_StreamModeUpdates_KeepsFinalTextInRu
 	require.Equal(t, "child-final", completion.Response.Choices[0].Message.Content)
 }
 
+func TestRunner_DisableGraphCompletionEvent_StreamModeUpdates_WithFinalModelResponses_KeepsFinalTextInRunnerCompletion(t *testing.T) {
+	child := newWrappedGraphLLMChildAgent(t)
+	svc := sessioninmemory.NewSessionService()
+	r := NewRunner(
+		"app",
+		chainagent.New("chain", chainagent.WithSubAgents([]agent.Agent{child})),
+		WithSessionService(svc),
+	)
+	ch, err := r.Run(
+		context.Background(),
+		"u",
+		"updates-mode-final-model",
+		model.NewUserMessage("hi"),
+		agent.WithDisableGraphCompletionEvent(true),
+		agent.WithGraphEmitFinalModelResponses(true),
+		agent.WithStreamMode(agent.StreamModeUpdates),
+	)
+	require.NoError(t, err)
+
+	var completion *event.Event
+	for evt := range ch {
+		require.NotEqual(t, model.ObjectTypeChatCompletion, evt.Object)
+		if evt.IsRunnerCompletion() {
+			completion = evt
+		}
+	}
+
+	require.NotNil(t, completion)
+	require.NotNil(t, completion.StateDelta)
+	require.Equal(t, `"wrapped-final"`, string(completion.StateDelta[graph.StateKeyLastResponse]))
+	require.Len(t, completion.Response.Choices, 1)
+	require.Equal(t, "wrapped-final", completion.Response.Choices[0].Message.Content)
+}
+
 func newWrappedGraphChildAgent(t *testing.T) agent.Agent {
 	t.Helper()
 	sg := graph.NewStateGraph(graph.MessagesStateSchema())
@@ -2539,12 +2573,12 @@ func TestShouldEchoFinalChoicesInCompletion_Cases(t *testing.T) {
 	rr := NewRunner(appName, &noOpAgent{name: agentName}).(*runner)
 
 	t.Run("nil loop", func(t *testing.T) {
-		require.True(t, rr.shouldEchoFinalChoicesInCompletion(nil))
+		require.True(t, rr.shouldEchoFinalChoicesInCompletion(nil, nil, nil))
 	})
 
 	t.Run("no final choices", func(t *testing.T) {
 		loop := &eventLoopContext{finalChoices: nil}
-		require.False(t, rr.shouldEchoFinalChoicesInCompletion(loop))
+		require.False(t, rr.shouldEchoFinalChoicesInCompletion(loop, nil, nil))
 	})
 
 	t.Run("legacy always includes", func(t *testing.T) {
@@ -2564,7 +2598,11 @@ func TestShouldEchoFinalChoicesInCompletion_Cases(t *testing.T) {
 				responseID: {},
 			},
 		}
-		require.True(t, rr.shouldEchoFinalChoicesInCompletion(loop))
+		require.True(t, rr.shouldEchoFinalChoicesInCompletion(
+			loop,
+			loop.finalChoices,
+			loop.finalStateDelta,
+		))
 	})
 
 	t.Run("new mode missing final id includes", func(t *testing.T) {
@@ -2578,7 +2616,11 @@ func TestShouldEchoFinalChoicesInCompletion_Cases(t *testing.T) {
 				Message: model.NewAssistantMessage(content),
 			}},
 		}
-		require.True(t, rr.shouldEchoFinalChoicesInCompletion(loop))
+		require.True(t, rr.shouldEchoFinalChoicesInCompletion(
+			loop,
+			loop.finalChoices,
+			loop.finalStateDelta,
+		))
 	})
 
 	t.Run("new mode duplicate id excluded", func(t *testing.T) {
@@ -2598,7 +2640,11 @@ func TestShouldEchoFinalChoicesInCompletion_Cases(t *testing.T) {
 				responseID: {},
 			},
 		}
-		require.False(t, rr.shouldEchoFinalChoicesInCompletion(loop))
+		require.False(t, rr.shouldEchoFinalChoicesInCompletion(
+			loop,
+			loop.finalChoices,
+			loop.finalStateDelta,
+		))
 	})
 
 	t.Run("new mode id not seen includes", func(t *testing.T) {
@@ -2615,7 +2661,11 @@ func TestShouldEchoFinalChoicesInCompletion_Cases(t *testing.T) {
 				graph.StateKeyLastResponseID: []byte(responseIDJSON),
 			},
 		}
-		require.True(t, rr.shouldEchoFinalChoicesInCompletion(loop))
+		require.True(t, rr.shouldEchoFinalChoicesInCompletion(
+			loop,
+			loop.finalChoices,
+			loop.finalStateDelta,
+		))
 	})
 }
 

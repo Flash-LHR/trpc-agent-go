@@ -410,25 +410,14 @@ func assistantMessageContent(evt *event.Event) (string, bool) {
 	return message.Content, true
 }
 
-func graphCompletionResult(evt *event.Event) (string, bool) {
-	if !isGraphCompletionEvent(evt) || evt.Response == nil || len(evt.Response.Choices) == 0 {
-		return "", false
-	}
-	message := evt.Response.Choices[0].Message
-	if message.Role != model.RoleAssistant || message.Content == "" {
-		return "", false
-	}
-	return message.Content, true
-}
-
 func graphCompletionFinalChunk(evt *event.Event) (tool.FinalResultChunk, bool) {
-	if !isGraphCompletionEvent(evt) {
+	if !isGraphCompletionSnapshotEvent(evt) {
 		return tool.FinalResultChunk{}, false
 	}
 	chunk := tool.FinalResultChunk{
 		StateDelta: cloneStateDelta(evt.StateDelta),
 	}
-	if result, ok := graphCompletionResult(evt); ok {
+	if result, ok := assistantMessageContent(evt); ok {
 		chunk.Result = result
 	}
 	if chunk.Result == nil && len(chunk.StateDelta) == 0 {
@@ -575,13 +564,16 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 			var sawGraphCompletionSnapshot bool
 			var overrideResult string
 			for ev := range wrapped {
-				if subInv.RunOptions.DisableGraphCompletionEvent && isGraphCompletionEvent(ev) {
+				if subInv.RunOptions.DisableGraphCompletionEvent &&
+					isGraphCompletionSnapshotEvent(ev) {
 					if chunk, ok := graphCompletionFinalChunk(ev); ok {
 						pendingChunk := chunk
 						pendingCompletionChunk = &pendingChunk
 						sawGraphCompletionSnapshot = true
 					}
-					continue
+					if isGraphCompletionEvent(ev) {
+						continue
+					}
 				}
 				graphCompletionSnapshot := isGraphCompletionSnapshotEvent(ev)
 				if graphCompletionSnapshot {

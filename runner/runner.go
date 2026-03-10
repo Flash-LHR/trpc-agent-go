@@ -668,6 +668,8 @@ type eventLoopContext struct {
 	runHandle           *runHandle
 	finalStateDelta     map[string][]byte
 	finalChoices        []model.Choice
+	fallbackChoices     []model.Choice
+	fallbackResponseID  string
 	fallbackStateDelta  map[string][]byte
 	finalError          *model.ResponseError
 	graphCompletionSeen bool
@@ -774,8 +776,6 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 		return nil
 	}
 
-	r.recordEmittedAssistantResponseID(loop, agentEvent)
-
 	// Capture graph-level completion snapshot for final event.
 	if isGraphCompletionSnapshotEvent(agentEvent) {
 		loop.graphCompletionSeen = true
@@ -800,6 +800,7 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 		return nil
 	}
 
+	r.recordEmittedAssistantResponseID(loop, agentEvent)
 	if graph.IsVisibleGraphCompletionEvent(agentEvent) &&
 		eventHasAssistantMessageContent(agentEvent) {
 		loop.visibleCompletionChoicesEmitted = true
@@ -1087,6 +1088,12 @@ func (r *runner) captureCompletionFallback(
 		loop.finalStateDelta = nil
 		loop.finalChoices = nil
 	}
+	if !graphCompletionEvent &&
+		len(agentEvent.Response.Choices) > 0 &&
+		eventHasAssistantMessageContent(agentEvent) {
+		loop.fallbackChoices = cloneChoices(agentEvent.Response.Choices)
+		loop.fallbackResponseID = agentEvent.Response.ID
+	}
 	// The last non-partial response wins so the completion event reflects
 	// the terminal outcome seen by the runner.
 	loop.finalError = cloneResponseError(agentEvent.Response.Error)
@@ -1210,14 +1217,19 @@ func (r *runner) emitRunnerCompletion(ctx context.Context, loop *eventLoopContex
 	if len(finalStateDelta) == 0 && propagateFallbackState {
 		finalStateDelta = loop.fallbackStateDelta
 	}
+	finalChoices := r.completionChoicesForRunner(loop, finalStateDelta)
 
 	// Propagate graph-level completion data if available.
 	if len(finalStateDelta) > 0 {
-		echoFinalChoices := r.shouldEchoFinalChoicesInCompletion(loop)
+		echoFinalChoices := r.shouldEchoFinalChoicesInCompletion(
+			loop,
+			finalChoices,
+			finalStateDelta,
+		)
 		r.propagateGraphCompletion(
 			runnerCompletionEvent,
 			finalStateDelta,
-			loop.finalChoices,
+			finalChoices,
 			echoFinalChoices,
 		)
 	}
@@ -1266,6 +1278,23 @@ func (r *runner) propagateGraphCompletion(
 	}
 }
 
+func (r *runner) completionChoicesForRunner(
+	loop *eventLoopContext,
+	finalStateDelta map[string][]byte,
+) []model.Choice {
+	if loop == nil {
+		return nil
+	}
+	if len(loop.finalChoices) > 0 {
+		return loop.finalChoices
+	}
+	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)
+	if finalResponseID == "" || finalResponseID != loop.fallbackResponseID {
+		return nil
+	}
+	return loop.fallbackChoices
+}
+
 // shouldEchoFinalChoicesInCompletion decides whether Runner should copy the
 // graph's final assistant message into the runner-completion event.
 //
@@ -1279,11 +1308,13 @@ func (r *runner) propagateGraphCompletion(
 // (ID) to a response ID that was already emitted, avoiding duplicates.
 func (r *runner) shouldEchoFinalChoicesInCompletion(
 	loop *eventLoopContext,
+	finalChoices []model.Choice,
+	finalStateDelta map[string][]byte,
 ) bool {
 	if loop == nil {
 		return true
 	}
-	if len(loop.finalChoices) == 0 {
+	if len(finalChoices) == 0 {
 		return false
 	}
 	if loop.visibleCompletionChoicesEmitted {
@@ -1297,13 +1328,23 @@ func (r *runner) shouldEchoFinalChoicesInCompletion(
 		return true
 	}
 
-	finalResponseID := finalResponseIDFromStateDelta(loop.finalStateDelta)
+	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)
 	if finalResponseID == "" {
 		return true
 	}
 
 	_, alreadyEmitted := loop.emittedAssistantResponseIDs[finalResponseID]
 	return !alreadyEmitted
+}
+
+func cloneChoices(choices []model.Choice) []model.Choice {
+	if len(choices) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(choices)
+	var cloned []model.Choice
+	_ = json.Unmarshal(b, &cloned)
+	return cloned
 }
 
 func finalResponseIDFromStateDelta(finalStateDelta map[string][]byte) string {
