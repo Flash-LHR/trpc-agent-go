@@ -3920,12 +3920,36 @@ func (e *errStreamTool) StreamableCall(ctx context.Context, _ []byte) (*tool.Str
 	return nil, fmt.Errorf("stream call error")
 }
 
+type recvErrStreamTool struct{ name string }
+
+func (e *recvErrStreamTool) Declaration() *tool.Declaration { return &tool.Declaration{Name: e.name} }
+func (e *recvErrStreamTool) StreamableCall(ctx context.Context, _ []byte) (*tool.StreamReader, error) {
+	st := tool.NewStream(1)
+	go func() {
+		defer st.Writer.Close()
+		_ = st.Writer.Send(tool.StreamChunk{}, errors.New("stream recv error"))
+	}()
+	return st.Reader, nil
+}
+
 func TestExecuteStreamableTool_StreamableCallError(t *testing.T) {
 	f := NewFunctionCallResponseProcessor(false, nil)
 	ctx := context.Background()
 	inv := &agent.Invocation{InvocationID: "inv-s", AgentName: "tester", Branch: "b", Model: &mockModel{}}
 	tc := model.ToolCall{ID: "x", Function: model.FunctionDefinitionParam{Name: "s"}}
 	st := &errStreamTool{name: "s"}
+	ch := make(chan *event.Event, 1)
+	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.Error(t, err)
+	require.Nil(t, res)
+}
+
+func TestExecuteStreamableTool_StreamReaderError(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{InvocationID: "inv-sr", AgentName: "tester", Branch: "b", Model: &mockModel{}}
+	tc := model.ToolCall{ID: "x", Function: model.FunctionDefinitionParam{Name: "s"}}
+	st := &recvErrStreamTool{name: "s"}
 	ch := make(chan *event.Event, 1)
 	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.Error(t, err)

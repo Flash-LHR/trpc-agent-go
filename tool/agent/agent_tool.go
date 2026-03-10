@@ -551,8 +551,10 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 
 		if ok && parentInv != nil && parentInv.Session != nil {
 			if err := flush.Invoke(ctx, parentInv); err != nil {
-				err := fmt.Errorf("flush parent invocation session failed: %w", err)
-				stream.Writer.Send(tool.StreamChunk{Content: err.Error()}, err)
+				_ = stream.Writer.Send(
+					tool.StreamChunk{},
+					fmt.Errorf("flush parent invocation session failed: %w", err),
+				)
 				return
 			}
 			childKey := at.buildChildFilterKey(parentInv)
@@ -570,7 +572,10 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 			)
 			evCh, err := agent.RunWithPlugins(subCtx, subInv, at.agent)
 			if err != nil {
-				_ = stream.Writer.Send(tool.StreamChunk{Content: fmt.Sprintf("agent tool run error: %v", err)}, nil)
+				_ = stream.Writer.Send(
+					tool.StreamChunk{},
+					fmt.Errorf("agent tool run error: %w", err),
+				)
 				return
 			}
 			wrapped := at.wrapWithStreamSemantics(subCtx, subInv, evCh)
@@ -642,7 +647,10 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 		)
 		evCh, err := r.Run(ctx, "tool_user", "tool_session", message)
 		if err != nil {
-			_ = stream.Writer.Send(tool.StreamChunk{Content: fmt.Sprintf("agent tool run error: %v", err)}, nil)
+			_ = stream.Writer.Send(
+				tool.StreamChunk{},
+				fmt.Errorf("agent tool run error: %w", err),
+			)
 			return
 		}
 		for ev := range evCh {

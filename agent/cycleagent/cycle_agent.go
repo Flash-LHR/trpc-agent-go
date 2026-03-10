@@ -211,6 +211,9 @@ func (a *CycleAgent) runSubAgent(
 				if err := event.EmitEvent(ctx, eventChan, visibleEvent); err != nil {
 					return true
 				}
+				if visibleEvent.Response != nil && !visibleEvent.Response.IsPartial {
+					*fullRespEvent = visibleEvent
+				}
 				emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
 					emittedAssistantResponseIDs,
 					visibleEvent,

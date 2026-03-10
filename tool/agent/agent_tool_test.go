@@ -2013,20 +2013,14 @@ func TestTool_Call_RunError(t *testing.T) {
 	}
 }
 
-func TestTool_StreamableCall_RunErrorEmitsChunk(t *testing.T) {
+func TestTool_StreamableCall_RunErrorReturnsStreamError(t *testing.T) {
 	at := NewTool(&errorMockAgent{name: "err-agent"}, WithStreamInner(true))
 	r, err := at.StreamableCall(context.Background(), []byte(`{}`))
-	if err != nil {
-		t.Fatalf("unexpected StreamableCall error: %v", err)
-	}
+	require.NoError(t, err)
 	defer r.Close()
-	ch, err := r.Recv()
-	if err != nil {
-		t.Fatalf("unexpected stream read error: %v", err)
-	}
-	if s, ok := ch.Content.(string); !ok || !strings.Contains(s, "agent tool run error") {
-		t.Fatalf("expected error chunk, got: %#v", ch.Content)
-	}
+	_, err = r.Recv()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "agent tool run error")
 }
 
 // agentWithSchemaMock returns input/output schema maps in Info()
@@ -2151,26 +2145,31 @@ func TestTool_StreamableCall_WithParentInvocation_RunError(t *testing.T) {
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 
 	r, err := at.StreamableCall(ctx, []byte(`{}`))
-	if err != nil {
-		t.Fatalf("unexpected StreamableCall error: %v", err)
-	}
+	require.NoError(t, err)
+	defer r.Close()
+	_, err = r.Recv()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "agent tool run error")
+}
+
+func TestTool_StreamableCall_WithParentInvocation_FlushError(t *testing.T) {
+	at := NewTool(&mockAgent{name: "test-agent", description: "desc"}, WithStreamInner(true))
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
+		agent.WithInvocationEventFilterKey("parent"),
+	)
+	flush.Attach(context.Background(), parent, make(chan *flush.FlushRequest))
+	baseCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ctx := agent.NewInvocationContext(baseCtx, parent)
+
+	r, err := at.StreamableCall(ctx, []byte(`{}`))
+	require.NoError(t, err)
 	defer r.Close()
 
-	// First chunk might be the tool input event, second should be error
-	var foundError bool
-	for i := 0; i < 2; i++ {
-		ch, err := r.Recv()
-		if err != nil {
-			break
-		}
-		if s, ok := ch.Content.(string); ok && strings.Contains(s, "agent tool run error") {
-			foundError = true
-			break
-		}
-	}
-	if !foundError {
-		t.Fatalf("expected to find error chunk in stream")
-	}
+	_, err = r.Recv()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "flush parent invocation session")
 }
 
 func TestTool_StreamableCall_EmptyMessage(t *testing.T) {

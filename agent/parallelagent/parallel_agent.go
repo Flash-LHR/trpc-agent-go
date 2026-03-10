@@ -325,6 +325,11 @@ func (a *ParallelAgent) mergeEventStreams(
 						if err := event.EmitEvent(ctx, outputChan, visibleEvent); err != nil {
 							return
 						}
+						if visibleEvent.Response != nil && !visibleEvent.Response.IsPartial {
+							mu.Lock()
+							*fullRespEvent = visibleEvent
+							mu.Unlock()
+						}
 						emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
 							emittedAssistantResponseIDs,
 							visibleEvent,

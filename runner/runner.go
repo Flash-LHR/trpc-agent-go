@@ -1441,7 +1441,6 @@ func assistantChoiceSignature(choices []model.Choice) string {
 		return ""
 	}
 	type signatureChoice struct {
-		Index   int        `json:"index"`
 		Role    model.Role `json:"role"`
 		Content string     `json:"content"`
 	}
@@ -1452,7 +1451,6 @@ func assistantChoiceSignature(choices []model.Choice) string {
 			continue
 		}
 		signatureChoices = append(signatureChoices, signatureChoice{
-			Index:   choice.Index,
 			Role:    choice.Message.Role,
 			Content: choice.Message.Content,
 		})

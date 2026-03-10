@@ -423,6 +423,9 @@ func (ga *GraphAgent) wrapEventChannel(
 					if err := event.EmitEvent(ctx, wrappedChan, visibleEvent); err != nil {
 						return
 					}
+					if visibleEvent.Response != nil && !visibleEvent.Response.IsPartial {
+						fullRespEvent = visibleEvent
+					}
 					emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
 						emittedAssistantResponseIDs,
 						visibleEvent,

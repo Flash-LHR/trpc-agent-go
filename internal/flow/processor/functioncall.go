@@ -1401,7 +1401,7 @@ func (f *FunctionCallResponseProcessor) consumeStream(
 				toolCall.Function.Name,
 				err,
 			)
-			break
+			return nil, streamFinalResult{}, err
 		}
 
 		if err := f.processStreamChunk(

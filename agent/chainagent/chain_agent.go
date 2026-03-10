@@ -229,6 +229,9 @@ func (a *ChainAgent) executeSubAgents(
 					if err := event.EmitEvent(ctx, eventChan, visibleEvent); err != nil {
 						return nil, tokenUsage
 					}
+					if visibleEvent.Response != nil && !visibleEvent.Response.IsPartial {
+						fullRespEvent = visibleEvent
+					}
 					emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
 						emittedAssistantResponseIDs,
 						visibleEvent,

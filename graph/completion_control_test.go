@@ -48,6 +48,7 @@ func TestVisibleGraphCompletionEventWithDedup_DedupsByAssistantChoicesWhenRespon
 			Object: model.ObjectTypeChatCompletion,
 			Done:   true,
 			Choices: []model.Choice{{
+				Index:        1,
 				Message:      model.NewAssistantMessage("answer"),
 				FinishReason: &finishReason,
 			}},

@@ -1352,6 +1352,89 @@ func TestRunner_DisableGraphCompletionEvent_KeepsRunnerCompletionWithWrappedGrap
 	}
 }
 
+func TestWrappedAgents_DisableGraphCompletionEvent_AfterCallbackSeesVisibleCompletion(
+	t *testing.T,
+) {
+	tests := []struct {
+		name  string
+		build func(child agent.Agent, callbacks *agent.Callbacks) agent.Agent
+	}{
+		{
+			name: "chain",
+			build: func(child agent.Agent, callbacks *agent.Callbacks) agent.Agent {
+				return chainagent.New(
+					"chain",
+					chainagent.WithSubAgents([]agent.Agent{child}),
+					chainagent.WithAgentCallbacks(callbacks),
+				)
+			},
+		},
+		{
+			name: "cycle",
+			build: func(child agent.Agent, callbacks *agent.Callbacks) agent.Agent {
+				return cycleagent.New(
+					"cycle",
+					cycleagent.WithSubAgents([]agent.Agent{child}),
+					cycleagent.WithMaxIterations(1),
+					cycleagent.WithAgentCallbacks(callbacks),
+				)
+			},
+		},
+		{
+			name: "parallel",
+			build: func(child agent.Agent, callbacks *agent.Callbacks) agent.Agent {
+				return parallelagent.New(
+					"parallel",
+					parallelagent.WithSubAgents([]agent.Agent{child}),
+					parallelagent.WithAgentCallbacks(callbacks),
+				)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			callbacks := agent.NewCallbacks()
+			callbacks.RegisterAfterAgent(func(
+				ctx context.Context,
+				args *agent.AfterAgentArgs,
+			) (*agent.AfterAgentResult, error) {
+				if args.FullResponseEvent != nil &&
+					graph.IsVisibleGraphCompletionEvent(args.FullResponseEvent) {
+					return &agent.AfterAgentResult{
+						CustomResponse: &model.Response{
+							Object: "after.custom",
+							Done:   true,
+							Choices: []model.Choice{{
+								Message: model.NewAssistantMessage("after callback"),
+							}},
+						},
+					}, nil
+				}
+				return nil, nil
+			})
+			child := newWrappedGraphChildAgent(t)
+			ag := tt.build(child, callbacks)
+			inv := agent.NewInvocation(
+				agent.WithInvocationMessage(model.NewUserMessage("hi")),
+				agent.WithInvocationRunOptions(agent.RunOptions{
+					DisableGraphCompletionEvent: true,
+				}),
+			)
+			ch, err := ag.Run(context.Background(), inv)
+			require.NoError(t, err)
+
+			var sawAfterCustom bool
+			for evt := range ch {
+				if evt.Object == "after.custom" {
+					sawAfterCustom = true
+				}
+			}
+
+			require.True(t, sawAfterCustom)
+		})
+	}
+}
+
 func TestRunner_DisableGraphCompletionEvent_StreamModeUpdates_KeepsFinalTextInRunnerCompletion(t *testing.T) {
 	child := newWrappedGraphChildAgent(t)
 	svc := sessioninmemory.NewSessionService()
