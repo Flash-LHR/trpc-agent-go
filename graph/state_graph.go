@@ -3360,12 +3360,19 @@ func hasAfterModelCallbacks(
 	invocation *agent.Invocation,
 	modelCallbacks *model.Callbacks,
 ) bool {
-	if modelCallbacks != nil {
+	if hasRegisteredAfterModelCallbacks(modelCallbacks) {
 		return true
 	}
-	return invocation != nil &&
-		invocation.Plugins != nil &&
-		invocation.Plugins.ModelCallbacks() != nil
+	if invocation == nil || invocation.Plugins == nil {
+		return false
+	}
+	return hasRegisteredAfterModelCallbacks(
+		invocation.Plugins.ModelCallbacks(),
+	)
+}
+
+func hasRegisteredAfterModelCallbacks(callbacks *model.Callbacks) bool {
+	return callbacks != nil && len(callbacks.AfterModel) > 0
 }
 
 func nextReusableModelEvent(

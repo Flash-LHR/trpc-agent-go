@@ -28,6 +28,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/plugin"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	semconvmetrics "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/metrics"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -371,6 +372,60 @@ func TestNewModelResponseProcessor_FastPathWhenOnlyOnePartialToggleIsDisabled(t 
 					NodeID:       "llm",
 				},
 				invocation,
+				&runErr,
+			)
+			require.True(t, processor.fastResponsePath)
+		})
+	}
+}
+
+func TestNewModelResponseProcessor_FastPathWithBeforeModelCallbacksOnly(t *testing.T) {
+	tests := []struct {
+		name           string
+		invocation     *agent.Invocation
+		modelCallbacks *model.Callbacks
+	}{
+		{
+			name: "local before model callbacks only",
+			invocation: agent.NewInvocation(
+				agent.WithInvocationID("inv-local-before-only"),
+			),
+			modelCallbacks: model.NewCallbacks().RegisterBeforeModel(
+				func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
+					return &model.BeforeModelResult{}, nil
+				},
+			),
+		},
+		{
+			name: "plugin before model callbacks only",
+			invocation: agent.NewInvocation(
+				agent.WithInvocationID("inv-plugin-before-only"),
+				agent.WithInvocationPlugins(plugin.MustNewManager(&hookPlugin{
+					name: "before-only",
+					reg: func(r *plugin.Registry) {
+						r.BeforeModel(func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
+							return &model.BeforeModelResult{}, nil
+						})
+					},
+				})),
+			),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var runErr error
+			processor := newModelResponseProcessor(
+				context.Background(),
+				modelExecutionConfig{
+					Invocation:     tt.invocation,
+					InvocationID:   tt.invocation.InvocationID,
+					ModelCallbacks: tt.modelCallbacks,
+					EventChan:      make(chan *event.Event, 1),
+					Request:        &model.Request{},
+					Span:           noop.Span{},
+					NodeID:         "llm",
+				},
+				tt.invocation,
 				&runErr,
 			)
 			require.True(t, processor.fastResponsePath)
