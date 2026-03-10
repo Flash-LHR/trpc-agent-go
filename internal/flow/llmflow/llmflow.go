@@ -906,6 +906,9 @@ func (f *Flow) generateContentSeq(
 			)
 			return nil, err
 		}
+		if seq == nil {
+			return func(yield func(*model.Response) bool) {}, nil
+		}
 		return seq, nil
 	}
 

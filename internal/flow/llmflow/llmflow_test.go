@@ -367,6 +367,7 @@ func TestProcessStreamingResponses_PreservesTimingInfoWhenInvocationChanges(t *t
 	responseSeq := func(yield func(*model.Response) bool) {
 		time.Sleep(time.Millisecond)
 		yield(response1)
+		time.Sleep(time.Millisecond)
 		yield(response2)
 		yield(response3)
 	}
@@ -446,6 +447,7 @@ func TestProcessStreamingResponses_PreservesReasoningTimingWhenInvocationChanges
 	responseSeq := func(yield func(*model.Response) bool) {
 		time.Sleep(time.Millisecond)
 		yield(response1)
+		time.Sleep(time.Millisecond)
 		yield(response2)
 		yield(response3)
 	}
@@ -1043,6 +1045,25 @@ func TestFlow_GenerateContentSeq_IterModelError(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, seq)
 	require.True(t, iterModel.GenerateContentIterCalled)
+}
+
+func TestFlow_GenerateContentSeq_NilIterModel(t *testing.T) {
+	f := New(nil, nil, Options{})
+	iterModel := &mockIterModel{}
+	inv := agent.NewInvocation(agent.WithInvocationModel(iterModel))
+
+	seq, err := f.generateContentSeq(context.Background(), inv, &model.Request{})
+	require.NoError(t, err)
+	require.NotNil(t, seq)
+	require.True(t, iterModel.GenerateContentIterCalled)
+	require.False(t, iterModel.GenerateContentCalled)
+
+	var responses []*model.Response
+	seq(func(resp *model.Response) bool {
+		responses = append(responses, resp)
+		return true
+	})
+	require.Empty(t, responses)
 }
 
 func TestFlow_CallLLM_MaxLLMCallsExceeded(t *testing.T) {

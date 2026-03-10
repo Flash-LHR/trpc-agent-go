@@ -90,6 +90,22 @@ func (m *iterErrorModel) Info() model.Info {
 	return model.Info{Name: "iter-error-model"}
 }
 
+type nilIterModel struct{}
+
+func (m *nilIterModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
+	ch := make(chan *model.Response)
+	close(ch)
+	return ch, nil
+}
+
+func (m *nilIterModel) GenerateContentIter(ctx context.Context, req *model.Request) (model.Seq[*model.Response], error) {
+	return nil, nil
+}
+
+func (m *nilIterModel) Info() model.Info {
+	return model.Info{Name: "nil-iter-model"}
+}
+
 type noResponseModel struct{}
 
 func (m *noResponseModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
@@ -277,6 +293,21 @@ func TestRunModelStream_IterModelError(t *testing.T) {
 	)
 	require.ErrorIs(t, err, iterErr)
 	require.ErrorContains(t, err, "failed to generate content")
+}
+
+func TestExecuteModelAndProcessResponses_NilIterSequence(t *testing.T) {
+	resp, err := executeModelAndProcessResponses(
+		context.Background(),
+		modelExecutionConfig{
+			LLMModel:     &nilIterModel{},
+			Request:      &model.Request{},
+			InvocationID: "inv-nil-iter",
+			Span:         noop.Span{},
+			NodeID:       "llm",
+		},
+	)
+	require.Nil(t, resp)
+	require.ErrorContains(t, err, errMsgNoModelResponse)
 }
 
 func TestEmitFastModelResponseEvent_DisablesPartialMetadata(t *testing.T) {

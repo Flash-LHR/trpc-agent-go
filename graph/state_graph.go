@@ -3624,6 +3624,9 @@ func (p *modelResponseProcessor) consume(stream modelResponseStream) error {
 		}
 		return nil
 	}
+	if stream.Seq == nil {
+		return nil
+	}
 
 	var streamErr error
 	stream.Seq(func(response *model.Response) bool {
