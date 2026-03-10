@@ -482,10 +482,10 @@ func MergeReducer(existing, update any) any {
 	}
 
 	if len(existingMap) == 0 {
-		return deepCopyAny(updateMap)
+		return cloneMergedMap(updateMap)
 	}
 	if len(updateMap) == 0 {
-		return deepCopyAny(existingMap)
+		return cloneMergedMap(existingMap)
 	}
 
 	result := make(map[string]any, len(existingMap)+len(updateMap))
@@ -496,6 +496,13 @@ func MergeReducer(existing, update any) any {
 		result[k] = deepCopyAny(v)
 	}
 	return result
+}
+
+func cloneMergedMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return map[string]any{}
+	}
+	return deepCopyMapStringAny(in)
 }
 
 // OneShotMessagesByNodeReducer merges targeted one-shot inputs scoped by node

@@ -526,6 +526,14 @@ func TestMergeReducerAndMessageReducerCoveragePaths(t *testing.T) {
 	right := map[string]any{"b": 2}
 	require.Equal(t, right, MergeReducer(map[string]any{}, right))
 	require.Equal(t, left, MergeReducer(left, map[string]any{}))
+	typedNilRight, ok := MergeReducer(map[string]any{}, map[string]any(nil)).(map[string]any)
+	require.True(t, ok)
+	require.NotNil(t, typedNilRight)
+	require.Empty(t, typedNilRight)
+	typedNilLeft, ok := MergeReducer(map[string]any(nil), map[string]any{}).(map[string]any)
+	require.True(t, ok)
+	require.NotNil(t, typedNilLeft)
+	require.Empty(t, typedNilLeft)
 
 	existing := []model.Message{
 		model.NewAssistantMessage("a1"),
