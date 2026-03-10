@@ -288,8 +288,23 @@ func isMessageReducer(reducer StateReducer) bool {
 	return reflect.ValueOf(reducer).Pointer() == messageReducerPtr
 }
 
+func messageReducerCanUseRawMessageOp(op MessageOp) bool {
+	switch op.(type) {
+	case nil:
+		return true
+	case AppendMessages:
+		return true
+	case ReplaceLastUser:
+		return true
+	case RemoveAllMessages:
+		return true
+	default:
+		return false
+	}
+}
+
 func messageReducerCanUseRawUpdate(update any) bool {
-	switch update.(type) {
+	switch v := update.(type) {
 	case nil:
 		return true
 	case model.Message:
@@ -303,8 +318,13 @@ func messageReducerCanUseRawUpdate(update any) bool {
 	case RemoveAllMessages:
 		return true
 	case MessageOp:
-		return true
+		return messageReducerCanUseRawMessageOp(v)
 	case []MessageOp:
+		for _, op := range v {
+			if !messageReducerCanUseRawMessageOp(op) {
+				return false
+			}
+		}
 		return true
 	default:
 		return false

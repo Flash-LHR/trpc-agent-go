@@ -49,6 +49,17 @@ func (o benchmarkAppendMessageOp) Apply(dst []model.Message) []model.Message {
 	return append(dst, o.msg)
 }
 
+type mutatingReceiverMessageOp struct {
+	Applied int
+	Out     []model.Message
+}
+
+func (o *mutatingReceiverMessageOp) Apply(_ []model.Message) []model.Message {
+	o.Applied++
+	o.Out[0].Content = fmt.Sprintf("mutated-%d", o.Applied)
+	return o.Out
+}
+
 func buildBenchmarkMessages(n int) []model.Message {
 	msgs := make([]model.Message, n)
 	for i := range msgs {
@@ -948,6 +959,36 @@ func TestStateSchemaApplyUpdate_MessageReducerSemantics(t *testing.T) {
 		require.NotNil(t, out[0].ContentParts[0].Text)
 		assert.Equal(t, "direct-update-part", *out[0].ContentParts[0].Text)
 		assert.Equal(t, byte('d'), out[0].ToolCalls[0].Function.Arguments[0])
+	})
+	t.Run("custom message op does not mutate update", func(t *testing.T) {
+		schema := buildSchema()
+		update := &mutatingReceiverMessageOp{
+			Out: []model.Message{buildMessage("custom-op")},
+		}
+		next := schema.ApplyUpdate(State{"messages": []model.Message{}}, State{
+			"messages": MessageOp(update),
+		})
+		out, ok := next["messages"].([]model.Message)
+		require.True(t, ok)
+		require.Len(t, out, 1)
+		assert.Equal(t, "mutated-1", out[0].Content)
+		assert.Equal(t, 0, update.Applied)
+		assert.Equal(t, "custom-op", update.Out[0].Content)
+	})
+	t.Run("custom message op batch does not mutate update", func(t *testing.T) {
+		schema := buildSchema()
+		update := &mutatingReceiverMessageOp{
+			Out: []model.Message{buildMessage("custom-batch")},
+		}
+		next := schema.ApplyUpdate(State{"messages": []model.Message{}}, State{
+			"messages": []MessageOp{update},
+		})
+		out, ok := next["messages"].([]model.Message)
+		require.True(t, ok)
+		require.Len(t, out, 1)
+		assert.Equal(t, "mutated-1", out[0].Content)
+		assert.Equal(t, 0, update.Applied)
+		assert.Equal(t, "custom-batch", update.Out[0].Content)
 	})
 }
 
