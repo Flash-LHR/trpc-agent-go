@@ -366,9 +366,7 @@ func (f *Flow) processStreamingResponses(
 	var timingInfo *model.TimingInfo
 	var partialUsageFallback *model.Usage
 	if currentInvocation != nil {
-		if !currentInvocation.RunOptions.DisableResponseUsageTracking {
-			timingInfo = currentInvocation.GetOrCreateTimingInfo()
-		}
+		timingInfo = responseUsageTimingInfo(currentInvocation)
 		tracker = itelemetry.NewChatMetricsTracker(
 			ctx,
 			currentInvocation,
@@ -385,6 +383,7 @@ func (f *Flow) processStreamingResponses(
 			ctx,
 			currentInvocation,
 		)
+		timingInfo = responseUsageTimingInfo(currentInvocation)
 		trackModelResponseTelemetry(
 			response,
 			tracker,
@@ -559,6 +558,13 @@ func attachResponseUsageTiming(
 		}
 	}
 	response.Usage.TimingInfo = timingInfo
+}
+
+func responseUsageTimingInfo(invocation *agent.Invocation) *model.TimingInfo {
+	if invocation == nil || invocation.RunOptions.DisableResponseUsageTracking {
+		return nil
+	}
+	return invocation.GetOrCreateTimingInfo()
 }
 
 func applyPartialEventMetadataOverrides(

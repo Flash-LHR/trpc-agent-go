@@ -102,6 +102,23 @@ func (m *noResponseModel) Info() model.Info {
 	return model.Info{Name: "no-response-model"}
 }
 
+type multiResponseModel struct {
+	responses []*model.Response
+}
+
+func (m *multiResponseModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
+	ch := make(chan *model.Response, len(m.responses))
+	for _, response := range m.responses {
+		ch <- response
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *multiResponseModel) Info() model.Info {
+	return model.Info{Name: "multi-response-model"}
+}
+
 func (a *stubAgent) Run(
 	ctx context.Context,
 	inv *agent.Invocation,
@@ -230,6 +247,7 @@ func TestRunModelStream_IterModelError(t *testing.T) {
 		nil,
 		&iterErrorModel{err: iterErr},
 		&model.Request{},
+		nil,
 	)
 	require.ErrorIs(t, err, iterErr)
 	require.ErrorContains(t, err, "failed to generate content")
@@ -496,6 +514,43 @@ func TestProcessModelResponse_DisablesPartialMetadataOnSlowPath(t *testing.T) {
 	require.Same(t, ev, <-ch)
 }
 
+func TestProcessModelResponse_UsesFallbackInvocationFromConfig(t *testing.T) {
+	ch := make(chan *event.Event, 1)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-slow-fallback"),
+		agent.WithInvocationEventFilterKey("graph/llm"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID:                     "req-slow-fallback",
+			DisablePartialEventIDs:        true,
+			DisablePartialEventTimestamps: true,
+		}),
+	)
+	resp := &model.Response{
+		IsPartial: true,
+		Choices: []model.Choice{
+			{Message: model.NewAssistantMessage("partial")},
+		},
+	}
+	ctx, ev, err := processModelResponse(context.Background(), modelResponseConfig{
+		Response:     resp,
+		Invocation:   invocation,
+		EventChan:    ch,
+		InvocationID: "inv-config-only",
+		Request:      &model.Request{},
+		Span:         noop.Span{},
+		NodeID:       "llm",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ctx)
+	require.NotNil(t, ev)
+	require.Equal(t, invocation.InvocationID, ev.InvocationID)
+	require.Equal(t, invocation.RunOptions.RequestID, ev.RequestID)
+	require.Equal(t, invocation.GetEventFilterKey(), ev.FilterKey)
+	require.Empty(t, ev.ID)
+	require.True(t, ev.Timestamp.IsZero())
+	require.Same(t, ev, <-ch)
+}
+
 func TestExecuteModelAndProcessResponses_UsesInvocationFromCallbackContext(t *testing.T) {
 	baseInvocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-base"),
@@ -595,7 +650,63 @@ func TestExecuteModelAndProcessResponses_DisableResponseUsageTrackingStillRecord
 	require.NotEmpty(t, rm.ScopeMetrics)
 }
 
-func TestAddLLMNode_SkipsModelCompleteEventWhenCallbackDisablesModelExecutionEvents(t *testing.T) {
+func TestExecuteModelAndProcessResponses_UsesUpdatedInvocationForResponseUsageTiming(t *testing.T) {
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-usage-base"),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-usage-updated"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableResponseUsageTracking: true,
+		}),
+	)
+	responses := []*model.Response{
+		{
+			IsPartial: true,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("partial")},
+			},
+		},
+		{
+			Done: true,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("done")},
+			},
+		},
+	}
+	var callbackCount int
+	callbacks := model.NewCallbacks().RegisterAfterModel(
+		func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+			callbackCount++
+			if callbackCount == 1 {
+				return &model.AfterModelResult{
+					Context: agent.NewInvocationContext(ctx, updatedInvocation),
+				}, nil
+			}
+			return &model.AfterModelResult{}, nil
+		},
+	)
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		modelExecutionConfig{
+			Invocation:     baseInvocation,
+			ModelCallbacks: callbacks,
+			LLMModel: &multiResponseModel{
+				responses: responses,
+			},
+			Request:      &model.Request{},
+			InvocationID: baseInvocation.InvocationID,
+			Span:         noop.Span{},
+			NodeID:       "llm",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.NotNil(t, responses[0].Usage)
+	require.Nil(t, responses[1].Usage)
+}
+
+func TestAddLLMNode_SkipsModelExecutionEventsWhenCallbackDisablesModelExecutionEvents(t *testing.T) {
 	sg := NewStateGraph(MessagesStateSchema())
 	sg.AddLLMNode("llm", &captureModel{}, "inst", nil)
 	n, ok := sg.graph.nodes["llm"]
@@ -641,7 +752,7 @@ func TestAddLLMNode_SkipsModelCompleteEventWhenCallbackDisablesModelExecutionEve
 				}
 			}
 		default:
-			require.Equal(t, []ModelExecutionPhase{ModelExecutionPhaseStart}, phases)
+			require.Empty(t, phases)
 			return
 		}
 	}

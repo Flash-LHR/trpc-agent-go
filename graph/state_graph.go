@@ -1282,7 +1282,6 @@ func (r *llmRunner) executeModel(
 	}
 	invocationID, sessionID, appName, userID, eventChan := extractExecutionContext(state)
 	modelCallbacks, _ := state[StateKeyModelCallbacks].(*model.Callbacks)
-	modelExecutionEventsDisabled := shouldDisableModelExecutionEvents(invocation)
 	emittedModelStartEvent := false
 
 	var streamWriter *agent.StreamWriter
@@ -1299,15 +1298,6 @@ func (r *llmRunner) executeModel(
 		modelName  string
 		startTime  time.Time
 	)
-	if !modelExecutionEventsDisabled {
-		// Build model input metadata from the original state and instruction
-		// so events accurately reflect both instruction and user input.
-		modelInput = extractModelInput(state, instructionUsed, r.userInputKey)
-		startTime = time.Now()
-		modelName = getModelName(r.llmModel)
-		emitModelStartEvent(ctx, eventChan, invocationID, modelName, nodeID, modelInput, startTime)
-		emittedModelStartEvent = true
-	}
 	ctx, invocation, result, err := executeModelAndProcessResponsesWithContext(ctx, modelExecutionConfig{
 		Invocation:     invocation,
 		ModelCallbacks: modelCallbacks,
@@ -1321,6 +1311,27 @@ func (r *llmRunner) executeModel(
 		Span:           span,
 		NodeID:         nodeID,
 		DeltaStream:    streamWriter,
+		BeforeGenerate: func(modelCtx context.Context) {
+			modelInvocation := invocationFromContextOrDefault(modelCtx, invocation)
+			if shouldDisableModelExecutionEvents(modelInvocation) {
+				return
+			}
+			// Build model input metadata from the original state and instruction
+			// so events accurately reflect both instruction and user input.
+			modelInput = extractModelInput(state, instructionUsed, r.userInputKey)
+			startTime = time.Now()
+			modelName = getModelName(r.llmModel)
+			emitModelStartEvent(
+				modelCtx,
+				eventChan,
+				invocationID,
+				modelName,
+				nodeID,
+				modelInput,
+				startTime,
+			)
+			emittedModelStartEvent = true
+		},
 	})
 	endTime := time.Now()
 
@@ -1331,8 +1342,7 @@ func (r *llmRunner) executeModel(
 			_ = streamWriter.Close()
 		}
 	}
-	modelExecutionEventsDisabled = shouldDisableModelExecutionEvents(invocation)
-	if emittedModelStartEvent && !modelExecutionEventsDisabled {
+	if emittedModelStartEvent && !shouldDisableModelExecutionEvents(invocation) {
 		var modelOutput string
 		var responseID string
 		if err == nil && result != nil {
@@ -1447,6 +1457,7 @@ func extractExecutionContext(state State) (invocationID, sessionID, appName, use
 // modelResponseConfig contains configuration for processing model responses.
 type modelResponseConfig struct {
 	Response       *model.Response
+	Invocation     *agent.Invocation
 	ModelCallbacks *model.Callbacks
 	EventChan      chan<- *event.Event
 	InvocationID   string
@@ -1575,13 +1586,12 @@ func emitModelResponseEvent(
 	config modelResponseConfig,
 	ev *event.Event,
 ) error {
+	invocation := invocationFromContextOrDefault(ctx, config.Invocation)
 	if config.EventChan == nil ||
-		!shouldEmitModelResponseEvent(ctx, config.Response) {
+		!shouldEmitModelResponseEvent(config.Response, invocation) {
 		return nil
 	}
-
-	invocation, ok := agent.InvocationFromContext(ctx)
-	if !ok {
+	if invocation == nil {
 		invocation = agent.NewInvocation(
 			agent.WithInvocationID(config.InvocationID),
 			agent.WithInvocationModel(config.LLMModel),
@@ -1594,16 +1604,13 @@ func emitModelResponseEvent(
 }
 
 func shouldEmitModelResponseEvent(
-	ctx context.Context,
 	rsp *model.Response,
+	invocation *agent.Invocation,
 ) bool {
 	if rsp == nil {
 		return false
 	}
-	invocation, ok := agent.InvocationFromContext(ctx)
-	if ok &&
-		invocation != nil &&
-		invocation.RunOptions.GraphEmitFinalModelResponses {
+	if invocation != nil && invocation.RunOptions.GraphEmitFinalModelResponses {
 		return shouldEmitModelResponse(rsp)
 	}
 	return !rsp.Done
@@ -1644,17 +1651,18 @@ func processModelResponse(ctx context.Context, config modelResponseConfig) (cont
 			config.Response = customResponse
 		}
 	}
-	if invocation, ok := agent.InvocationFromContext(ctx); ok &&
+	invocation := invocationFromContextOrDefault(ctx, config.Invocation)
+	if invocation != nil &&
 		jsonrepair.IsToolCallArgumentsJSONRepairEnabled(invocation) {
 		jsonrepair.RepairResponseToolCallArgumentsInPlace(ctx, config.Response)
 	}
-	invocation, _ := agent.InvocationFromContext(ctx)
 	llmEvent := event.NewResponseEvent(
 		config.InvocationID,
 		modelResponseAuthor(config),
 		config.Response,
 	)
 	applyPartialEventMetadataOverrides(llmEvent, config.Response, invocation)
+	agent.InjectIntoEvent(invocation, llmEvent)
 
 	if err := emitModelResponseEvent(ctx, config, llmEvent); err != nil {
 		return ctx, nil, err
@@ -1709,6 +1717,7 @@ func runModelStream(
 	modelCallbacks *model.Callbacks,
 	llmModel model.Model,
 	request *model.Request,
+	beforeGenerate func(context.Context),
 ) (context.Context, modelResponseStream, error) {
 	ctx, span := trace.Tracer.Start(ctx, "run_model")
 	defer span.End()
@@ -1767,6 +1776,9 @@ func runModelStream(
 			}, nil
 		}
 	}
+	if beforeGenerate != nil {
+		beforeGenerate(ctx)
+	}
 	// Generate content.
 	if iterModel, ok := llmModel.(model.IterModel); ok {
 		seq, err := iterModel.GenerateContentIter(ctx, request)
@@ -1796,7 +1808,14 @@ func runModel(
 	request *model.Request,
 ) (context.Context, <-chan *model.Response, error) {
 	invocation, _ := agent.InvocationFromContext(ctx)
-	ctx, stream, err := runModelStream(ctx, invocation, modelCallbacks, llmModel, request)
+	ctx, stream, err := runModelStream(
+		ctx,
+		invocation,
+		modelCallbacks,
+		llmModel,
+		request,
+		nil,
+	)
 	if err != nil {
 		return ctx, nil, err
 	}
@@ -3248,6 +3267,7 @@ type modelExecutionConfig struct {
 	NodeID         string // Add NodeID for parallel execution support
 	NodeResultKey  string // Add NodeResultKey for configurable result key pattern
 	DeltaStream    *agent.StreamWriter
+	BeforeGenerate func(context.Context)
 	Span           oteltrace.Span
 }
 
@@ -3418,6 +3438,13 @@ func attachResponseUsageTiming(
 	response.Usage.TimingInfo = timingInfo
 }
 
+func responseUsageTimingInfo(invocation *agent.Invocation) *model.TimingInfo {
+	if invocation == nil || invocation.RunOptions.DisableResponseUsageTracking {
+		return nil
+	}
+	return invocation.GetOrCreateTimingInfo()
+}
+
 func emitFastModelResponseEvent(
 	ctx context.Context,
 	invocation *agent.Invocation,
@@ -3524,12 +3551,8 @@ func newModelResponseProcessor(
 		invocation: invocation,
 		tap:        newModelDeltaStreamTap(config.DeltaStream),
 	}
-
-	usageTrackingDisabled := invocation != nil && invocation.RunOptions.DisableResponseUsageTracking
 	if invocation != nil {
-		if !usageTrackingDisabled {
-			p.timingInfo = invocation.GetOrCreateTimingInfo()
-		}
+		p.timingInfo = responseUsageTimingInfo(invocation)
 		p.tracker = itelemetry.NewChatMetricsTracker(
 			ctx,
 			invocation,
@@ -3601,14 +3624,13 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 	if response == nil {
 		return true, nil
 	}
-
+	p.invocation = invocationFromContextOrDefault(p.ctx, p.invocation)
+	p.timingInfo = responseUsageTimingInfo(p.invocation)
 	p.tap.WriteDelta(response)
 	trackModelResponseTelemetry(response, p.tracker)
 	attachResponseUsageTiming(response, p.timingInfo, &p.partialUsageFallback)
-
 	p.toolCalls = collectToolCallsFromResponse(p.toolCalls, response)
 	p.finalResponse = response
-
 	reusableEvent := nextReusableModelEvent(p.reusableEvents, &p.reusableEventIdx)
 	if p.fastResponsePath {
 		lastEvent, err := emitFastModelResponseEvent(
@@ -3629,6 +3651,7 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 		var err error
 		p.ctx, p.lastEvent, err = processModelResponse(p.ctx, modelResponseConfig{
 			Response:       response,
+			Invocation:     p.invocation,
 			ModelCallbacks: p.config.ModelCallbacks,
 			EventChan:      p.config.EventChan,
 			InvocationID:   p.config.InvocationID,
@@ -3642,7 +3665,7 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 			return false, err
 		}
 	}
-
+	p.invocation = invocationFromContextOrDefault(p.ctx, p.invocation)
 	traceProcessedModelResponse(
 		p.config.Span,
 		p.tracker,
@@ -3674,7 +3697,14 @@ func executeModelAndProcessResponsesWithContext(
 	config modelExecutionConfig,
 ) (context.Context, *agent.Invocation, any, error) {
 	invocation := invocationFromContextOrDefault(ctx, config.Invocation)
-	ctx, stream, err := runModelStream(ctx, invocation, config.ModelCallbacks, config.LLMModel, config.Request)
+	ctx, stream, err := runModelStream(
+		ctx,
+		invocation,
+		config.ModelCallbacks,
+		config.LLMModel,
+		config.Request,
+		config.BeforeGenerate,
+	)
 	if err != nil {
 		config.Span.RecordError(err)
 		config.Span.SetStatus(codes.Error, err.Error())
