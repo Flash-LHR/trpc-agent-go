@@ -305,6 +305,71 @@ func TestDeepCopyAny_MessageOpsDeepCopySlices(t *testing.T) {
 	}
 }
 
+func TestDeepCopyAny_MessageToolCallExtraFieldsPreserveGraphShape(t *testing.T) {
+	extra := map[string]any{}
+	shared := map[string]any{"value": "keep"}
+	extra["self"] = extra
+	extra["left"] = shared
+	extra["right"] = shared
+	msgs := []model.Message{
+		{
+			Role: model.RoleAssistant,
+			ToolCalls: []model.ToolCall{
+				{
+					Type:        "function",
+					ID:          "call-1",
+					ExtraFields: extra,
+				},
+			},
+		},
+	}
+	copiedAny := deepCopyAny(msgs)
+	copiedMsgs, ok := copiedAny.([]model.Message)
+	require.True(t, ok)
+	require.Len(t, copiedMsgs, 1)
+	copiedExtra := copiedMsgs[0].ToolCalls[0].ExtraFields
+	require.NotNil(t, copiedExtra)
+	require.NotEqual(
+		t,
+		reflect.ValueOf(extra).Pointer(),
+		reflect.ValueOf(copiedExtra).Pointer(),
+	)
+	copiedSelf, ok := copiedExtra["self"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(
+		t,
+		reflect.ValueOf(copiedExtra).Pointer(),
+		reflect.ValueOf(copiedSelf).Pointer(),
+	)
+	copiedLeft, ok := copiedExtra["left"].(map[string]any)
+	require.True(t, ok)
+	copiedRight, ok := copiedExtra["right"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(
+		t,
+		reflect.ValueOf(copiedLeft).Pointer(),
+		reflect.ValueOf(copiedRight).Pointer(),
+	)
+	copiedLeft["value"] = "changed"
+	require.Equal(t, "changed", copiedRight["value"])
+	require.Equal(t, "keep", shared["value"])
+	opsAny := deepCopyAny([]MessageOp{AppendMessages{Items: msgs}})
+	copiedOps, ok := opsAny.([]MessageOp)
+	require.True(t, ok)
+	require.Len(t, copiedOps, 1)
+	copiedAppend, ok := copiedOps[0].(AppendMessages)
+	require.True(t, ok)
+	opExtra := copiedAppend.Items[0].ToolCalls[0].ExtraFields
+	require.NotNil(t, opExtra)
+	opSelf, ok := opExtra["self"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(
+		t,
+		reflect.ValueOf(opExtra).Pointer(),
+		reflect.ValueOf(opSelf).Pointer(),
+	)
+}
+
 func TestDeepCopyAny_PreservesNilFastPathValues(t *testing.T) {
 	t.Run("nil map[string]any", func(t *testing.T) {
 		copied, ok := deepCopyAny(map[string]any(nil)).(map[string]any)

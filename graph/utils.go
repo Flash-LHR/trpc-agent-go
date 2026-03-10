@@ -30,14 +30,20 @@ type DeepCopier interface {
 // deepCopyAny performs a deep copy of common JSON-serializable Go types to
 // avoid sharing mutable references (maps/slices) across goroutines.
 func deepCopyAny(value any) any {
-	if copier, ok := value.(DeepCopier); ok {
-		return copier.DeepCopy()
-	}
-
-	if out, ok := deepCopyFastPath(value); ok {
+	if out, ok := deepCopyPrimitiveFastPath(value); ok {
 		return out
 	}
 	visited := make(map[uintptr]any)
+	return deepCopyAnyWithVisited(value, visited)
+}
+
+func deepCopyAnyWithVisited(value any, visited map[uintptr]any) any {
+	if copier, ok := value.(DeepCopier); ok {
+		return copier.DeepCopy()
+	}
+	if out, ok := deepCopyFastPathWithVisited(value, visited); ok {
+		return out
+	}
 	return deepCopyReflect(reflect.ValueOf(value), visited)
 }
 
@@ -46,13 +52,21 @@ func deepCopyFastPath(value any) (any, bool) {
 	if out, ok := deepCopyPrimitiveFastPath(value); ok {
 		return out, true
 	}
+	visited := make(map[uintptr]any)
+	return deepCopyFastPathWithVisited(value, visited)
+}
+
+func deepCopyFastPathWithVisited(value any, visited map[uintptr]any) (any, bool) {
+	if out, ok := deepCopyPrimitiveFastPath(value); ok {
+		return out, true
+	}
 	switch v := value.(type) {
 	case map[string]any:
-		return deepCopyMapStringAny(v), true
+		return deepCopyMapStringAnyWithVisited(v, visited), true
 	case map[string][]byte:
 		return deepCopyMapStringBytes(v), true
 	case []any:
-		return deepCopySliceAny(v), true
+		return deepCopySliceAnyWithVisited(v, visited), true
 	case []string:
 		return cloneSlice(v), true
 	case []int:
@@ -62,15 +76,15 @@ func deepCopyFastPath(value any) (any, bool) {
 	case []byte:
 		return cloneSlice(v), true
 	case []model.Message:
-		return deepCopyModelMessages(v), true
+		return deepCopyModelMessagesWithVisited(v, visited), true
 	case MessageOp:
-		op, ok := deepCopyMessageOp(v)
+		op, ok := deepCopyMessageOpWithVisited(v, visited)
 		if !ok {
 			return nil, false
 		}
 		return op, true
 	case []MessageOp:
-		out, ok := deepCopyMessageOps(v)
+		out, ok := deepCopyMessageOpsWithVisited(v, visited)
 		if !ok {
 			return nil, false
 		}
@@ -139,12 +153,25 @@ func deepCopyNumericFastPath(value any) (any, bool) {
 }
 
 func deepCopyMapStringAny(in map[string]any) map[string]any {
+	visited := make(map[uintptr]any)
+	return deepCopyMapStringAnyWithVisited(in, visited)
+}
+
+func deepCopyMapStringAnyWithVisited(
+	in map[string]any,
+	visited map[uintptr]any,
+) map[string]any {
 	if in == nil {
 		return nil
 	}
+	ptr := reflect.ValueOf(in).Pointer()
+	if cached, ok := visited[ptr]; ok {
+		return cached.(map[string]any)
+	}
 	copied := make(map[string]any, len(in))
+	visited[ptr] = copied
 	for k, v := range in {
-		copied[k] = deepCopyAny(v)
+		copied[k] = deepCopyAnyWithVisited(v, visited)
 	}
 	return copied
 }
@@ -161,12 +188,26 @@ func deepCopyMapStringBytes(in map[string][]byte) map[string][]byte {
 }
 
 func deepCopySliceAny(in []any) []any {
+	visited := make(map[uintptr]any)
+	return deepCopySliceAnyWithVisited(in, visited)
+}
+
+func deepCopySliceAnyWithVisited(in []any, visited map[uintptr]any) []any {
 	if in == nil {
 		return nil
 	}
+	ptr := reflect.ValueOf(in).Pointer()
+	if ptr != 0 {
+		if cached, ok := visited[ptr]; ok {
+			return cached.([]any)
+		}
+	}
 	copied := make([]any, len(in))
+	if ptr != 0 {
+		visited[ptr] = copied
+	}
 	for i := range in {
-		copied[i] = deepCopyAny(in[i])
+		copied[i] = deepCopyAnyWithVisited(in[i], visited)
 	}
 	return copied
 }
@@ -181,6 +222,14 @@ func cloneSlice[T any](in []T) []T {
 }
 
 func deepCopyMessageOps(in []MessageOp) ([]MessageOp, bool) {
+	visited := make(map[uintptr]any)
+	return deepCopyMessageOpsWithVisited(in, visited)
+}
+
+func deepCopyMessageOpsWithVisited(
+	in []MessageOp,
+	visited map[uintptr]any,
+) ([]MessageOp, bool) {
 	if in == nil {
 		return nil, true
 	}
@@ -189,7 +238,7 @@ func deepCopyMessageOps(in []MessageOp) ([]MessageOp, bool) {
 		if op == nil {
 			continue
 		}
-		copied, ok := deepCopyMessageOp(op)
+		copied, ok := deepCopyMessageOpWithVisited(op, visited)
 		if !ok {
 			return nil, false
 		}
@@ -199,10 +248,18 @@ func deepCopyMessageOps(in []MessageOp) ([]MessageOp, bool) {
 }
 
 func deepCopyMessageOp(op MessageOp) (MessageOp, bool) {
+	visited := make(map[uintptr]any)
+	return deepCopyMessageOpWithVisited(op, visited)
+}
+
+func deepCopyMessageOpWithVisited(
+	op MessageOp,
+	visited map[uintptr]any,
+) (MessageOp, bool) {
 	switch v := op.(type) {
 	case AppendMessages:
 		if v.Items != nil {
-			v.Items = deepCopyModelMessages(v.Items)
+			v.Items = deepCopyModelMessagesWithVisited(v.Items, visited)
 		}
 		return v, true
 	case ReplaceLastUser:
@@ -215,17 +272,34 @@ func deepCopyMessageOp(op MessageOp) (MessageOp, bool) {
 }
 
 func deepCopyModelMessages(in []model.Message) []model.Message {
+	visited := make(map[uintptr]any)
+	return deepCopyModelMessagesWithVisited(in, visited)
+}
+
+func deepCopyModelMessagesWithVisited(
+	in []model.Message,
+	visited map[uintptr]any,
+) []model.Message {
 	if in == nil {
 		return nil
 	}
+	ptr := reflect.ValueOf(in).Pointer()
+	if ptr != 0 {
+		if cached, ok := visited[ptr]; ok {
+			return cached.([]model.Message)
+		}
+	}
 	out := make([]model.Message, len(in))
+	if ptr != 0 {
+		visited[ptr] = out
+	}
 	for i := range in {
 		out[i] = in[i]
 		if parts := in[i].ContentParts; parts != nil {
 			out[i].ContentParts = deepCopyModelContentParts(parts)
 		}
 		if calls := in[i].ToolCalls; calls != nil {
-			out[i].ToolCalls = deepCopyModelToolCalls(calls)
+			out[i].ToolCalls = deepCopyModelToolCallsWithVisited(calls, visited)
 		}
 	}
 	return out
@@ -292,10 +366,27 @@ func deepCopyModelFile(in *model.File) *model.File {
 }
 
 func deepCopyModelToolCalls(in []model.ToolCall) []model.ToolCall {
+	visited := make(map[uintptr]any)
+	return deepCopyModelToolCallsWithVisited(in, visited)
+}
+
+func deepCopyModelToolCallsWithVisited(
+	in []model.ToolCall,
+	visited map[uintptr]any,
+) []model.ToolCall {
 	if in == nil {
 		return nil
 	}
+	ptr := reflect.ValueOf(in).Pointer()
+	if ptr != 0 {
+		if cached, ok := visited[ptr]; ok {
+			return cached.([]model.ToolCall)
+		}
+	}
 	out := make([]model.ToolCall, len(in))
+	if ptr != 0 {
+		visited[ptr] = out
+	}
 	for i := range in {
 		out[i] = in[i]
 		if in[i].Index != nil {
@@ -307,11 +398,7 @@ func deepCopyModelToolCalls(in []model.ToolCall) []model.ToolCall {
 			copy(out[i].Function.Arguments, args)
 		}
 		if extra := in[i].ExtraFields; extra != nil {
-			outExtra := make(map[string]any, len(extra))
-			for k, v := range extra {
-				outExtra[k] = deepCopyAny(v)
-			}
-			out[i].ExtraFields = outExtra
+			out[i].ExtraFields = deepCopyMapStringAnyWithVisited(extra, visited)
 		}
 	}
 	return out
