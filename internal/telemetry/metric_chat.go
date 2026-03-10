@@ -119,10 +119,11 @@ type ChatMetricsTracker struct {
 	timingInfo *model.TimingInfo
 
 	// Configuration
-	invocation *agent.Invocation
-	llmRequest *model.Request
-	taskType   *string
-	err        *error // pointer to capture final error
+	invocation       *agent.Invocation
+	sourceInvocation *agent.Invocation
+	llmRequest       *model.Request
+	taskType         *string
+	err              *error // pointer to capture final error
 }
 
 // NewChatMetricsTracker creates a new telemetry tracker.
@@ -137,14 +138,15 @@ func NewChatMetricsTracker(
 	err *error,
 ) *ChatMetricsTracker {
 	return &ChatMetricsTracker{
-		ctx:          ctx,
-		start:        time.Now(),
-		isFirstToken: true,
-		invocation:   invocation,
-		llmRequest:   llmRequest,
-		taskType:     taskType,
-		err:          err,
-		timingInfo:   timingInfo,
+		ctx:              ctx,
+		start:            time.Now(),
+		isFirstToken:     true,
+		invocation:       invocation,
+		sourceInvocation: invocation,
+		llmRequest:       llmRequest,
+		taskType:         taskType,
+		err:              err,
+		timingInfo:       timingInfo,
 	}
 }
 
@@ -235,7 +237,10 @@ func (t *ChatMetricsTracker) SetInvocationState(
 	if t == nil {
 		return
 	}
-	t.invocation = mergeInvocationForMetrics(t.invocation, invocation)
+	if invocation != t.sourceInvocation {
+		t.invocation = mergeInvocationForMetrics(t.invocation, invocation)
+		t.sourceInvocation = invocation
+	}
 	if timingInfo == t.timingInfo {
 		return
 	}

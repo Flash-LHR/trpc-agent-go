@@ -137,12 +137,15 @@ func TestChatMetricsTracker_SetInvocationState_PreservesMetricsAttributes(t *tes
 	)
 	updatedTimingInfo := &model.TimingInfo{}
 	tracker.SetInvocationState(updatedInvocation, updatedTimingInfo)
+	mergedInvocation := tracker.invocation
+	tracker.SetInvocationState(updatedInvocation, updatedTimingInfo)
 	attrs := tracker.buildAttributes()
 	require.Equal(t, baseInvocation.AgentName, attrs.AgentName)
 	require.Equal(t, baseInvocation.Model.Info().Name, attrs.RequestModelName)
 	require.Equal(t, baseInvocation.Session.ID, attrs.SessionID)
 	require.Equal(t, baseInvocation.Session.UserID, attrs.UserID)
 	require.Equal(t, baseInvocation.Session.AppName, attrs.AppName)
+	require.Same(t, mergedInvocation, tracker.invocation)
 	require.Nil(t, updatedInvocation.Model)
 	require.Nil(t, updatedInvocation.Session)
 	require.Empty(t, updatedInvocation.AgentName)
