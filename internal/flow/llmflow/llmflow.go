@@ -397,9 +397,14 @@ func (f *Flow) processStreamingResponses(
 			tracker,
 		)
 		attachResponseUsageTiming(response, timingInfo, &partialUsageState)
+		eventInvocation := invocation
+		if eventInvocation == nil {
+			eventInvocation = currentInvocation
+		}
 		// Handle after model callbacks.
 		updatedCtx, customResp, cbErr := f.handleAfterModelCallbacks(
 			ctx,
+			eventInvocation,
 			currentInvocation,
 			llmRequest,
 			response,
@@ -424,12 +429,12 @@ func (f *Flow) processStreamingResponses(
 		}
 		// 4. Create and send LLM response using the clean constructor.
 		llmResponseEvent := f.createLLMResponseEvent(
-			invocation,
+			eventInvocation,
 			currentInvocation,
 			response,
 			llmRequest,
 		)
-		agent.EmitEvent(ctx, invocation, eventChan, llmResponseEvent)
+		agent.EmitEvent(ctx, eventInvocation, eventChan, llmResponseEvent)
 		lastEvent = llmResponseEvent
 		if tracker != nil {
 			tracker.SetLastEvent(lastEvent)
@@ -441,7 +446,7 @@ func (f *Flow) processStreamingResponses(
 		// 6. Postprocess response.
 		f.postprocess(
 			ctx,
-			invocation,
+			eventInvocation,
 			llmRequest,
 			response,
 			eventChan,
@@ -455,7 +460,7 @@ func (f *Flow) processStreamingResponses(
 			ttfb = tracker.FirstTokenTimeDuration()
 		}
 		itelemetry.TraceChat(span, &itelemetry.TraceChatAttributes{
-			Invocation:       currentInvocation,
+			Invocation:       eventInvocation,
 			Request:          llmRequest,
 			Response:         response,
 			EventID:          llmResponseEvent.ID,
@@ -472,6 +477,7 @@ func (f *Flow) processStreamingResponses(
 // handleAfterModelCallbacks processes after model callbacks.
 func (f *Flow) handleAfterModelCallbacks(
 	ctx context.Context,
+	eventInvocation *agent.Invocation,
 	invocation *agent.Invocation,
 	llmRequest *model.Request,
 	response *model.Response,
@@ -490,12 +496,12 @@ func (f *Flow) handleAfterModelCallbacks(
 		log.ErrorfContext(
 			ctx,
 			"After model callback failed for agent %s: %v",
-			invocation.AgentName,
+			flowAgentName(invocation),
 			err,
 		)
-		agent.EmitEvent(ctx, invocation, eventChan, event.NewErrorEvent(
-			invocation.InvocationID,
-			invocation.AgentName,
+		agent.EmitEvent(ctx, eventInvocation, eventChan, event.NewErrorEvent(
+			flowInvocationID(eventInvocation),
+			flowAgentName(eventInvocation),
 			model.ErrorTypeFlowError,
 			err.Error(),
 		))

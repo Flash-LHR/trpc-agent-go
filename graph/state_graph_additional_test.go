@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -137,6 +138,35 @@ func (m *multiResponseModel) GenerateContent(ctx context.Context, req *model.Req
 
 func (m *multiResponseModel) Info() model.Info {
 	return model.Info{Name: "multi-response-model"}
+}
+
+// graphRecordingSpan captures trace attributes for assertions.
+type graphRecordingSpan struct {
+	oteltrace.Span
+	attrs []attribute.KeyValue
+}
+
+func newGraphRecordingSpan() *graphRecordingSpan {
+	_, span := oteltrace.NewNoopTracerProvider().Tracer("test").Start(context.Background(), "graph-test")
+	return &graphRecordingSpan{Span: span}
+}
+
+func (s *graphRecordingSpan) IsRecording() bool {
+	return true
+}
+
+func (s *graphRecordingSpan) SetAttributes(kv ...attribute.KeyValue) {
+	s.attrs = append(s.attrs, kv...)
+	s.Span.SetAttributes(kv...)
+}
+
+func graphHasAttr(attrs []attribute.KeyValue, key string, want any) bool {
+	for _, kv := range attrs {
+		if string(kv.Key) == key && kv.Value.AsInterface() == want {
+			return true
+		}
+	}
+	return false
 }
 
 // collectModelExecutionPhases drains model execution events from the channel.
@@ -626,6 +656,52 @@ func TestProcessModelResponse_UsesFallbackInvocationFromConfig(t *testing.T) {
 	require.Same(t, ev, <-ch)
 }
 
+func TestProcessModelResponse_PreservesStableEventMetadataWhenContextInvocationIsSparse(t *testing.T) {
+	ch := make(chan *event.Event, 1)
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-slow-base"),
+		agent.WithInvocationEventFilterKey("graph/base"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID: "req-slow-base",
+		}),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-slow-updated"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisablePartialEventIDs:        true,
+			DisablePartialEventTimestamps: true,
+		}),
+	)
+	resp := &model.Response{
+		IsPartial: true,
+		Choices: []model.Choice{
+			{Message: model.NewAssistantMessage("partial")},
+		},
+	}
+	ctx, ev, err := processModelResponse(
+		agent.NewInvocationContext(context.Background(), updatedInvocation),
+		modelResponseConfig{
+			Response:         resp,
+			Invocation:       baseInvocation,
+			StableInvocation: baseInvocation,
+			EventChan:        ch,
+			InvocationID:     baseInvocation.InvocationID,
+			Request:          &model.Request{},
+			Span:             noop.Span{},
+			NodeID:           "llm",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, ctx)
+	require.NotNil(t, ev)
+	require.Equal(t, baseInvocation.InvocationID, ev.InvocationID)
+	require.Equal(t, baseInvocation.RunOptions.RequestID, ev.RequestID)
+	require.Equal(t, baseInvocation.GetEventFilterKey(), ev.FilterKey)
+	require.Empty(t, ev.ID)
+	require.True(t, ev.Timestamp.IsZero())
+	require.Same(t, ev, <-ch)
+}
+
 func TestExecuteModelAndProcessResponses_UsesInvocationFromCallbackContext(t *testing.T) {
 	baseInvocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-base"),
@@ -918,6 +994,111 @@ func TestExecuteModelAndProcessResponses_PreservesReasoningTimingWhenInvocationC
 	require.NotNil(t, resp)
 	require.Zero(t, baseInvocation.GetOrCreateTimingInfo().ReasoningDuration)
 	require.Greater(t, updatedInvocation.GetOrCreateTimingInfo().ReasoningDuration, time.Duration(0))
+}
+
+func TestExecuteModelAndProcessResponses_PreservesStableEventMetadataOnFastPath(t *testing.T) {
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-fast-base"),
+		agent.WithInvocationEventFilterKey("graph/fast"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID: "req-fast-base",
+		}),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-fast-updated"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisablePartialEventIDs:        true,
+			DisablePartialEventTimestamps: true,
+		}),
+	)
+	responses := []*model.Response{
+		{
+			IsPartial: true,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("partial")},
+			},
+		},
+		{
+			Done: true,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("done")},
+			},
+		},
+	}
+	callbacks := model.NewCallbacks().RegisterBeforeModel(
+		func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
+			return &model.BeforeModelResult{
+				Context: agent.NewInvocationContext(ctx, updatedInvocation),
+			}, nil
+		},
+	)
+	ch := make(chan *event.Event, 4)
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		modelExecutionConfig{
+			Invocation:     baseInvocation,
+			ModelCallbacks: callbacks,
+			LLMModel: &multiResponseModel{
+				responses: responses,
+			},
+			Request:      &model.Request{},
+			EventChan:    ch,
+			InvocationID: baseInvocation.InvocationID,
+			Span:         noop.Span{},
+			NodeID:       "llm",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	ev := <-ch
+	require.NotNil(t, ev)
+	require.Equal(t, baseInvocation.InvocationID, ev.InvocationID)
+	require.Equal(t, baseInvocation.RunOptions.RequestID, ev.RequestID)
+	require.Equal(t, baseInvocation.GetEventFilterKey(), ev.FilterKey)
+	require.Empty(t, ev.ID)
+	require.True(t, ev.Timestamp.IsZero())
+}
+
+func TestExecuteModelAndProcessResponses_UsesStableInvocationForTraceMetadata(t *testing.T) {
+	modelImpl := &captureModel{}
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-trace-base"),
+		agent.WithInvocationModel(modelImpl),
+		agent.WithInvocationSession(&session.Session{
+			ID:     "sess-trace-base",
+			UserID: "user-trace-base",
+		}),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-trace-updated"),
+	)
+	callbacks := model.NewCallbacks().RegisterAfterModel(
+		func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+			return &model.AfterModelResult{
+				Context: agent.NewInvocationContext(ctx, updatedInvocation),
+			}, nil
+		},
+	)
+	span := newGraphRecordingSpan()
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		modelExecutionConfig{
+			Invocation:     baseInvocation,
+			ModelCallbacks: callbacks,
+			LLMModel:       modelImpl,
+			Request:        &model.Request{},
+			InvocationID:   baseInvocation.InvocationID,
+			SessionID:      baseInvocation.Session.ID,
+			Span:           span,
+			NodeID:         "llm",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, graphHasAttr(span.attrs, itelemetry.KeyInvocationID, baseInvocation.InvocationID))
+	require.True(t, graphHasAttr(span.attrs, itelemetry.KeyGenAIConversationID, baseInvocation.Session.ID))
+	require.True(t, graphHasAttr(span.attrs, itelemetry.KeyRunnerUserID, baseInvocation.Session.UserID))
+	require.True(t, graphHasAttr(span.attrs, itelemetry.KeyGenAIRequestModel, modelImpl.Info().Name))
 }
 
 func TestAddLLMNode_SkipsModelExecutionEventsWhenCallbackDisablesModelExecutionEvents(t *testing.T) {

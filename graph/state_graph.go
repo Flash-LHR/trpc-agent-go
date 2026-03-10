@@ -1465,15 +1465,16 @@ func extractExecutionContext(state State) (invocationID, sessionID, appName, use
 
 // modelResponseConfig contains configuration for processing model responses.
 type modelResponseConfig struct {
-	Response       *model.Response
-	Invocation     *agent.Invocation
-	ModelCallbacks *model.Callbacks
-	EventChan      chan<- *event.Event
-	InvocationID   string
-	SessionID      string
-	LLMModel       model.Model
-	Request        *model.Request
-	Span           oteltrace.Span
+	Response         *model.Response
+	Invocation       *agent.Invocation
+	StableInvocation *agent.Invocation
+	ModelCallbacks   *model.Callbacks
+	EventChan        chan<- *event.Event
+	InvocationID     string
+	SessionID        string
+	LLMModel         model.Model
+	Request          *model.Request
+	Span             oteltrace.Span
 	// NodeID, when provided, is used as the event author.
 	NodeID string
 }
@@ -1593,15 +1594,16 @@ func applyPartialEventMetadataOverrides(
 func emitModelResponseEvent(
 	ctx context.Context,
 	config modelResponseConfig,
+	eventInvocation *agent.Invocation,
+	optionsInvocation *agent.Invocation,
 	ev *event.Event,
 ) error {
-	invocation := invocationFromContextOrDefault(ctx, config.Invocation)
 	if config.EventChan == nil ||
-		!shouldEmitModelResponseEvent(config.Response, invocation) {
+		!shouldEmitModelResponseEvent(config.Response, optionsInvocation) {
 		return nil
 	}
-	if invocation == nil {
-		invocation = agent.NewInvocation(
+	if eventInvocation == nil {
+		eventInvocation = agent.NewInvocation(
 			agent.WithInvocationID(config.InvocationID),
 			agent.WithInvocationModel(config.LLMModel),
 			agent.WithInvocationSession(
@@ -1609,7 +1611,7 @@ func emitModelResponseEvent(
 			),
 		)
 	}
-	return agent.EmitEvent(ctx, invocation, config.EventChan, ev)
+	return agent.EmitEvent(ctx, eventInvocation, config.EventChan, ev)
 }
 
 func shouldEmitModelResponseEvent(
@@ -1660,9 +1662,16 @@ func processModelResponse(ctx context.Context, config modelResponseConfig) (cont
 			config.Response = customResponse
 		}
 	}
-	invocation := invocationFromContextOrDefault(ctx, config.Invocation)
-	if invocation != nil &&
-		jsonrepair.IsToolCallArgumentsJSONRepairEnabled(invocation) {
+	currentInvocation := invocationFromContextOrDefault(ctx, config.Invocation)
+	eventInvocation := config.StableInvocation
+	if eventInvocation == nil {
+		eventInvocation = config.Invocation
+	}
+	if eventInvocation == nil {
+		eventInvocation = currentInvocation
+	}
+	if currentInvocation != nil &&
+		jsonrepair.IsToolCallArgumentsJSONRepairEnabled(currentInvocation) {
 		jsonrepair.RepairResponseToolCallArgumentsInPlace(ctx, config.Response)
 	}
 	llmEvent := event.NewResponseEvent(
@@ -1670,10 +1679,16 @@ func processModelResponse(ctx context.Context, config modelResponseConfig) (cont
 		modelResponseAuthor(config),
 		config.Response,
 	)
-	applyPartialEventMetadataOverrides(llmEvent, config.Response, invocation)
-	agent.InjectIntoEvent(invocation, llmEvent)
+	applyPartialEventMetadataOverrides(llmEvent, config.Response, currentInvocation)
+	agent.InjectIntoEvent(eventInvocation, llmEvent)
 
-	if err := emitModelResponseEvent(ctx, config, llmEvent); err != nil {
+	if err := emitModelResponseEvent(
+		ctx,
+		config,
+		eventInvocation,
+		currentInvocation,
+		llmEvent,
+	); err != nil {
 		return ctx, nil, err
 	}
 
@@ -3478,7 +3493,7 @@ func responseUsageTimingInfo(invocation *agent.Invocation) *model.TimingInfo {
 
 func emitFastModelResponseEvent(
 	ctx context.Context,
-	invocation *agent.Invocation,
+	eventInvocation *agent.Invocation,
 	config modelExecutionConfig,
 	response *model.Response,
 	author string,
@@ -3513,7 +3528,7 @@ func emitFastModelResponseEvent(
 	llmEvent.Version = event.CurrentVersion
 
 	if shouldEmit {
-		if err := agent.EmitEvent(ctx, invocation, config.EventChan, llmEvent); err != nil {
+		if err := agent.EmitEvent(ctx, eventInvocation, config.EventChan, llmEvent); err != nil {
 			return nil, err
 		}
 	}
@@ -3554,6 +3569,7 @@ func traceProcessedModelResponse(
 type modelResponseProcessor struct {
 	ctx                            context.Context
 	config                         modelExecutionConfig
+	stableInvocation               *agent.Invocation
 	invocation                     *agent.Invocation
 	tracker                        *itelemetry.ChatMetricsTracker
 	timingInfo                     *model.TimingInfo
@@ -3577,10 +3593,14 @@ func newModelResponseProcessor(
 	runErr *error,
 ) *modelResponseProcessor {
 	p := &modelResponseProcessor{
-		ctx:        ctx,
-		config:     config,
-		invocation: invocation,
-		tap:        newModelDeltaStreamTap(config.DeltaStream),
+		ctx:              ctx,
+		config:           config,
+		stableInvocation: config.Invocation,
+		invocation:       invocation,
+		tap:              newModelDeltaStreamTap(config.DeltaStream),
+	}
+	if p.stableInvocation == nil {
+		p.stableInvocation = invocation
 	}
 	if invocation != nil {
 		p.timingInfo = responseUsageTimingInfo(invocation)
@@ -3672,7 +3692,7 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 	if p.fastResponsePath {
 		lastEvent, err := emitFastModelResponseEvent(
 			p.ctx,
-			p.invocation,
+			p.stableInvocation,
 			p.config,
 			response,
 			p.author,
@@ -3687,16 +3707,17 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 	} else {
 		var err error
 		p.ctx, p.lastEvent, err = processModelResponse(p.ctx, modelResponseConfig{
-			Response:       response,
-			Invocation:     p.invocation,
-			ModelCallbacks: p.config.ModelCallbacks,
-			EventChan:      p.config.EventChan,
-			InvocationID:   p.config.InvocationID,
-			SessionID:      p.config.SessionID,
-			LLMModel:       p.config.LLMModel,
-			Request:        p.config.Request,
-			Span:           p.config.Span,
-			NodeID:         p.config.NodeID,
+			Response:         response,
+			Invocation:       p.invocation,
+			StableInvocation: p.stableInvocation,
+			ModelCallbacks:   p.config.ModelCallbacks,
+			EventChan:        p.config.EventChan,
+			InvocationID:     p.config.InvocationID,
+			SessionID:        p.config.SessionID,
+			LLMModel:         p.config.LLMModel,
+			Request:          p.config.Request,
+			Span:             p.config.Span,
+			NodeID:           p.config.NodeID,
 		})
 		if err != nil {
 			return false, err
@@ -3706,7 +3727,7 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 	traceProcessedModelResponse(
 		p.config.Span,
 		p.tracker,
-		p.invocation,
+		p.stableInvocation,
 		p.config.Request,
 		response,
 		p.lastEvent,
