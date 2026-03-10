@@ -50,6 +50,10 @@ type assistantThenVisibleStateOnlyCompletionAgent struct {
 	name string
 }
 
+type assistantThenVisibleStateOnlyCompletionWithoutResponseIDAgent struct {
+	name string
+}
+
 type visibleCompletionThenErrorAgent struct {
 	name string
 }
@@ -194,6 +198,45 @@ func (a *assistantThenVisibleStateOnlyCompletionAgent) Run(
 	return ch, nil
 }
 
+func (a *assistantThenVisibleStateOnlyCompletionWithoutResponseIDAgent) Run(
+	ctx context.Context,
+	invocation *agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event, 2)
+	go func() {
+		defer close(ch)
+		invocationID := "assistant-then-visible-completion-without-response-id-agent"
+		author := a.name
+		if invocation != nil {
+			invocationID = invocation.InvocationID
+			if invocation.AgentName != "" {
+				author = invocation.AgentName
+			}
+		}
+		assistantEvent := event.NewResponseEvent(invocationID, author, &model.Response{
+			ID:     "resp-1",
+			Object: model.ObjectTypeChatCompletion,
+			Done:   true,
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("wrapped-final"),
+			}},
+		})
+		rawCompletion := graph.NewGraphCompletionEvent(
+			graph.WithCompletionEventInvocationID(invocationID),
+			graph.WithCompletionEventFinalState(graph.State{
+				graphStateKey: "child-state",
+			}),
+		)
+		visibleCompletion, ok := graph.VisibleGraphCompletionEvent(rawCompletion)
+		if !ok {
+			return
+		}
+		_ = agent.EmitEvent(ctx, invocation, ch, assistantEvent)
+		_ = agent.EmitEvent(ctx, invocation, ch, visibleCompletion)
+	}()
+	return ch, nil
+}
+
 func (a *visibleCompletionThenErrorAgent) Run(
 	ctx context.Context,
 	invocation *agent.Invocation,
@@ -265,6 +308,23 @@ func (a *assistantThenVisibleStateOnlyCompletionAgent) SubAgents() []agent.Agent
 }
 
 func (a *assistantThenVisibleStateOnlyCompletionAgent) FindSubAgent(name string) agent.Agent {
+	_ = name
+	return nil
+}
+
+func (a *assistantThenVisibleStateOnlyCompletionWithoutResponseIDAgent) Tools() []tool.Tool {
+	return nil
+}
+
+func (a *assistantThenVisibleStateOnlyCompletionWithoutResponseIDAgent) Info() agent.Info {
+	return agent.Info{Name: a.name}
+}
+
+func (a *assistantThenVisibleStateOnlyCompletionWithoutResponseIDAgent) SubAgents() []agent.Agent {
+	return nil
+}
+
+func (a *assistantThenVisibleStateOnlyCompletionWithoutResponseIDAgent) FindSubAgent(name string) agent.Agent {
 	_ = name
 	return nil
 }
@@ -1722,6 +1782,49 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistant
 	require.True(t, sawFinalChunk)
 	require.Equal(t, "wrapped-final", finalChunk.Result)
 	require.Equal(t, []byte(`"resp-1"`), finalChunk.StateDelta[graph.StateKeyLastResponseID])
+	require.Equal(t, []byte(`"child-state"`), finalChunk.StateDelta[graphStateKey])
+}
+
+func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistantResultForVisibleStateOnlyCompletionWithoutResponseID(
+	t *testing.T,
+) {
+	at := NewTool(
+		&assistantThenVisibleStateOnlyCompletionWithoutResponseIDAgent{
+			name: "assistant-visible-agent",
+		},
+		WithStreamInner(true),
+		WithHistoryScope(HistoryScopeParentBranch),
+	)
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	defer reader.Close()
+
+	var finalChunk tool.FinalResultChunk
+	var sawFinalChunk bool
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		if _, ok := chunk.Content.(*event.Event); ok {
+			continue
+		}
+		resultChunk, ok := chunk.Content.(tool.FinalResultChunk)
+		require.True(t, ok)
+		finalChunk = resultChunk
+		sawFinalChunk = true
+	}
+
+	require.True(t, sawFinalChunk)
+	require.Equal(t, "wrapped-final", finalChunk.Result)
 	require.Equal(t, []byte(`"child-state"`), finalChunk.StateDelta[graphStateKey])
 }
 

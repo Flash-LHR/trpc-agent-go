@@ -589,10 +589,10 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 				if subInv.RunOptions.DisableGraphCompletionEvent &&
 					isGraphCompletionSnapshotEvent(ev) {
 					if chunk, ok := graphCompletionFinalChunk(ev); ok {
+						responseID := completionResponseIDFromStateDelta(chunk.StateDelta)
 						if chunk.Result == nil &&
-							completionResponseIDFromStateDelta(chunk.StateDelta) ==
-								lastAssistantResponseID &&
-							lastAssistantContent != "" {
+							lastAssistantContent != "" &&
+							(responseID == "" || responseID == lastAssistantResponseID) {
 							chunk.Result = lastAssistantContent
 						}
 						pendingChunk := chunk
