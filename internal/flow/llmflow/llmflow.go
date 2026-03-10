@@ -38,6 +38,8 @@ const (
 	// Timeout for event completion signaling.
 	eventCompletionTimeout = 5 * time.Second
 
+	errMsgNoModelResponse = "no response received from model"
+
 	flowRunPanicLogFmt = "Flow execution panic (invocation: %s, " +
 		"agent: %s): %v\n%s"
 
@@ -919,7 +921,7 @@ func (f *Flow) generateContentSeq(
 			return nil, err
 		}
 		if seq == nil {
-			return func(yield func(*model.Response) bool) {}, nil
+			return nil, errors.New(errMsgNoModelResponse)
 		}
 		return seq, nil
 	}

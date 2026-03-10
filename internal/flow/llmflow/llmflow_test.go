@@ -1327,17 +1327,10 @@ func TestFlow_GenerateContentSeq_NilIterModel(t *testing.T) {
 	inv := agent.NewInvocation(agent.WithInvocationModel(iterModel))
 
 	seq, err := f.generateContentSeq(context.Background(), inv, &model.Request{})
-	require.NoError(t, err)
-	require.NotNil(t, seq)
+	require.ErrorContains(t, err, errMsgNoModelResponse)
+	require.Nil(t, seq)
 	require.True(t, iterModel.GenerateContentIterCalled)
 	require.False(t, iterModel.GenerateContentCalled)
-
-	var responses []*model.Response
-	seq(func(resp *model.Response) bool {
-		responses = append(responses, resp)
-		return true
-	})
-	require.Empty(t, responses)
 }
 
 func TestFlow_CallLLM_MaxLLMCallsExceeded(t *testing.T) {
@@ -1410,6 +1403,36 @@ func TestRun_NoPanicWhenModelReturnsNoResponses(t *testing.T) {
 		count++
 	}
 	require.Equal(t, 1, count)
+}
+
+func TestRun_NilIterModelEmitsErrorEvent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	f := New(nil, nil, Options{})
+	inv := agent.NewInvocation(
+		agent.WithInvocationModel(&mockIterModel{}),
+	)
+
+	ch, err := f.Run(ctx, inv)
+	require.NoError(t, err)
+
+	var errorEvent *event.Event
+	var count int
+	for evt := range ch {
+		if evt.RequiresCompletion {
+			key := agent.AppendEventNoticeKeyPrefix + evt.ID
+			inv.NotifyCompletion(ctx, key)
+		}
+		count++
+		if evt != nil && evt.Error != nil {
+			errorEvent = evt
+		}
+	}
+	require.Equal(t, 2, count)
+	require.NotNil(t, errorEvent)
+	require.Equal(t, model.ErrorTypeFlowError, errorEvent.Error.Type)
+	require.Contains(t, errorEvent.Error.Message, errMsgNoModelResponse)
 }
 
 // TestRunAfterModelCallbacks_ErrorPassing tests that modelErr is correctly passed to callbacks
