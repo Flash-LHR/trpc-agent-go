@@ -661,7 +661,7 @@ func MessageReducer(existing, update any) any {
 
 	switch x := update.(type) {
 	case nil:
-		return existingMsgs
+		return cloneMessageSlicePreserveEmpty(existingMsgs)
 	case model.Message:
 		return appendOwnedMessage(existingMsgs, x)
 	case []model.Message:
@@ -684,15 +684,12 @@ func MessageReducer(existing, update any) any {
 
 func appendOwnedMessage(existing []model.Message, msg model.Message) []model.Message {
 	out := cloneMessageSlicePreserveEmpty(existing)
-	return append(out, msg)
+	return appendCopiedMessages(out, []model.Message{msg})
 }
 
 func appendOwnedMessages(existing, updates []model.Message) []model.Message {
-	if len(updates) == 0 {
-		return existing
-	}
 	out := cloneMessageSlicePreserveEmpty(existing)
-	return append(out, updates...)
+	return appendCopiedMessages(out, updates)
 }
 
 func cloneMessageSlicePreserveEmpty(in []model.Message) []model.Message {
@@ -700,6 +697,16 @@ func cloneMessageSlicePreserveEmpty(in []model.Message) []model.Message {
 		return nil
 	}
 	return deepCopyModelMessages(in)
+}
+
+func appendCopiedMessages(
+	out []model.Message,
+	updates []model.Message,
+) []model.Message {
+	if len(updates) == 0 {
+		return out
+	}
+	return append(out, deepCopyModelMessages(updates)...)
 }
 
 func replaceLastUserOwned(existing []model.Message, content string) []model.Message {
@@ -755,7 +762,7 @@ func fastAppendMessageOps(existing []model.Message, ops []MessageOp) ([]model.Me
 		}
 	}
 	if totalAppend == 0 {
-		return existing, true
+		return cloneMessageSlicePreserveEmpty(existing), true
 	}
 	base := cloneMessageSlicePreserveEmpty(existing)
 	out := make([]model.Message, len(base)+totalAppend)
@@ -766,8 +773,9 @@ func fastAppendMessageOps(existing []model.Message, ops []MessageOp) ([]model.Me
 		if !ok || len(appendOp.Items) == 0 {
 			continue
 		}
-		copy(out[pos:], appendOp.Items)
-		pos += len(appendOp.Items)
+		copiedItems := deepCopyModelMessages(appendOp.Items)
+		copy(out[pos:], copiedItems)
+		pos += len(copiedItems)
 	}
 	return out, true
 }
@@ -777,7 +785,7 @@ func applyOwnedMessageOp(out []model.Message, op MessageOp) []model.Message {
 	case nil:
 		return out
 	case AppendMessages:
-		return appendOwnedMessages(out, v.Items)
+		return appendCopiedMessages(out, v.Items)
 	case ReplaceLastUser:
 		replaced := replaceLastUserOwned(out, v.Content)
 		return tightenMessageCapacity(replaced)

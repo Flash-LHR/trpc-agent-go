@@ -716,6 +716,101 @@ func TestMessageReducer_BuiltInOpsDoNotAliasExistingNestedState(t *testing.T) {
 	})
 }
 
+func TestMessageReducer_NoOpDoesNotAliasExistingNestedState(t *testing.T) {
+	buildExisting := func() []model.Message {
+		text := "orig-part"
+		args := []byte("abc")
+		return []model.Message{
+			{
+				Role:    model.RoleAssistant,
+				Content: "orig",
+				ContentParts: []model.ContentPart{
+					{Type: model.ContentTypeText, Text: &text},
+				},
+				ToolCalls: []model.ToolCall{
+					{
+						Type: "function",
+						ID:   "call-1",
+						Function: model.FunctionDefinitionParam{
+							Arguments: args,
+						},
+					},
+				},
+			},
+		}
+	}
+	mutateAndAssertOriginal := func(t *testing.T, out, existing []model.Message) {
+		t.Helper()
+		mutated := "mutated-part"
+		out[0].ContentParts[0].Text = &mutated
+		out[0].ToolCalls[0].Function.Arguments[0] = 'Q'
+		require.NotNil(t, existing[0].ContentParts[0].Text)
+		assert.Equal(t, "orig-part", *existing[0].ContentParts[0].Text)
+		assert.Equal(t, byte('a'), existing[0].ToolCalls[0].Function.Arguments[0])
+	}
+	t.Run("nil update", func(t *testing.T) {
+		existing := buildExisting()
+		outAny := MessageReducer(existing, nil)
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		mutateAndAssertOriginal(t, out, existing)
+	})
+	t.Run("nil message op batch", func(t *testing.T) {
+		existing := buildExisting()
+		outAny := MessageReducer(existing, []MessageOp{nil})
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		mutateAndAssertOriginal(t, out, existing)
+	})
+}
+
+func TestMessageReducer_BuiltInOpsDoNotAliasUpdateNestedState(t *testing.T) {
+	buildUpdateMessage := func(content string) model.Message {
+		text := content + "-part"
+		args := []byte(content)
+		return model.Message{
+			Role:    model.RoleAssistant,
+			Content: content,
+			ContentParts: []model.ContentPart{
+				{Type: model.ContentTypeText, Text: &text},
+			},
+			ToolCalls: []model.ToolCall{
+				{
+					Type: "function",
+					ID:   "call-" + content,
+					Function: model.FunctionDefinitionParam{
+						Arguments: args,
+					},
+				},
+			},
+		}
+	}
+	t.Run("single message", func(t *testing.T) {
+		update := buildUpdateMessage("single")
+		outAny := MessageReducer([]model.Message{}, update)
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		mutated := "mutated-part"
+		update.ContentParts[0].Text = &mutated
+		update.ToolCalls[0].Function.Arguments[0] = 'Q'
+		require.NotNil(t, out[0].ContentParts[0].Text)
+		assert.Equal(t, "single-part", *out[0].ContentParts[0].Text)
+		assert.Equal(t, byte('s'), out[0].ToolCalls[0].Function.Arguments[0])
+	})
+	t.Run("append messages op", func(t *testing.T) {
+		update := []model.Message{buildUpdateMessage("batch")}
+		outAny := MessageReducer([]model.Message{}, AppendMessages{Items: update})
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		mutated := "mutated-part"
+		update[0].ContentParts[0].Text = &mutated
+		update[0].ToolCalls[0].Function.Arguments[0] = 'Q'
+		require.NotNil(t, out[0].ContentParts[0].Text)
+		assert.Equal(t, "batch-part", *out[0].ContentParts[0].Text)
+		assert.Equal(t, byte('b'), out[0].ToolCalls[0].Function.Arguments[0])
+	})
+}
+
 func TestMergeReducerAndMessageReducerCoveragePaths(t *testing.T) {
 	require.False(t, isMergeReducer(nil))
 	require.True(t, isMergeReducer(MergeReducer))

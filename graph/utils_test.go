@@ -305,6 +305,37 @@ func TestDeepCopyAny_MessageOpsDeepCopySlices(t *testing.T) {
 	}
 }
 
+func TestDeepCopyAny_MessageOpsPreserveTopLevelSliceSharing(t *testing.T) {
+	ops := []MessageOp{
+		AppendMessages{Items: []model.Message{model.NewUserMessage("hello")}},
+	}
+	copiedAny := deepCopyAny(map[string]any{
+		"left":  ops,
+		"right": ops,
+	})
+	copied, ok := copiedAny.(map[string]any)
+	require.True(t, ok)
+	left, ok := copied["left"].([]MessageOp)
+	require.True(t, ok)
+	right, ok := copied["right"].([]MessageOp)
+	require.True(t, ok)
+	require.NotEqual(
+		t,
+		reflect.ValueOf(ops).Pointer(),
+		reflect.ValueOf(left).Pointer(),
+	)
+	require.Equal(
+		t,
+		reflect.ValueOf(left).Pointer(),
+		reflect.ValueOf(right).Pointer(),
+	)
+	left[0] = ReplaceLastUser{Content: "changed"}
+	_, ok = right[0].(ReplaceLastUser)
+	require.True(t, ok)
+	_, ok = ops[0].(AppendMessages)
+	require.True(t, ok)
+}
+
 func TestDeepCopyAny_MessageToolCallExtraFieldsPreserveGraphShape(t *testing.T) {
 	extra := map[string]any{}
 	shared := map[string]any{"value": "keep"}

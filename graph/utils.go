@@ -23,6 +23,7 @@ var (
 	mapStringBytesType    = reflect.TypeOf(map[string][]byte(nil))
 	sliceAnyType          = reflect.TypeOf([]any(nil))
 	sliceBytesType        = reflect.TypeOf([]byte(nil))
+	sliceMessageOpsType   = reflect.TypeOf([]MessageOp(nil))
 	modelMessagesType     = reflect.TypeOf([]model.Message(nil))
 	modelContentPartsType = reflect.TypeOf([]model.ContentPart(nil))
 	modelToolCallsType    = reflect.TypeOf([]model.ToolCall(nil))
@@ -292,6 +293,29 @@ func deepCopyMessageOpsWithVisited(
 ) ([]MessageOp, bool) {
 	if in == nil {
 		return nil, true
+	}
+	if len(in) == 0 {
+		return []MessageOp{}, true
+	}
+	ptr := reflect.ValueOf(in).Pointer()
+	if ptr != 0 {
+		key := sliceVisitKey(ptr, len(in), sliceMessageOpsType)
+		if cached, ok := visited[key]; ok {
+			return cached.([]MessageOp), true
+		}
+		out := make([]MessageOp, len(in))
+		visited[key] = out
+		for i, op := range in {
+			if op == nil {
+				continue
+			}
+			copied, ok := deepCopyMessageOpWithVisited(op, visited)
+			if !ok {
+				return nil, false
+			}
+			out[i] = copied
+		}
+		return out, true
 	}
 	out := make([]MessageOp, len(in))
 	for i, op := range in {
