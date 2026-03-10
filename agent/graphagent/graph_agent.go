@@ -118,6 +118,15 @@ func (ga *GraphAgent) eventChannelBufferSize(invocation *agent.Invocation) int {
 	return ga.channelBufferSize
 }
 
+// singleEventChannelBufferSize reserves one slot for immediate short-circuit responses.
+func (ga *GraphAgent) singleEventChannelBufferSize(invocation *agent.Invocation) int {
+	size := ga.eventChannelBufferSize(invocation)
+	if size <= 0 {
+		return 1
+	}
+	return size
+}
+
 // runWithBarrier emits a start barrier, waits for completion, then runs the graph with callbacks
 // pipeline and forwards all events to the provided output channel.
 func (ga *GraphAgent) runWithBarrier(ctx context.Context, invocation *agent.Invocation, out chan<- *event.Event) {
@@ -200,7 +209,7 @@ func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.In
 		}
 		if result != nil && result.CustomResponse != nil {
 			// Create a channel that returns the custom response and then closes.
-			eventChan := make(chan *event.Event, ga.eventChannelBufferSize(invocation))
+			eventChan := make(chan *event.Event, ga.singleEventChannelBufferSize(invocation))
 			// Create an event from the custom response.
 			customevent := event.NewResponseEvent(invocation.InvocationID, invocation.AgentName, result.CustomResponse)
 			agent.EmitEvent(ctx, invocation, eventChan, customevent)

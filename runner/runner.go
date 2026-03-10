@@ -446,6 +446,7 @@ func (r *runner) Run(
 	// by embedding it into the context. This is necessary for tools like
 	// transfer_to_agent that rely on agent.InvocationFromContext(ctx).
 	execCtx = agent.NewInvocationContext(execCtx, invocation)
+	execCtx = graph.WithGraphCompletionCapture(execCtx)
 
 	// Create flush channel and attach flusher before agent.Run to ensure cloned invocations inherit it.
 	flushChan := make(chan *flush.FlushRequest)
@@ -781,6 +782,11 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 	}
 
 	r.recordRunEvent(loop)
+	if loop.invocation != nil &&
+		loop.invocation.RunOptions.DisableGraphCompletionEvent &&
+		isGraphCompletionEvent(agentEvent) {
+		return nil
+	}
 	if !loop.streamFilter.Allows(agentEvent) {
 		return nil
 	}

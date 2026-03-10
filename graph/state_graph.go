@@ -2263,7 +2263,9 @@ func NewAgentNodeFunc(agentName string, opts ...Option) NodeFunc {
 		// Execute the target agent.
 		// Important: wrap the context with the sub-invocation so downstream
 		// callbacks (model/tool) can access it via agent.InvocationFromContext(ctx).
-		subCtx := agent.NewInvocationContext(ctx, invocation)
+		subCtx := WithGraphCompletionCapture(
+			agent.NewInvocationContext(ctx, invocation),
+		)
 		agentEventChan, err := targetAgent.Run(subCtx, invocation)
 		if err != nil {
 			// Emit agent execution error event.
@@ -2570,6 +2572,9 @@ func processAgentEventStream(
 	res = agentEventStreamResult{
 		tokenUsage: &itelemetry.TokenUsage{},
 	}
+	parentInvocation, _ := agent.InvocationFromContext(ctx)
+	suppressGraphCompletion := parentInvocation != nil &&
+		parentInvocation.RunOptions.DisableGraphCompletionEvent
 
 	tap, err := newAgentDeltaStreamTap(ctx, streamName, &res.lastResponse)
 	if err != nil {
@@ -2586,14 +2591,16 @@ func processAgentEventStream(
 			state,
 			agentEvent,
 		)
-
+		if suppressGraphCompletion && isGraphCompletionEvent(agentEvent) {
+			tap.WriteDelta(agentEvent)
+			updateAgentStreamResultFromEvent(ctx, &res, agentEvent, tracker)
+			continue
+		}
 		// Forward the event to the parent event channel.
 		if err := event.EmitEvent(ctx, eventChan, agentEvent); err != nil {
 			return res, err
 		}
-
 		tap.WriteDelta(agentEvent)
-
 		updateAgentStreamResultFromEvent(ctx, &res, agentEvent, tracker)
 	}
 
@@ -2645,6 +2652,7 @@ func buildAgentInvocationWithStateScopeAndInputKey(
 		parentInvocation != nil {
 		runOptions := parentInvocation.RunOptions
 		// Child graph agents must keep their terminal completion event for state handoff.
+		// Parent-side forwarding still respects the parent's visibility preference.
 		runOptions.DisableGraphCompletionEvent = false
 		runOptions.RuntimeState = runtime
 		runOptions.CustomAgentConfigs = withScopedGraphCallOptions(
@@ -3706,6 +3714,10 @@ func emitAgentStartEvent(
 	if eventChan == nil {
 		return
 	}
+	invocation, _ := agent.InvocationFromContext(ctx)
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return
+	}
 
 	agentStartEvent := NewNodeStartEvent(
 		WithNodeEventInvocationID(invocationID),
@@ -3713,7 +3725,6 @@ func emitAgentStartEvent(
 		WithNodeEventNodeType(NodeTypeAgent),
 		WithNodeEventStartTime(startTime),
 	)
-	invocation, _ := agent.InvocationFromContext(ctx)
 	agent.EmitEvent(ctx, invocation, eventChan, agentStartEvent)
 }
 
@@ -3727,6 +3738,10 @@ func emitAgentCompleteEvent(
 	if eventChan == nil {
 		return
 	}
+	invocation, _ := agent.InvocationFromContext(ctx)
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return
+	}
 
 	agentCompleteEvent := NewNodeCompleteEvent(
 		WithNodeEventInvocationID(invocationID),
@@ -3735,8 +3750,6 @@ func emitAgentCompleteEvent(
 		WithNodeEventStartTime(startTime),
 		WithNodeEventEndTime(endTime),
 	)
-
-	invocation, _ := agent.InvocationFromContext(ctx)
 	agent.EmitEvent(ctx, invocation, eventChan, agentCompleteEvent)
 }
 
@@ -3751,6 +3764,10 @@ func emitAgentErrorEvent(
 	if eventChan == nil {
 		return
 	}
+	invocation, _ := agent.InvocationFromContext(ctx)
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return
+	}
 
 	agentErrorEvent := NewNodeErrorEvent(
 		WithNodeEventInvocationID(invocationID),
@@ -3760,8 +3777,6 @@ func emitAgentErrorEvent(
 		WithNodeEventEndTime(endTime),
 		WithNodeEventError(err.Error()),
 	)
-
-	invocation, _ := agent.InvocationFromContext(ctx)
 	agent.EmitEvent(ctx, invocation, eventChan, agentErrorEvent)
 }
 

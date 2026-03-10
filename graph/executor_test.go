@@ -343,6 +343,31 @@ func TestExecutor_CompletionEmitErrorDoesNotFailExecution(t *testing.T) {
 	require.NoError(t, <-errCh)
 }
 
+func TestExecutor_DisableGraphCompletionEvent_SuppressesOutput(t *testing.T) {
+	stateGraph := NewStateGraph(MessagesStateSchema())
+	stateGraph.AddNode("noop", func(context.Context, State) (any, error) {
+		return State{StateKeyLastResponse: "done"}, nil
+	})
+	stateGraph.SetEntryPoint("noop")
+	stateGraph.SetFinishPoint("noop")
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(g)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+
+	eventCh, err := exec.Execute(context.Background(), State{}, invocation)
+	require.NoError(t, err)
+
+	for evt := range eventCh {
+		require.False(t, isGraphCompletionEvent(evt))
+	}
+}
+
 // Ensure handleInterrupt still emits the interrupt event even when
 // the provided context is canceled, because it uses a fresh background
 // context with a timeout for emission.

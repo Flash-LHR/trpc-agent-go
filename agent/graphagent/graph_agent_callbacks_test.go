@@ -14,6 +14,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -77,6 +78,41 @@ func TestGraphAgent_BeforeCallback_CustomResponseUsesInvocationBufferSize(t *tes
 	require.NoError(t, err)
 	require.Equal(t, 7, cap(ch))
 	for range ch {
+	}
+}
+
+func TestGraphAgent_BeforeCallback_CustomResponseKeepsSingleBuffer(t *testing.T) {
+	g := buildTrivialGraph(t)
+	callbacks := agent.NewCallbacks().
+		RegisterBeforeAgent(func(ctx context.Context, inv *agent.Invocation) (*model.Response, error) {
+			return &model.Response{Choices: []model.Choice{{Message: model.NewAssistantMessage("short-circuit")}}}, nil
+		})
+	ga, err := New("ga", g, WithAgentCallbacks(callbacks), WithChannelBufferSize(0))
+	require.NoError(t, err)
+	inv := &agent.Invocation{Message: model.NewUserMessage("hi")}
+	ga.setupInvocation(inv)
+
+	type result struct {
+		ch  <-chan *event.Event
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ch, runErr := ga.runWithCallbacks(context.Background(), inv)
+		done <- result{ch: ch, err: runErr}
+	}()
+
+	select {
+	case res := <-done:
+		require.NoError(t, res.err)
+		require.Equal(t, 1, cap(res.ch))
+		var events []*event.Event
+		for evt := range res.ch {
+			events = append(events, evt)
+		}
+		require.Len(t, events, 1)
+	case <-time.After(time.Second):
+		t.Fatal("expected short-circuit callback response without blocking")
 	}
 }
 

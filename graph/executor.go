@@ -273,8 +273,16 @@ func (e *Executor) Execute(
 		eventChanSize = invocation.RunOptions.EventChannelBufferSize
 	}
 	startTime := time.Now()
-	// Create event channel.
+	// Create the internal event channel used by graph execution.
 	eventChan := make(chan *event.Event, eventChanSize)
+	outputChan := (<-chan *event.Event)(eventChan)
+	if invocation.RunOptions.DisableGraphCompletionEvent &&
+		!shouldCaptureGraphCompletion(ctx) {
+		filteredChan := make(chan *event.Event, eventChanSize)
+		outputChan = filteredChan
+		forwardCtx := agent.CloneContext(ctx)
+		go e.forwardExecutionEvents(forwardCtx, eventChan, filteredChan)
+	}
 	// Start execution in a goroutine.
 	runCtx := agent.CloneContext(ctx)
 	go func(ctx context.Context) {
@@ -333,7 +341,24 @@ func (e *Executor) Execute(
 			))
 		}
 	}(runCtx)
-	return eventChan, nil
+	return outputChan, nil
+}
+
+func (e *Executor) forwardExecutionEvents(
+	ctx context.Context,
+	src <-chan *event.Event,
+	dst chan<- *event.Event,
+) {
+	defer close(dst)
+	for evt := range src {
+		if isGraphCompletionEvent(evt) {
+			continue
+		}
+		if err := event.EmitEvent(ctx, dst, evt); err != nil {
+			log.WarnfContext(ctx, "Failed to forward executor event: %v", err)
+			return
+		}
+	}
 }
 
 // executeGraph executes the graph using Pregel-style BSP execution.
@@ -433,10 +458,8 @@ func (e *Executor) executeGraph(
 		return err
 	}
 
-	if invocation == nil || !invocation.RunOptions.DisableGraphCompletionEvent {
-		if err := agent.EmitEvent(ctx, invocation, eventChan, e.buildCompletionEvent(execCtx, startTime, stepsExecuted)); err != nil {
-			log.WarnfContext(ctx, "Failed to emit graph completion event: %v", err)
-		}
+	if err := agent.EmitEvent(ctx, invocation, eventChan, e.buildCompletionEvent(execCtx, startTime, stepsExecuted)); err != nil {
+		log.WarnfContext(ctx, "Failed to emit graph completion event: %v", err)
 	}
 	return nil
 }

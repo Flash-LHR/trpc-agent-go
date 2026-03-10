@@ -317,6 +317,99 @@ func TestSubgraph_DisableGraphCompletionEvent_DoesNotDropOutput(t *testing.T) {
 	require.Equal(t, testChildValuePrefix, value)
 }
 
+func TestSubgraph_DisableGraphCompletionEvent_HidesChildCompletionFromParentStream(t *testing.T) {
+	parent := &parentWithSubAgent{a: &completionOptionalAgent{name: testChildAgentName}}
+	parentEvents := make(chan *event.Event, 8)
+	exec := &ExecutionContext{InvocationID: "inv-hidden", EventChan: parentEvents}
+	state := State{
+		StateKeyExecContext:   exec,
+		StateKeyCurrentNodeID: "agentNode",
+		StateKeyParentAgent:   parent,
+		StateKeyUserInput:     testUserInput,
+	}
+	fn := NewAgentNodeFunc(
+		testChildAgentName,
+		WithSubgraphOutputMapper(func(_ State, r SubgraphResult) State {
+			value, ok := GetStateValue[string](r.FinalState, testChildValueKey)
+			if !ok {
+				return nil
+			}
+			return State{testValueFromChildKey: value}
+		}),
+	)
+	parentInvocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+
+	_, err := fn(agent.NewInvocationContext(context.Background(), parentInvocation), state)
+	require.NoError(t, err)
+
+	for len(parentEvents) > 0 {
+		evt := <-parentEvents
+		require.False(t, isGraphCompletionEvent(evt))
+	}
+}
+
+func TestSubgraph_DisableGraphExecutorEvents_SuppressesAgentLifecycleEvents(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		parent := &parentWithSubAgent{a: &stateValueAgent{name: testChildAgentName}}
+		parentEvents := make(chan *event.Event, 8)
+		exec := &ExecutionContext{InvocationID: "inv-agent-success", EventChan: parentEvents}
+		state := State{
+			StateKeyExecContext:   exec,
+			StateKeyCurrentNodeID: "agentNode",
+			StateKeyParentAgent:   parent,
+			StateKeyUserInput:     testUserInput,
+		}
+		fn := NewAgentNodeFunc(testChildAgentName)
+		parentInvocation := agent.NewInvocation(
+			agent.WithInvocationRunOptions(agent.RunOptions{
+				DisableGraphExecutorEvents: true,
+			}),
+		)
+
+		_, err := fn(agent.NewInvocationContext(context.Background(), parentInvocation), state)
+		require.NoError(t, err)
+
+		for len(parentEvents) > 0 {
+			evt := <-parentEvents
+			require.NotEqual(t, ObjectTypeGraphNodeStart, evt.Object)
+			require.NotEqual(t, ObjectTypeGraphNodeComplete, evt.Object)
+			require.NotEqual(t, ObjectTypeGraphNodeError, evt.Object)
+		}
+	})
+
+	t.Run("error", func(t *testing.T) {
+		parent := &parentWithSubAgent{a: &errAgent{name: testChildAgentName}}
+		parentEvents := make(chan *event.Event, 8)
+		exec := &ExecutionContext{InvocationID: "inv-agent-error", EventChan: parentEvents}
+		state := State{
+			StateKeyExecContext:   exec,
+			StateKeyCurrentNodeID: "agentNode",
+			StateKeyParentAgent:   parent,
+			StateKeyUserInput:     testUserInput,
+		}
+		fn := NewAgentNodeFunc(testChildAgentName)
+		parentInvocation := agent.NewInvocation(
+			agent.WithInvocationRunOptions(agent.RunOptions{
+				DisableGraphExecutorEvents: true,
+			}),
+		)
+
+		_, err := fn(agent.NewInvocationContext(context.Background(), parentInvocation), state)
+		require.Error(t, err)
+
+		for len(parentEvents) > 0 {
+			evt := <-parentEvents
+			require.NotEqual(t, ObjectTypeGraphNodeStart, evt.Object)
+			require.NotEqual(t, ObjectTypeGraphNodeComplete, evt.Object)
+			require.NotEqual(t, ObjectTypeGraphNodeError, evt.Object)
+		}
+	})
+}
+
 // TestSubgraph_InputFromLastResponse_MapsUserInput verifies that enabling
 // WithSubgraphInputFromLastResponse maps parent's last_response to child
 // invocation's user input. When last_response is empty, it falls back to the
