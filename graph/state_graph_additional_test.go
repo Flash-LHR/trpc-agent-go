@@ -169,6 +169,15 @@ func graphHasAttr(attrs []attribute.KeyValue, key string, want any) bool {
 	return false
 }
 
+func graphHasNonEmptyStringAttr(attrs []attribute.KeyValue, key string) bool {
+	for _, kv := range attrs {
+		if string(kv.Key) == key && kv.Value.AsString() != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // collectModelExecutionPhases drains model execution events from the channel.
 func collectModelExecutionPhases(ch <-chan *event.Event) []ModelExecutionPhase {
 	var phases []ModelExecutionPhase
@@ -584,6 +593,51 @@ func TestModelResponseProcessorConsume_FastPathSeq(t *testing.T) {
 	require.NotNil(t, processor.lastEvent)
 	require.NotNil(t, processor.finalResponse)
 	require.Same(t, processor.lastEvent, <-ch)
+}
+
+func TestModelResponseProcessorConsume_FastPathDoneResponse_TracesEventID(t *testing.T) {
+	ch := make(chan *event.Event, 1)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-fast-done-trace"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableResponseUsageTracking: true,
+		}),
+	)
+	span := newGraphRecordingSpan()
+	var runErr error
+	processor := newModelResponseProcessor(
+		context.Background(),
+		modelExecutionConfig{
+			Invocation:   invocation,
+			InvocationID: invocation.InvocationID,
+			EventChan:    ch,
+			Request:      &model.Request{},
+			Span:         span,
+			NodeID:       "llm",
+		},
+		invocation,
+		&runErr,
+	)
+	require.True(t, processor.fastResponsePath)
+	err := processor.consume(modelResponseStream{
+		Seq: func(yield func(*model.Response) bool) {
+			yield(&model.Response{
+				Done: true,
+				Choices: []model.Choice{
+					{Message: model.NewAssistantMessage("final")},
+				},
+			})
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, processor.lastEvent)
+	require.NotEmpty(t, processor.lastEvent.ID)
+	require.True(t, graphHasNonEmptyStringAttr(span.attrs, itelemetry.KeyEventID))
+	select {
+	case emitted := <-ch:
+		require.FailNowf(t, "unexpected emitted event", "got %+v", emitted)
+	default:
+	}
 }
 
 func TestNewModelResponseProcessor_FastPathWhenOnlyOnePartialToggleIsDisabled(t *testing.T) {
