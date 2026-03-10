@@ -473,6 +473,9 @@ func StringSliceReducer(existing, update any) any {
 
 // MergeReducer merges update map into existing map.
 func MergeReducer(existing, update any) any {
+	if existing == nil {
+		existing = make(map[string]any)
+	}
 	existingMap, ok1 := existing.(map[string]any)
 	updateMap, ok2 := update.(map[string]any)
 
@@ -692,8 +695,17 @@ func appendOwnedMessages(existing, updates []model.Message) []model.Message {
 	return out
 }
 
+func cloneMessageSlicePreserveEmpty(in []model.Message) []model.Message {
+	if in == nil {
+		return nil
+	}
+	out := make([]model.Message, len(in))
+	copy(out, in)
+	return out
+}
+
 func replaceLastUserOwned(existing []model.Message, content string) []model.Message {
-	out := append([]model.Message(nil), existing...)
+	out := cloneMessageSlicePreserveEmpty(existing)
 	for i := len(out) - 1; i >= 0; i-- {
 		if out[i].Role != model.RoleUser {
 			continue
@@ -717,10 +729,10 @@ func replaceUserMessageContent(msg model.Message, content string) model.Message 
 }
 
 func applyGenericMessageOp(existing []model.Message, op MessageOp) []model.Message {
-	out := append([]model.Message(nil), existing...)
+	out := cloneMessageSlicePreserveEmpty(existing)
 	out = op.Apply(out)
 	if cap(out) != len(out) {
-		out = append([]model.Message(nil), out...)
+		out = tightenMessageCapacity(out)
 	}
 	return out
 }
@@ -730,7 +742,7 @@ func applyMessageOps(existing []model.Message, ops []MessageOp) []model.Message 
 		return out
 	}
 
-	out := append([]model.Message(nil), existing...)
+	out := cloneMessageSlicePreserveEmpty(existing)
 	for _, op := range ops {
 		out = applyOwnedMessageOp(out, op)
 	}
@@ -784,8 +796,13 @@ func applyOwnedMessageOp(out []model.Message, op MessageOp) []model.Message {
 }
 
 func tightenMessageCapacity(out []model.Message) []model.Message {
+	if out == nil {
+		return nil
+	}
 	if cap(out) == len(out) {
 		return out
 	}
-	return append([]model.Message(nil), out...)
+	tightened := make([]model.Message, len(out))
+	copy(tightened, out)
+	return tightened
 }

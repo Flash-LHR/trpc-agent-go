@@ -11,6 +11,7 @@ package graph
 
 import (
 	"encoding/json"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -575,6 +576,39 @@ func TestMergeReducerAndMessageReducerCoveragePaths(t *testing.T) {
 	})
 	require.Len(t, defaulted, 1)
 	require.Equal(t, "default", defaulted[0].Content)
+}
+
+type observeEmptyMessageOp struct{}
+
+func (observeEmptyMessageOp) Apply(dst []model.Message) []model.Message {
+	if dst == nil {
+		return []model.Message{model.NewAssistantMessage("nil")}
+	}
+	return []model.Message{model.NewAssistantMessage("non-nil")}
+}
+
+func TestApplyUpdate_MergeReducerPreservesLegacyNilMapSemantics(t *testing.T) {
+	schema := NewStateSchema().AddField("meta", StateField{
+		Type:    reflect.TypeOf(map[string]any{}),
+		Reducer: MergeReducer,
+	})
+	got := schema.ApplyUpdate(State{}, State{
+		"meta": map[string]any(nil),
+	})["meta"]
+	meta, ok := got.(map[string]any)
+	require.True(t, ok)
+	require.NotNil(t, meta)
+	require.Empty(t, meta)
+	meta["k"] = "v"
+	require.Equal(t, "v", meta["k"])
+}
+
+func TestMessageReducer_CustomOpSeesNonNilEmptySlice(t *testing.T) {
+	out := MessageReducer([]model.Message{}, []MessageOp{observeEmptyMessageOp{}})
+	msgs, ok := out.([]model.Message)
+	require.True(t, ok)
+	require.Len(t, msgs, 1)
+	require.Equal(t, "non-nil", msgs[0].Content)
 }
 
 func TestSafeClone_FiltersUnsafeKeys(t *testing.T) {

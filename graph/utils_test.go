@@ -370,6 +370,75 @@ func TestDeepCopyAny_MessageToolCallExtraFieldsPreserveGraphShape(t *testing.T) 
 	)
 }
 
+func TestDeepCopyAny_MessageNestedValuesPreserveSharing(t *testing.T) {
+	text := "shared"
+	index := 7
+	args := []byte("args")
+	imageData := []byte("img")
+	audioData := []byte("aud")
+	fileData := []byte("file")
+	parts := []model.ContentPart{
+		{
+			Type:  model.ContentTypeText,
+			Text:  &text,
+			Image: &model.Image{Data: imageData},
+			Audio: &model.Audio{Data: audioData, Format: "wav"},
+			File:  &model.File{Name: "f.txt", Data: fileData},
+		},
+	}
+	calls := []model.ToolCall{
+		{
+			Type:  "function",
+			ID:    "call-1",
+			Index: &index,
+			Function: model.FunctionDefinitionParam{
+				Arguments: args,
+			},
+		},
+	}
+	msgs := []model.Message{
+		{Role: model.RoleUser, ContentParts: parts, ToolCalls: calls},
+		{Role: model.RoleAssistant, ContentParts: parts, ToolCalls: calls},
+	}
+	copiedAny := deepCopyAny(msgs)
+	copiedMsgs, ok := copiedAny.([]model.Message)
+	require.True(t, ok)
+	require.Len(t, copiedMsgs, 2)
+	require.NotEqual(
+		t,
+		reflect.ValueOf(parts).Pointer(),
+		reflect.ValueOf(copiedMsgs[0].ContentParts).Pointer(),
+	)
+	require.Equal(
+		t,
+		reflect.ValueOf(copiedMsgs[0].ContentParts).Pointer(),
+		reflect.ValueOf(copiedMsgs[1].ContentParts).Pointer(),
+	)
+	require.Same(t, copiedMsgs[0].ContentParts[0].Text, copiedMsgs[1].ContentParts[0].Text)
+	require.Equal(
+		t,
+		reflect.ValueOf(copiedMsgs[0].ContentParts[0].Image.Data).Pointer(),
+		reflect.ValueOf(copiedMsgs[1].ContentParts[0].Image.Data).Pointer(),
+	)
+	require.Equal(
+		t,
+		reflect.ValueOf(copiedMsgs[0].ToolCalls).Pointer(),
+		reflect.ValueOf(copiedMsgs[1].ToolCalls).Pointer(),
+	)
+	require.Same(t, copiedMsgs[0].ToolCalls[0].Index, copiedMsgs[1].ToolCalls[0].Index)
+	require.Equal(
+		t,
+		reflect.ValueOf(copiedMsgs[0].ToolCalls[0].Function.Arguments).Pointer(),
+		reflect.ValueOf(copiedMsgs[1].ToolCalls[0].Function.Arguments).Pointer(),
+	)
+	*copiedMsgs[0].ContentParts[0].Text = "updated"
+	require.Equal(t, "updated", *copiedMsgs[1].ContentParts[0].Text)
+	require.Equal(t, "shared", text)
+	copiedMsgs[0].ToolCalls[0].Function.Arguments[0] = 'X'
+	require.Equal(t, byte('X'), copiedMsgs[1].ToolCalls[0].Function.Arguments[0])
+	require.Equal(t, []byte("args"), args)
+}
+
 func TestDeepCopyAny_PreservesNilFastPathValues(t *testing.T) {
 	t.Run("nil map[string]any", func(t *testing.T) {
 		copied, ok := deepCopyAny(map[string]any(nil)).(map[string]any)

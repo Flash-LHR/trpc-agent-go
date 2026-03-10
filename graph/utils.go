@@ -64,7 +64,7 @@ func deepCopyFastPathWithVisited(value any, visited map[uintptr]any) (any, bool)
 	case map[string]any:
 		return deepCopyMapStringAnyWithVisited(v, visited), true
 	case map[string][]byte:
-		return deepCopyMapStringBytes(v), true
+		return deepCopyMapStringBytesWithVisited(v, visited), true
 	case []any:
 		return deepCopySliceAnyWithVisited(v, visited), true
 	case []string:
@@ -177,12 +177,20 @@ func deepCopyMapStringAnyWithVisited(
 }
 
 func deepCopyMapStringBytes(in map[string][]byte) map[string][]byte {
+	visited := make(map[uintptr]any)
+	return deepCopyMapStringBytesWithVisited(in, visited)
+}
+
+func deepCopyMapStringBytesWithVisited(
+	in map[string][]byte,
+	visited map[uintptr]any,
+) map[string][]byte {
 	if in == nil {
 		return nil
 	}
 	copied := make(map[string][]byte, len(in))
 	for k, v := range in {
-		copied[k] = cloneSlice(v)
+		copied[k] = deepCopyBytesWithVisited(v, visited)
 	}
 	return copied
 }
@@ -302,7 +310,7 @@ func deepCopyModelMessagesWithVisited(
 	for i := range in {
 		out[i] = in[i]
 		if parts := in[i].ContentParts; parts != nil {
-			out[i].ContentParts = deepCopyModelContentParts(parts)
+			out[i].ContentParts = deepCopyModelContentPartsWithVisited(parts, visited)
 		}
 		if calls := in[i].ToolCalls; calls != nil {
 			out[i].ToolCalls = deepCopyModelToolCallsWithVisited(calls, visited)
@@ -312,61 +320,116 @@ func deepCopyModelMessagesWithVisited(
 }
 
 func deepCopyModelContentParts(in []model.ContentPart) []model.ContentPart {
+	visited := make(map[uintptr]any)
+	return deepCopyModelContentPartsWithVisited(in, visited)
+}
+
+func deepCopyModelContentPartsWithVisited(
+	in []model.ContentPart,
+	visited map[uintptr]any,
+) []model.ContentPart {
 	if in == nil {
 		return nil
 	}
+	if len(in) == 0 {
+		return []model.ContentPart{}
+	}
+	ptr := reflect.ValueOf(in).Pointer()
+	if ptr != 0 {
+		if cached, ok := visited[ptr]; ok {
+			return cached.([]model.ContentPart)
+		}
+	}
 	out := make([]model.ContentPart, len(in))
+	if ptr != 0 {
+		visited[ptr] = out
+	}
 	for i := range in {
 		out[i] = in[i]
 		if in[i].Text != nil {
-			s := *in[i].Text
-			out[i].Text = &s
+			out[i].Text = deepCopyStringPointerWithVisited(in[i].Text, visited)
 		}
 		if in[i].Image != nil {
-			out[i].Image = deepCopyModelImage(in[i].Image)
+			out[i].Image = deepCopyModelImageWithVisited(in[i].Image, visited)
 		}
 		if in[i].Audio != nil {
-			out[i].Audio = deepCopyModelAudio(in[i].Audio)
+			out[i].Audio = deepCopyModelAudioWithVisited(in[i].Audio, visited)
 		}
 		if in[i].File != nil {
-			out[i].File = deepCopyModelFile(in[i].File)
+			out[i].File = deepCopyModelFileWithVisited(in[i].File, visited)
 		}
 	}
 	return out
 }
 
 func deepCopyModelImage(in *model.Image) *model.Image {
+	visited := make(map[uintptr]any)
+	return deepCopyModelImageWithVisited(in, visited)
+}
+
+func deepCopyModelImageWithVisited(
+	in *model.Image,
+	visited map[uintptr]any,
+) *model.Image {
 	if in == nil {
 		return nil
 	}
+	ptr := reflect.ValueOf(in).Pointer()
+	if cached, ok := visited[ptr]; ok {
+		return cached.(*model.Image)
+	}
 	out := *in
+	visited[ptr] = &out
 	if in.Data != nil {
-		out.Data = make([]byte, len(in.Data))
-		copy(out.Data, in.Data)
+		out.Data = deepCopyBytesWithVisited(in.Data, visited)
 	}
 	return &out
 }
 
 func deepCopyModelAudio(in *model.Audio) *model.Audio {
+	visited := make(map[uintptr]any)
+	return deepCopyModelAudioWithVisited(in, visited)
+}
+
+func deepCopyModelAudioWithVisited(
+	in *model.Audio,
+	visited map[uintptr]any,
+) *model.Audio {
 	if in == nil {
 		return nil
 	}
+	ptr := reflect.ValueOf(in).Pointer()
+	if cached, ok := visited[ptr]; ok {
+		return cached.(*model.Audio)
+	}
 	out := *in
+	visited[ptr] = &out
 	if in.Data != nil {
-		out.Data = make([]byte, len(in.Data))
-		copy(out.Data, in.Data)
+		out.Data = deepCopyBytesWithVisited(in.Data, visited)
 	}
 	return &out
 }
 
 func deepCopyModelFile(in *model.File) *model.File {
+	visited := make(map[uintptr]any)
+	return deepCopyModelFileWithVisited(in, visited)
+}
+
+func deepCopyModelFileWithVisited(
+	in *model.File,
+	visited map[uintptr]any,
+) *model.File {
 	if in == nil {
 		return nil
 	}
+	ptr := reflect.ValueOf(in).Pointer()
+	if cached, ok := visited[ptr]; ok {
+		return cached.(*model.File)
+	}
 	out := *in
+	visited[ptr] = &out
 	if in.Data != nil {
-		out.Data = make([]byte, len(in.Data))
-		copy(out.Data, in.Data)
+		out.Data = deepCopyBytesWithVisited(in.Data, visited)
 	}
 	return &out
 }
@@ -399,16 +462,69 @@ func deepCopyModelToolCallsWithVisited(
 	for i := range in {
 		out[i] = in[i]
 		if in[i].Index != nil {
-			idx := *in[i].Index
-			out[i].Index = &idx
+			out[i].Index = deepCopyIntPointerWithVisited(in[i].Index, visited)
 		}
 		if args := in[i].Function.Arguments; args != nil {
-			out[i].Function.Arguments = make([]byte, len(args))
-			copy(out[i].Function.Arguments, args)
+			out[i].Function.Arguments = deepCopyBytesWithVisited(args, visited)
 		}
 		if extra := in[i].ExtraFields; extra != nil {
 			out[i].ExtraFields = deepCopyMapStringAnyWithVisited(extra, visited)
 		}
+	}
+	return out
+}
+
+func deepCopyStringPointerWithVisited(
+	in *string,
+	visited map[uintptr]any,
+) *string {
+	if in == nil {
+		return nil
+	}
+	ptr := reflect.ValueOf(in).Pointer()
+	if cached, ok := visited[ptr]; ok {
+		return cached.(*string)
+	}
+	out := *in
+	visited[ptr] = &out
+	return &out
+}
+
+func deepCopyIntPointerWithVisited(
+	in *int,
+	visited map[uintptr]any,
+) *int {
+	if in == nil {
+		return nil
+	}
+	ptr := reflect.ValueOf(in).Pointer()
+	if cached, ok := visited[ptr]; ok {
+		return cached.(*int)
+	}
+	out := *in
+	visited[ptr] = &out
+	return &out
+}
+
+func deepCopyBytesWithVisited(
+	in []byte,
+	visited map[uintptr]any,
+) []byte {
+	if in == nil {
+		return nil
+	}
+	if len(in) == 0 {
+		return []byte{}
+	}
+	ptr := reflect.ValueOf(in).Pointer()
+	if ptr != 0 {
+		if cached, ok := visited[ptr]; ok {
+			return cached.([]byte)
+		}
+	}
+	out := cloneSlice(in)
+	if ptr != 0 {
+		visited[ptr] = out
 	}
 	return out
 }
