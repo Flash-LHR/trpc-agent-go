@@ -369,14 +369,18 @@ func (f *Flow) processStreamingResponses(
 	span oteltrace.Span,
 ) (lastEvent *event.Event, err error) {
 	currentInvocation := invocationFromContextOrDefault(ctx, invocation)
+	metricsInvocation := invocation
+	if metricsInvocation == nil {
+		metricsInvocation = currentInvocation
+	}
 	var tracker *itelemetry.ChatMetricsTracker
 	var timingInfo *model.TimingInfo
 	var partialUsageState partialUsageState
-	if currentInvocation != nil {
+	if metricsInvocation != nil {
 		timingInfo = responseUsageTimingInfo(currentInvocation)
 		tracker = itelemetry.NewChatMetricsTracker(
 			ctx,
-			currentInvocation,
+			metricsInvocation,
 			llmRequest,
 			timingInfo,
 			nil,
@@ -392,7 +396,7 @@ func (f *Flow) processStreamingResponses(
 		)
 		timingInfo = responseUsageTimingInfo(currentInvocation)
 		if tracker != nil {
-			tracker.SetInvocationState(currentInvocation, timingInfo)
+			tracker.SetInvocationState(metricsInvocation, timingInfo)
 		}
 		trackModelResponseTelemetry(
 			response,
@@ -472,6 +476,12 @@ func (f *Flow) processStreamingResponses(
 	})
 	if err != nil {
 		return nil, err
+	}
+	if lastEvent == nil {
+		if ctxErr := agent.CheckContextCancelled(ctx); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, errors.New(errMsgNoModelResponse)
 	}
 	return lastEvent, nil
 }

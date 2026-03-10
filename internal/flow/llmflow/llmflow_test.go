@@ -294,6 +294,100 @@ func TestProcessStreamingResponses_DisableResponseUsageTrackingStillRecordsMetri
 	require.NotEmpty(t, rm.ScopeMetrics)
 }
 
+func TestProcessStreamingResponses_UsesStableInvocationForMetricsMetadata(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	originalProvider := itelemetry.MeterProvider
+	originalMeter := itelemetry.ChatMeter
+	originalRequestCnt := itelemetry.ChatMetricTRPCAgentGoClientRequestCnt
+	originalTokenUsage := itelemetry.ChatMetricGenAIClientTokenUsage
+	originalOperationDuration := itelemetry.ChatMetricGenAIClientOperationDuration
+	originalServerTimeToFirstToken := itelemetry.ChatMetricGenAIServerTimeToFirstToken
+	originalClientTimeToFirstToken := itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken
+	originalTimePerOutputToken := itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken
+	originalOutputTokenPerTime := itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime
+	defer func() {
+		itelemetry.MeterProvider = originalProvider
+		itelemetry.ChatMeter = originalMeter
+		itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = originalRequestCnt
+		itelemetry.ChatMetricGenAIClientTokenUsage = originalTokenUsage
+		itelemetry.ChatMetricGenAIClientOperationDuration = originalOperationDuration
+		itelemetry.ChatMetricGenAIServerTimeToFirstToken = originalServerTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = originalClientTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = originalTimePerOutputToken
+		itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = originalOutputTokenPerTime
+	}()
+	itelemetry.MeterProvider = provider
+	itelemetry.ChatMeter = provider.Meter(semconvmetrics.MeterNameChat)
+	requestCnt, err := itelemetry.ChatMeter.Int64Counter("trpc_agent_go.client.request.cnt")
+	require.NoError(t, err)
+	itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = requestCnt
+	itelemetry.ChatMetricGenAIClientTokenUsage = nil
+	itelemetry.ChatMetricGenAIClientOperationDuration = nil
+	itelemetry.ChatMetricGenAIServerTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = nil
+	f := New(nil, nil, Options{})
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base-metrics"),
+		agent.WithInvocationModel(&mockModel{}),
+		agent.WithInvocationSession(&session.Session{
+			ID:      "sess-base-metrics",
+			UserID:  "user-base-metrics",
+			AppName: "app-base-metrics",
+		}),
+	)
+	baseInvocation.AgentName = "agent-base-metrics"
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated-metrics"),
+		agent.WithInvocationModel(&mockIterModel{}),
+		agent.WithInvocationSession(&session.Session{
+			ID:      "sess-updated-metrics",
+			UserID:  "user-updated-metrics",
+			AppName: "app-updated-metrics",
+		}),
+	)
+	updatedInvocation.AgentName = "agent-updated-metrics"
+	req := &model.Request{}
+	responseSeq := func(yield func(*model.Response) bool) {
+		yield(&model.Response{
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("done")},
+			},
+		})
+	}
+	eventChan := make(chan *event.Event, 10)
+	tracer := oteltrace.NewNoopTracerProvider().Tracer("t")
+	ctx, span := tracer.Start(
+		agent.NewInvocationContext(context.Background(), updatedInvocation),
+		"s",
+	)
+	defer span.End()
+	lastEvent, err := f.processStreamingResponses(
+		ctx,
+		baseInvocation,
+		req,
+		responseSeq,
+		eventChan,
+		span,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, lastEvent)
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIAgentName, baseInvocation.AgentName))
+	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIRequestModel, baseInvocation.Model.Info().Name))
+	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIConversationID, baseInvocation.Session.ID))
+	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoUserID, baseInvocation.Session.UserID))
+	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoAppName, baseInvocation.Session.AppName))
+	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIAgentName, updatedInvocation.AgentName))
+	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIRequestModel, updatedInvocation.Model.Info().Name))
+	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIConversationID, updatedInvocation.Session.ID))
+	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoUserID, updatedInvocation.Session.UserID))
+	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoAppName, updatedInvocation.Session.AppName))
+}
+
 func TestProcessStreamingResponses_UsesUpdatedInvocationForResponseUsageTiming(t *testing.T) {
 	updatedInvocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-updated-usage"),
@@ -1333,6 +1427,14 @@ func TestFlow_GenerateContentSeq_NilIterModel(t *testing.T) {
 	require.False(t, iterModel.GenerateContentCalled)
 }
 
+func TestFlow_GenerateContentSeq_NoResponseModel(t *testing.T) {
+	f := New(nil, nil, Options{})
+	inv := agent.NewInvocation(agent.WithInvocationModel(&noResponseModel{}))
+	seq, err := f.generateContentSeq(context.Background(), inv, &model.Request{})
+	require.NoError(t, err)
+	require.NotNil(t, seq)
+}
+
 func TestFlow_CallLLM_MaxLLMCallsExceeded(t *testing.T) {
 	f := New(nil, nil, Options{})
 	inv := agent.NewInvocation(
@@ -1379,21 +1481,16 @@ func (m *noResponseModel) GenerateContent(ctx context.Context, req *model.Reques
 	return ch, nil
 }
 
-// Ensures Flow.Run does not panic when a step produces no events (lastEvent == nil).
-// We use a short-lived context so the loop exits via ctx.Done() without hanging.
-func TestRun_NoPanicWhenModelReturnsNoResponses(t *testing.T) {
+func TestRun_NoResponseModelEmitsErrorEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-
 	f := New(nil, nil, Options{})
 	inv := agent.NewInvocation(
 		agent.WithInvocationModel(&noResponseModel{}),
 	)
-
 	ch, err := f.Run(ctx, inv)
 	require.NoError(t, err)
-
-	// Collect all events until channel closes. Expect none and, importantly, no panic.
+	var errorEvent *event.Event
 	var count int
 	for evt := range ch {
 		if evt.RequiresCompletion {
@@ -1401,8 +1498,14 @@ func TestRun_NoPanicWhenModelReturnsNoResponses(t *testing.T) {
 			inv.NotifyCompletion(ctx, key)
 		}
 		count++
+		if evt != nil && evt.Error != nil {
+			errorEvent = evt
+		}
 	}
-	require.Equal(t, 1, count)
+	require.GreaterOrEqual(t, count, 1)
+	require.NotNil(t, errorEvent)
+	require.Equal(t, model.ErrorTypeFlowError, errorEvent.Error.Type)
+	require.Contains(t, errorEvent.Error.Message, errMsgNoModelResponse)
 }
 
 func TestRun_NilIterModelEmitsErrorEvent(t *testing.T) {
@@ -1433,6 +1536,49 @@ func TestRun_NilIterModelEmitsErrorEvent(t *testing.T) {
 	require.NotNil(t, errorEvent)
 	require.Equal(t, model.ErrorTypeFlowError, errorEvent.Error.Type)
 	require.Contains(t, errorEvent.Error.Message, errMsgNoModelResponse)
+}
+
+func resourceMetricsContainAttribute(rm metricdata.ResourceMetrics, key, value string) bool {
+	for _, scopeMetric := range rm.ScopeMetrics {
+		for _, metric := range scopeMetric.Metrics {
+			switch data := metric.Data.(type) {
+			case metricdata.Sum[int64]:
+				for _, point := range data.DataPoints {
+					if attributeSetContains(point.Attributes, key, value) {
+						return true
+					}
+				}
+			case metricdata.Sum[float64]:
+				for _, point := range data.DataPoints {
+					if attributeSetContains(point.Attributes, key, value) {
+						return true
+					}
+				}
+			case metricdata.Histogram[int64]:
+				for _, point := range data.DataPoints {
+					if attributeSetContains(point.Attributes, key, value) {
+						return true
+					}
+				}
+			case metricdata.Histogram[float64]:
+				for _, point := range data.DataPoints {
+					if attributeSetContains(point.Attributes, key, value) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func attributeSetContains(set attribute.Set, key, value string) bool {
+	for _, kv := range set.ToSlice() {
+		if string(kv.Key) == key && kv.Value.AsString() == value {
+			return true
+		}
+	}
+	return false
 }
 
 // TestRunAfterModelCallbacks_ErrorPassing tests that modelErr is correctly passed to callbacks

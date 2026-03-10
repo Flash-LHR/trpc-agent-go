@@ -1828,6 +1828,10 @@ func runModelStream(
 			span.SetStatus(codes.Error, err.Error())
 			return ctx, modelResponseStream{}, fmt.Errorf("failed to generate content: %w", err)
 		}
+		if seq == nil {
+			span.SetAttributes(attribute.String("trpc.go.agent.error", errMsgNoModelResponse))
+			return ctx, modelResponseStream{}, errors.New(errMsgNoModelResponse)
+		}
 		return ctx, modelResponseStream{Seq: seq}, nil
 	}
 
@@ -3624,11 +3628,11 @@ func newModelResponseProcessor(
 	if p.stableInvocation == nil {
 		p.stableInvocation = invocation
 	}
-	if invocation != nil {
+	if p.stableInvocation != nil {
 		p.timingInfo = responseUsageTimingInfo(invocation)
 		p.tracker = itelemetry.NewChatMetricsTracker(
 			ctx,
-			invocation,
+			p.stableInvocation,
 			config.Request,
 			p.timingInfo,
 			nil,
@@ -3703,7 +3707,7 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 	p.invocation = invocationFromContextOrDefault(p.ctx, p.invocation)
 	p.timingInfo = responseUsageTimingInfo(p.invocation)
 	if p.tracker != nil {
-		p.tracker.SetInvocationState(p.invocation, p.timingInfo)
+		p.tracker.SetInvocationState(p.stableInvocation, p.timingInfo)
 	}
 	p.tap.WriteDelta(response)
 	trackModelResponseTelemetry(response, p.tracker)

@@ -343,6 +343,18 @@ func TestRunModelStream_IterModelError(t *testing.T) {
 	require.ErrorContains(t, err, "failed to generate content")
 }
 
+func TestRunModel_NilIterSequence(t *testing.T) {
+	ctx, ch, err := runModel(
+		context.Background(),
+		nil,
+		&nilIterModel{},
+		&model.Request{},
+	)
+	require.ErrorContains(t, err, errMsgNoModelResponse)
+	require.Nil(t, ch)
+	require.NotNil(t, ctx)
+}
+
 func TestExecuteModelAndProcessResponses_NilIterSequence(t *testing.T) {
 	resp, err := executeModelAndProcessResponses(
 		context.Background(),
@@ -799,6 +811,97 @@ func TestExecuteModelAndProcessResponses_DisableResponseUsageTrackingStillRecord
 	var rm metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(context.Background(), &rm))
 	require.NotEmpty(t, rm.ScopeMetrics)
+}
+
+func TestExecuteModelAndProcessResponses_UsesStableInvocationForMetricsMetadata(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	originalProvider := itelemetry.MeterProvider
+	originalMeter := itelemetry.ChatMeter
+	originalRequestCnt := itelemetry.ChatMetricTRPCAgentGoClientRequestCnt
+	originalTokenUsage := itelemetry.ChatMetricGenAIClientTokenUsage
+	originalOperationDuration := itelemetry.ChatMetricGenAIClientOperationDuration
+	originalServerTimeToFirstToken := itelemetry.ChatMetricGenAIServerTimeToFirstToken
+	originalClientTimeToFirstToken := itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken
+	originalTimePerOutputToken := itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken
+	originalOutputTokenPerTime := itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime
+	defer func() {
+		itelemetry.MeterProvider = originalProvider
+		itelemetry.ChatMeter = originalMeter
+		itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = originalRequestCnt
+		itelemetry.ChatMetricGenAIClientTokenUsage = originalTokenUsage
+		itelemetry.ChatMetricGenAIClientOperationDuration = originalOperationDuration
+		itelemetry.ChatMetricGenAIServerTimeToFirstToken = originalServerTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = originalClientTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = originalTimePerOutputToken
+		itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = originalOutputTokenPerTime
+	}()
+	itelemetry.MeterProvider = provider
+	itelemetry.ChatMeter = provider.Meter(semconvmetrics.MeterNameChat)
+	requestCnt, err := itelemetry.ChatMeter.Int64Counter("trpc_agent_go.client.request.cnt")
+	require.NoError(t, err)
+	itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = requestCnt
+	itelemetry.ChatMetricGenAIClientTokenUsage = nil
+	itelemetry.ChatMetricGenAIClientOperationDuration = nil
+	itelemetry.ChatMetricGenAIServerTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = nil
+	baseModel := &mockModel{name: "base-metrics-model"}
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base-metrics"),
+		agent.WithInvocationModel(baseModel),
+		agent.WithInvocationSession(&session.Session{
+			ID:      "sess-base-metrics",
+			UserID:  "user-base-metrics",
+			AppName: "app-base-metrics",
+		}),
+	)
+	baseInvocation.AgentName = "agent-base-metrics"
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated-metrics"),
+		agent.WithInvocationModel(&mockModel{name: "updated-metrics-model"}),
+		agent.WithInvocationSession(&session.Session{
+			ID:      "sess-updated-metrics",
+			UserID:  "user-updated-metrics",
+			AppName: "app-updated-metrics",
+		}),
+	)
+	updatedInvocation.AgentName = "agent-updated-metrics"
+	callbacks := model.NewCallbacks().RegisterBeforeModel(
+		func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
+			return &model.BeforeModelResult{
+				Context: agent.NewInvocationContext(ctx, updatedInvocation),
+			}, nil
+		},
+	)
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		modelExecutionConfig{
+			Invocation:     baseInvocation,
+			ModelCallbacks: callbacks,
+			LLMModel:       baseModel,
+			Request:        &model.Request{},
+			InvocationID:   baseInvocation.InvocationID,
+			SessionID:      baseInvocation.Session.ID,
+			Span:           noop.Span{},
+			NodeID:         "llm",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIAgentName, baseInvocation.AgentName))
+	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIRequestModel, baseModel.Info().Name))
+	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIConversationID, baseInvocation.Session.ID))
+	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoUserID, baseInvocation.Session.UserID))
+	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoAppName, baseInvocation.Session.AppName))
+	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIAgentName, updatedInvocation.AgentName))
+	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIRequestModel, updatedInvocation.Model.Info().Name))
+	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIConversationID, updatedInvocation.Session.ID))
+	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoUserID, updatedInvocation.Session.UserID))
+	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoAppName, updatedInvocation.Session.AppName))
 }
 
 func TestExecuteModelAndProcessResponses_UsesUpdatedInvocationForResponseUsageTiming(t *testing.T) {
