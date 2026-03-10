@@ -16,6 +16,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/graph"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -176,7 +177,9 @@ func (a *ChainAgent) executeSubAgents(
 		subInvocation := a.createSubAgentInvocation(subAgent, invocation)
 
 		// Reset invocation information in context
-		subAgentCtx := agent.NewInvocationContext(ctx, subInvocation)
+		subAgentCtx := graph.WithGraphCompletionCapture(
+			agent.NewInvocationContext(ctx, subInvocation),
+		)
 
 		// Run the sub-agent.
 		subEventChan, err := agent.RunWithPlugins(
@@ -208,6 +211,9 @@ func (a *ChainAgent) executeSubAgents(
 				if !subEvent.Response.IsPartial {
 					fullRespEvent = subEvent
 				}
+			}
+			if graph.ShouldSuppressGraphCompletionEvent(ctx, invocation, subEvent) {
+				continue
 			}
 			if err := event.EmitEvent(ctx, eventChan, subEvent); err != nil {
 				return nil, tokenUsage

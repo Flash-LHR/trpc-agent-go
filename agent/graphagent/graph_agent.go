@@ -224,7 +224,13 @@ func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.In
 	initialState := ga.createInitialState(ctx, invocation)
 
 	// Execute the graph.
-	eventChan, err := ga.executor.Execute(ctx, initialState, invocation)
+	executeCtx := ctx
+	if ga.agentCallbacks != nil &&
+		invocation != nil &&
+		invocation.RunOptions.DisableGraphCompletionEvent {
+		executeCtx = graph.WithGraphCompletionCapture(ctx)
+	}
+	eventChan, err := ga.executor.Execute(executeCtx, initialState, invocation)
 	if err != nil {
 		return nil, err
 	}
@@ -368,6 +374,9 @@ func (ga *GraphAgent) wrapEventChannel(
 		for evt := range originalChan {
 			if evt != nil && evt.Response != nil && !evt.Response.IsPartial {
 				fullRespEvent = evt
+			}
+			if graph.ShouldSuppressGraphCompletionEvent(ctx, invocation, evt) {
+				continue
 			}
 			if err := event.EmitEvent(ctx, wrappedChan, evt); err != nil {
 				return

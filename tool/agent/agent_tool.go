@@ -190,7 +190,9 @@ func (at *Tool) callWithParentInvocation(
 	)
 
 	// Run the agent and collect response.
-	subCtx := agent.NewInvocationContext(ctx, subInv)
+	subCtx := graph.WithGraphCompletionCapture(
+		agent.NewInvocationContext(ctx, subInv),
+	)
 	evCh, err := agent.RunWithPlugins(subCtx, subInv, at.agent)
 	if err != nil {
 		return "", fmt.Errorf("failed to run agent: %w", err)
@@ -392,6 +394,17 @@ func isGraphCompletionEvent(evt *event.Event) bool {
 		evt.Object == graph.ObjectTypeGraphExecution
 }
 
+func graphCompletionResult(evt *event.Event) (string, bool) {
+	if !isGraphCompletionEvent(evt) || evt.Response == nil || len(evt.Response.Choices) == 0 {
+		return "", false
+	}
+	message := evt.Response.Choices[0].Message
+	if message.Role != model.RoleAssistant || message.Content == "" {
+		return "", false
+	}
+	return message.Content, true
+}
+
 // callWithIsolatedRunner executes the agent in an isolated environment using
 // an in-memory session service. This is used as a fallback when no parent
 // invocation context is available.
@@ -483,7 +496,9 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 				agent.WithInvocationEventFilterKey(childKey),
 			)
 
-			subCtx := agent.NewInvocationContext(ctx, subInv)
+			subCtx := graph.WithGraphCompletionCapture(
+				agent.NewInvocationContext(ctx, subInv),
+			)
 			evCh, err := agent.RunWithPlugins(subCtx, subInv, at.agent)
 			if err != nil {
 				_ = stream.Writer.Send(tool.StreamChunk{Content: fmt.Sprintf("agent tool run error: %v", err)}, nil)
@@ -492,6 +507,16 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 			wrapped := at.wrapWithStreamSemantics(subCtx, subInv, evCh)
 
 			for ev := range wrapped {
+				if subInv.RunOptions.DisableGraphCompletionEvent {
+					if result, ok := graphCompletionResult(ev); ok {
+						if stream.Writer.Send(tool.StreamChunk{
+							Content: tool.FinalResultChunk{Result: result},
+						}, nil) {
+							return
+						}
+						continue
+					}
+				}
 				if stream.Writer.Send(tool.StreamChunk{Content: ev}, nil) {
 					return
 				}

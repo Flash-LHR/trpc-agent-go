@@ -18,6 +18,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -160,7 +161,9 @@ func (a *ParallelAgent) startSubAgents(
 			branchInvocation := a.createBranchInvocation(sa, invocation)
 
 			// Reset invocation information in context
-			branchAgentCtx := agent.NewInvocationContext(ctx, branchInvocation)
+			branchAgentCtx := graph.WithGraphCompletionCapture(
+				agent.NewInvocationContext(ctx, branchInvocation),
+			)
 
 			// Run the sub-agent.
 			subEventChan, err := agent.RunWithPlugins(
@@ -263,7 +266,7 @@ func (a *ParallelAgent) executeParallelRun(
 
 	// Merge events from all sub-agents and collect full response event.
 	var fullRespEvent *event.Event
-	a.mergeEventStreams(ctx, eventChans, eventChan, &fullRespEvent)
+	a.mergeEventStreams(ctx, invocation, eventChans, eventChan, &fullRespEvent)
 
 	// Handle after agent callbacks.
 	a.handleAfterAgentCallbacks(ctx, invocation, eventChan, fullRespEvent)
@@ -273,6 +276,7 @@ func (a *ParallelAgent) executeParallelRun(
 // This implementation processes events as they arrive from different sub-agents.
 func (a *ParallelAgent) mergeEventStreams(
 	ctx context.Context,
+	invocation *agent.Invocation,
 	eventChans []<-chan *event.Event,
 	outputChan chan<- *event.Event,
 	fullRespEvent **event.Event,
@@ -303,6 +307,9 @@ func (a *ParallelAgent) mergeEventStreams(
 					mu.Lock()
 					*fullRespEvent = evt
 					mu.Unlock()
+				}
+				if graph.ShouldSuppressGraphCompletionEvent(ctx, invocation, evt) {
+					continue
 				}
 				if err := event.EmitEvent(ctx, outputChan, evt); err != nil {
 					return
