@@ -11,6 +11,7 @@ package graph
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -38,6 +39,14 @@ func (mutateNestedMessageOp) Apply(dst []model.Message) []model.Message {
 	dst[0].ContentParts[0].Text = &replacement
 	dst[0].ToolCalls[0].Function.Arguments[0] = 'X'
 	return dst
+}
+
+type benchmarkAppendMessageOp struct {
+	msg model.Message
+}
+
+func (o benchmarkAppendMessageOp) Apply(dst []model.Message) []model.Message {
+	return append(dst, o.msg)
 }
 
 func TestGetStateValue(t *testing.T) {
@@ -621,6 +630,47 @@ func TestMessageReducer_CustomOpDoesNotMutateExistingNestedState(t *testing.T) {
 	})
 }
 
+func TestMessageReducer_BuiltInOpsDoNotAliasExistingSlice(t *testing.T) {
+	buildExisting := func() []model.Message {
+		existing := make([]model.Message, 2, 4)
+		existing[0] = model.NewAssistantMessage("a1")
+		existing[1] = model.NewUserMessage("u1")
+		return existing
+	}
+	t.Run("append message", func(t *testing.T) {
+		existing := buildExisting()
+		existingPtr := reflect.ValueOf(existing).Pointer()
+		outAny := MessageReducer(existing, model.NewAssistantMessage("a2"))
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		require.NotEqual(t, existingPtr, reflect.ValueOf(out).Pointer())
+		out[0].Content = "mutated"
+		assert.Equal(t, "a1", existing[0].Content)
+	})
+	t.Run("append message op fast path", func(t *testing.T) {
+		existing := buildExisting()
+		existingPtr := reflect.ValueOf(existing).Pointer()
+		outAny := MessageReducer(existing, []MessageOp{
+			AppendMessages{Items: []model.Message{model.NewAssistantMessage("a2")}},
+		})
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		require.NotEqual(t, existingPtr, reflect.ValueOf(out).Pointer())
+		out[1].Content = "mutated"
+		assert.Equal(t, "u1", existing[1].Content)
+	})
+	t.Run("replace last user", func(t *testing.T) {
+		existing := buildExisting()
+		existingPtr := reflect.ValueOf(existing).Pointer()
+		outAny := MessageReducer(existing, ReplaceLastUser{Content: "u2"})
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		require.NotEqual(t, existingPtr, reflect.ValueOf(out).Pointer())
+		out[1].Content = "mutated"
+		assert.Equal(t, "u1", existing[1].Content)
+	})
+}
+
 func TestMergeReducerAndMessageReducerCoveragePaths(t *testing.T) {
 	require.False(t, isMergeReducer(nil))
 	require.True(t, isMergeReducer(MergeReducer))
@@ -743,6 +793,48 @@ func TestMessageReducer_CustomOpSeesNonNilEmptySlice(t *testing.T) {
 	require.True(t, ok)
 	require.Len(t, msgs, 1)
 	require.Equal(t, "non-nil", msgs[0].Content)
+}
+
+func BenchmarkMessageReducer(b *testing.B) {
+	buildMessages := func(n int) []model.Message {
+		msgs := make([]model.Message, n)
+		for i := range msgs {
+			text := fmt.Sprintf("part-%d", i)
+			args := []byte(fmt.Sprintf("{\"i\":%d}", i))
+			msgs[i] = model.Message{
+				Role:    model.RoleAssistant,
+				Content: fmt.Sprintf("message-%d", i),
+				ContentParts: []model.ContentPart{
+					{Type: model.ContentTypeText, Text: &text},
+				},
+				ToolCalls: []model.ToolCall{
+					{
+						Type: "function",
+						ID:   fmt.Sprintf("call-%d", i),
+						Function: model.FunctionDefinitionParam{
+							Arguments: args,
+						},
+					},
+				},
+			}
+		}
+		return msgs
+	}
+	existing := buildMessages(64)
+	appendUpdate := AppendMessages{Items: []model.Message{model.NewAssistantMessage("next")}}
+	customUpdate := benchmarkAppendMessageOp{msg: model.NewAssistantMessage("next")}
+	b.Run("append_messages", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			MessageReducer(existing, appendUpdate)
+		}
+	})
+	b.Run("custom_message_op", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			MessageReducer(existing, customUpdate)
+		}
+	})
 }
 
 func TestSafeClone_FiltersUnsafeKeys(t *testing.T) {
