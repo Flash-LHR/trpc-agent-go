@@ -210,6 +210,35 @@ func TestGraphAgentRun_DisableTracingFastPath(t *testing.T) {
 	require.True(t, sawResponse)
 }
 
+func TestGraphAgentRun_DisableTracingFastPathKeepsOuterBufferSize(t *testing.T) {
+	stateGraph := graph.NewStateGraph(graph.MessagesStateSchema())
+	stateGraph.AddNode("done", func(context.Context, graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "ok"}, nil
+	})
+	stateGraph.SetEntryPoint("done")
+	stateGraph.SetFinishPoint("done")
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+	graphAgent, err := New(
+		"test-agent",
+		g,
+		WithChannelBufferSize(1),
+		WithExecutorOptions(graph.WithChannelBufferSize(8)),
+	)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-tracing-buffer"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableTracing: true,
+		}),
+	)
+	events, err := graphAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	require.Equal(t, 1, cap(events))
+	for range events {
+	}
+}
+
 func TestGraphAgentRun_DisableTracingWithCallbacksSkipsSpanCreation(t *testing.T) {
 	recorder := useSpanRecorder(t)
 	stateGraph := graph.NewStateGraph(graph.MessagesStateSchema())

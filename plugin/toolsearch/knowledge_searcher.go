@@ -16,8 +16,8 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
+	itrace "trpc.group/trpc-go/trpc-agent-go/internal/trace"
 	"trpc.group/trpc-go/trpc-agent-go/model"
-	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -77,11 +77,13 @@ func (s *knowledgeSearcher) rewriteQuery(ctx context.Context, query string) (con
 		},
 		GenerationConfig: model.GenerationConfig{Stream: false},
 	}
-	_, span := trace.Tracer.Start(ctx, itelemetry.NewChatSpanName(s.model.Info().Name))
-	defer span.End()
 	invocation, ok := agent.InvocationFromContext(ctx)
 	if !ok || invocation == nil {
 		invocation = agent.NewInvocation()
+	}
+	ctx, span, startedSpan := itrace.StartSpan(ctx, invocation, itelemetry.NewChatSpanName(s.model.Info().Name))
+	if startedSpan {
+		defer span.End()
 	}
 	timingInfo := invocation.GetOrCreateTimingInfo()
 	tracker := itelemetry.NewChatMetricsTracker(ctx, invocation, req, timingInfo, nil, &err)
@@ -119,13 +121,14 @@ func (s *knowledgeSearcher) rewriteQuery(ctx context.Context, query string) (con
 		final.Usage = &model.Usage{}
 	}
 	final.Usage.TimingInfo = timingInfo
-	itelemetry.TraceChat(span, &itelemetry.TraceChatAttributes{
-		Invocation:       invocation,
-		Request:          req,
-		Response:         final,
-		EventID:          "",
-		TimeToFirstToken: tracker.FirstTokenTimeDuration(),
-	})
-
+	if startedSpan {
+		itelemetry.TraceChat(span, &itelemetry.TraceChatAttributes{
+			Invocation:       invocation,
+			Request:          req,
+			Response:         final,
+			EventID:          "",
+			TimeToFirstToken: tracker.FirstTokenTimeDuration(),
+		})
+	}
 	return ctx, content, final.Usage, nil
 }
