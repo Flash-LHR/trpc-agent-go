@@ -1294,9 +1294,11 @@ func (r *llmRunner) executeModel(
 	}
 
 	var (
-		modelInput string
-		modelName  string
-		startTime  time.Time
+		modelInput             string
+		modelName              string
+		modelEventInvocation   *agent.Invocation
+		modelEventInvocationID string
+		startTime              time.Time
 	)
 	ctx, invocation, result, err := executeModelAndProcessResponsesWithContext(ctx, modelExecutionConfig{
 		Invocation:     invocation,
@@ -1316,6 +1318,11 @@ func (r *llmRunner) executeModel(
 			if shouldDisableModelExecutionEvents(modelInvocation) {
 				return
 			}
+			modelEventInvocation = modelInvocation
+			modelEventInvocationID = invocationID
+			if modelEventInvocation != nil && modelEventInvocation.InvocationID != "" {
+				modelEventInvocationID = modelEventInvocation.InvocationID
+			}
 			// Build model input metadata from the original state and instruction
 			// so events accurately reflect both instruction and user input.
 			modelInput = extractModelInput(state, instructionUsed, r.userInputKey)
@@ -1323,8 +1330,9 @@ func (r *llmRunner) executeModel(
 			modelName = getModelName(r.llmModel)
 			emitModelStartEvent(
 				modelCtx,
+				modelEventInvocation,
 				eventChan,
-				invocationID,
+				modelEventInvocationID,
 				modelName,
 				nodeID,
 				modelInput,
@@ -1353,8 +1361,9 @@ func (r *llmRunner) executeModel(
 		}
 		emitModelCompleteEvent(
 			ctx,
+			modelEventInvocation,
 			eventChan,
-			invocationID,
+			modelEventInvocationID,
 			modelName,
 			nodeID,
 			modelInput,
@@ -3216,6 +3225,7 @@ func getModelName(llmModel model.Model) string {
 // emitModelStartEvent emits a model execution start event.
 func emitModelStartEvent(
 	ctx context.Context,
+	invocation *agent.Invocation,
 	eventChan chan<- *event.Event,
 	invocationID, modelName, nodeID, modelInput string,
 	startTime time.Time,
@@ -3232,13 +3242,13 @@ func emitModelStartEvent(
 		WithModelEventStartTime(startTime),
 		WithModelEventInput(modelInput),
 	)
-	invocation, _ := agent.InvocationFromContext(ctx)
 	agent.EmitEvent(ctx, invocation, eventChan, modelStartEvent)
 }
 
 // emitModelCompleteEvent emits a model execution complete event.
 func emitModelCompleteEvent(
 	ctx context.Context,
+	invocation *agent.Invocation,
 	eventChan chan<- *event.Event,
 	invocationID, modelName, nodeID, modelInput, modelOutput, responseID string,
 	startTime, endTime time.Time,
@@ -3260,8 +3270,6 @@ func emitModelCompleteEvent(
 		WithModelEventError(err),
 		WithModelEventResponseID(responseID),
 	)
-
-	invocation, _ := agent.InvocationFromContext(ctx)
 	agent.EmitEvent(ctx, invocation, eventChan, modelCompleteEvent)
 }
 

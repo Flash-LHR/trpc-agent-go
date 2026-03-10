@@ -235,7 +235,7 @@ func (t *ChatMetricsTracker) SetInvocationState(
 	if t == nil {
 		return
 	}
-	t.invocation = invocation
+	t.invocation = mergeInvocationForMetrics(t.invocation, invocation)
 	if timingInfo == t.timingInfo {
 		return
 	}
@@ -252,6 +252,50 @@ func (t *ChatMetricsTracker) SetInvocationState(
 		}
 	}
 	t.timingInfo = timingInfo
+}
+
+func mergeInvocationForMetrics(
+	previous *agent.Invocation,
+	current *agent.Invocation,
+) *agent.Invocation {
+	if current == nil {
+		return previous
+	}
+	if previous == nil {
+		return current
+	}
+	needsAgentName := current.AgentName == ""
+	needsModel := current.Model == nil
+	needsSession := current.Session == nil ||
+		current.Session.ID == "" ||
+		current.Session.UserID == "" ||
+		current.Session.AppName == ""
+	if !needsAgentName && !needsModel && !needsSession {
+		return current
+	}
+	merged := *current
+	if needsAgentName {
+		merged.AgentName = previous.AgentName
+	}
+	if needsModel {
+		merged.Model = previous.Model
+	}
+	if current.Session == nil {
+		merged.Session = previous.Session
+	} else if previous.Session != nil && needsSession {
+		sessionCopy := *current.Session
+		if sessionCopy.ID == "" {
+			sessionCopy.ID = previous.Session.ID
+		}
+		if sessionCopy.UserID == "" {
+			sessionCopy.UserID = previous.Session.UserID
+		}
+		if sessionCopy.AppName == "" {
+			sessionCopy.AppName = previous.Session.AppName
+		}
+		merged.Session = &sessionCopy
+	}
+	return &merged
 }
 
 func chatMetricsEnabled() bool {

@@ -15,8 +15,25 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 )
+
+type telemetryTestModel struct{}
+
+func (m *telemetryTestModel) GenerateContent(
+	ctx context.Context,
+	req *model.Request,
+) (<-chan *model.Response, error) {
+	ch := make(chan *model.Response)
+	close(ch)
+	return ch, nil
+}
+
+func (m *telemetryTestModel) Info() model.Info {
+	return model.Info{Name: "telemetry-test-model"}
+}
 
 func TestChatMetricsTracker_RecordMetrics_NoMetrics_ReturnsNoop(t *testing.T) {
 	originalRequestCnt := ChatMetricTRPCAgentGoClientRequestCnt
@@ -91,4 +108,42 @@ func TestChatMetricsTracker_TrackResponse_ReasoningDuration_UsesLazyNow(t *testi
 		},
 	})
 	require.Greater(t, timingInfo.ReasoningDuration, time.Duration(0), "expected reasoning duration to be recorded")
+}
+
+func TestChatMetricsTracker_SetInvocationState_PreservesMetricsAttributes(t *testing.T) {
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base"),
+		agent.WithInvocationModel(&telemetryTestModel{}),
+		agent.WithInvocationSession(&session.Session{
+			ID:      "sess-base",
+			UserID:  "user-base",
+			AppName: "app-base",
+		}),
+	)
+	baseInvocation.AgentName = "agent-base"
+	tracker := NewChatMetricsTracker(
+		context.Background(),
+		baseInvocation,
+		&model.Request{},
+		&model.TimingInfo{},
+		nil,
+		nil,
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableResponseUsageTracking: true,
+		}),
+	)
+	updatedTimingInfo := &model.TimingInfo{}
+	tracker.SetInvocationState(updatedInvocation, updatedTimingInfo)
+	attrs := tracker.buildAttributes()
+	require.Equal(t, baseInvocation.AgentName, attrs.AgentName)
+	require.Equal(t, baseInvocation.Model.Info().Name, attrs.RequestModelName)
+	require.Equal(t, baseInvocation.Session.ID, attrs.SessionID)
+	require.Equal(t, baseInvocation.Session.UserID, attrs.UserID)
+	require.Equal(t, baseInvocation.Session.AppName, attrs.AppName)
+	require.Nil(t, updatedInvocation.Model)
+	require.Nil(t, updatedInvocation.Session)
+	require.Empty(t, updatedInvocation.AgentName)
 }

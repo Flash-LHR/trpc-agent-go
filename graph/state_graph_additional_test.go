@@ -161,6 +161,24 @@ func collectModelExecutionPhases(ch <-chan *event.Event) []ModelExecutionPhase {
 	}
 }
 
+func collectModelExecutionEvents(ch <-chan *event.Event) []*event.Event {
+	var events []*event.Event
+	for {
+		select {
+		case e := <-ch:
+			if e == nil || e.StateDelta == nil {
+				continue
+			}
+			if _, ok := e.StateDelta[MetadataKeyModel]; !ok {
+				continue
+			}
+			events = append(events, e)
+		default:
+			return events
+		}
+	}
+}
+
 func (a *stubAgent) Run(
 	ctx context.Context,
 	inv *agent.Invocation,
@@ -979,6 +997,47 @@ func TestAddLLMNode_EmitsCompleteWhenAfterModelDisablesModelExecutionEvents(t *t
 		ModelExecutionPhaseStart,
 		ModelExecutionPhaseComplete,
 	}, phases)
+}
+
+func TestAddLLMNode_UsesUpdatedInvocationIDInModelExecutionEvents(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	sg.AddLLMNode("llm", &captureModel{}, "inst", nil)
+	n, ok := sg.graph.nodes["llm"]
+	require.True(t, ok)
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base"),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated"),
+	)
+	callbacks := model.NewCallbacks().RegisterBeforeModel(
+		func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
+			return &model.BeforeModelResult{
+				Context: agent.NewInvocationContext(ctx, updatedInvocation),
+			}, nil
+		},
+	)
+	ch := make(chan *event.Event, 8)
+	exec := &ExecutionContext{InvocationID: "inv-llm", EventChan: ch}
+	state := State{
+		StateKeyExecContext:    exec,
+		StateKeyCurrentNodeID:  "llm",
+		StateKeyUserInput:      "hi",
+		StateKeyModelCallbacks: callbacks,
+	}
+	_, err := n.Function(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		state,
+	)
+	require.NoError(t, err)
+	events := collectModelExecutionEvents(ch)
+	require.Len(t, events, 2)
+	for _, evt := range events {
+		var meta ModelExecutionMetadata
+		require.NoError(t, json.Unmarshal(evt.StateDelta[MetadataKeyModel], &meta))
+		require.Equal(t, updatedInvocation.InvocationID, evt.InvocationID)
+		require.Equal(t, updatedInvocation.InvocationID, meta.InvocationID)
+	}
 }
 
 func TestAddLLMNode_EmitsModelExecutionEventsForPluginBeforeModelCustomResponse(t *testing.T) {
