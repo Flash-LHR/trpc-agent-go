@@ -519,6 +519,47 @@ func TestMessageReducerHelperFastPaths(t *testing.T) {
 	require.Equal(t, 1, cap(tightened))
 }
 
+func TestMessageReducer_CustomOpResultDoesNotAliasReturnedSlice(t *testing.T) {
+	buildReturned := func(content string) []model.Message {
+		text := content + "-part"
+		return []model.Message{
+			{
+				Role:         model.RoleAssistant,
+				Content:      content,
+				ContentParts: []model.ContentPart{{Type: model.ContentTypeText, Text: &text}},
+			},
+		}
+	}
+	t.Run("single custom op", func(t *testing.T) {
+		returned := buildReturned("single")
+		outAny := MessageReducer([]model.Message{model.NewAssistantMessage("seed")}, testMessageOp{out: returned})
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		require.Len(t, out, 1)
+		mutated := "single-mutated"
+		returned[0].Content = mutated
+		returned[0].ContentParts[0].Text = &mutated
+		assert.Equal(t, "single", out[0].Content)
+		require.NotNil(t, out[0].ContentParts[0].Text)
+		assert.Equal(t, "single-part", *out[0].ContentParts[0].Text)
+	})
+	t.Run("custom op in batch", func(t *testing.T) {
+		returned := buildReturned("batch")
+		outAny := MessageReducer([]model.Message{model.NewAssistantMessage("seed")}, []MessageOp{
+			testMessageOp{out: returned},
+		})
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		require.Len(t, out, 1)
+		mutated := "batch-mutated"
+		returned[0].Content = mutated
+		returned[0].ContentParts[0].Text = &mutated
+		assert.Equal(t, "batch", out[0].Content)
+		require.NotNil(t, out[0].ContentParts[0].Text)
+		assert.Equal(t, "batch-part", *out[0].ContentParts[0].Text)
+	})
+}
+
 func TestMergeReducerAndMessageReducerCoveragePaths(t *testing.T) {
 	require.False(t, isMergeReducer(nil))
 	require.True(t, isMergeReducer(MergeReducer))
