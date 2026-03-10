@@ -196,6 +196,9 @@ func deepCopySliceAnyWithVisited(in []any, visited map[uintptr]any) []any {
 	if in == nil {
 		return nil
 	}
+	if len(in) == 0 {
+		return []any{}
+	}
 	ptr := reflect.ValueOf(in).Pointer()
 	if ptr != 0 {
 		if cached, ok := visited[ptr]; ok {
@@ -282,6 +285,9 @@ func deepCopyModelMessagesWithVisited(
 ) []model.Message {
 	if in == nil {
 		return nil
+	}
+	if len(in) == 0 {
+		return []model.Message{}
 	}
 	ptr := reflect.ValueOf(in).Pointer()
 	if ptr != 0 {
@@ -376,6 +382,9 @@ func deepCopyModelToolCallsWithVisited(
 ) []model.ToolCall {
 	if in == nil {
 		return nil
+	}
+	if len(in) == 0 {
+		return []model.ToolCall{}
 	}
 	ptr := reflect.ValueOf(in).Pointer()
 	if ptr != 0 {
@@ -479,11 +488,14 @@ func copySlice(rv reflect.Value, visited map[uintptr]any) any {
 	if rv.IsNil() {
 		return reflect.Zero(rv.Type()).Interface()
 	}
+	l := rv.Len()
+	if l == 0 {
+		return reflect.MakeSlice(rv.Type(), 0, 0).Interface()
+	}
 	ptr := rv.Pointer()
 	if cached, ok := visited[ptr]; ok {
 		return cached
 	}
-	l := rv.Len()
 	newSlice := reflect.MakeSlice(rv.Type(), l, l)
 	visited[ptr] = newSlice.Interface()
 	for i := 0; i < l; i++ {
@@ -689,6 +701,9 @@ func jsonSafeFastPath(value any, visited map[uintptr]any) (any, bool) {
 		if v == nil {
 			return nil, true
 		}
+		if len(v) == 0 {
+			return []any{}, true
+		}
 		ptr := reflect.ValueOf(v).Pointer()
 		if cached, ok := visited[ptr]; ok {
 			return cached, true
@@ -810,11 +825,14 @@ func jsonSafeCopySlice(
 	if rv.IsNil() {
 		return nil
 	}
+	l := rv.Len()
+	if l == 0 {
+		return []any{}
+	}
 	ptr := rv.Pointer()
 	if cached, ok := visited[ptr]; ok {
 		return cached
 	}
-	l := rv.Len()
 	result := make([]any, l)
 	visited[ptr] = result
 	for i := 0; i < l; i++ {

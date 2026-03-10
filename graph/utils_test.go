@@ -518,6 +518,36 @@ func TestDeepCopyAny_MessageOpZeroLenSlicesDoNotAlias(t *testing.T) {
 	}
 }
 
+func TestDeepCopySliceAnyWithVisited_ZeroLenSkipsCache(t *testing.T) {
+	in := make([]any, 1)[:0]
+	visited := map[uintptr]any{
+		reflect.ValueOf(in).Pointer(): []model.Message{model.NewUserMessage("cached")},
+	}
+	copied := deepCopySliceAnyWithVisited(in, visited)
+	require.NotNil(t, copied)
+	assert.Len(t, copied, 0)
+}
+
+func TestDeepCopyModelMessagesWithVisited_ZeroLenSkipsCache(t *testing.T) {
+	in := make([]model.Message, 1)[:0]
+	visited := map[uintptr]any{
+		reflect.ValueOf(in).Pointer(): []any{"cached"},
+	}
+	copied := deepCopyModelMessagesWithVisited(in, visited)
+	require.NotNil(t, copied)
+	assert.Len(t, copied, 0)
+}
+
+func TestDeepCopyModelToolCallsWithVisited_ZeroLenSkipsCache(t *testing.T) {
+	in := make([]model.ToolCall, 1)[:0]
+	visited := map[uintptr]any{
+		reflect.ValueOf(in).Pointer(): []any{"cached"},
+	}
+	copied := deepCopyModelToolCallsWithVisited(in, visited)
+	require.NotNil(t, copied)
+	assert.Len(t, copied, 0)
+}
+
 func TestDeepCopyUnexportedFields(t *testing.T) {
 	type privateStruct struct {
 		PublicField  string
@@ -811,6 +841,33 @@ func TestJSONSafeCopy_MapDeepCopy(t *testing.T) {
 	orig["k"].([]string)[0] = "mutated"
 	// jsonSafeFastPath handles []string natively.
 	assert.Equal(t, "a", copied["k"].([]string)[0])
+}
+
+func TestJSONSafeFastPath_ZeroLenSliceSkipsCache(t *testing.T) {
+	in := make([]any, 1)[:0]
+	visited := map[uintptr]any{
+		reflect.ValueOf(in).Pointer(): []string{"cached"},
+	}
+	copied, ok := jsonSafeFastPath(in, visited)
+	require.True(t, ok)
+	out, ok := copied.([]any)
+	require.True(t, ok)
+	assert.Len(t, out, 0)
+}
+
+func TestJSONSafeCopySlice_ZeroLenSkipsCache(t *testing.T) {
+	type item struct {
+		Value string
+	}
+	in := make([]item, 1)[:0]
+	rv := reflect.ValueOf(in)
+	visited := map[uintptr]any{
+		rv.Pointer(): []string{"cached"},
+	}
+	copied := jsonSafeCopySlice(rv, visited)
+	out, ok := copied.([]any)
+	require.True(t, ok)
+	assert.Len(t, out, 0)
 }
 
 func TestJSONSafeCopy_StructWithChan(t *testing.T) {
@@ -1267,6 +1324,21 @@ func TestCopySlice_CacheHit(t *testing.T) {
 	visited[rv.Pointer()] = s
 	result := copySlice(rv, visited)
 	assert.Equal(t, s, result)
+}
+
+func TestCopySlice_ZeroLenSkipsCache(t *testing.T) {
+	type item struct {
+		Value string
+	}
+	s := make([]item, 1)[:0]
+	rv := reflect.ValueOf(s)
+	visited := map[uintptr]any{
+		rv.Pointer(): []string{"cached"},
+	}
+	result := copySlice(rv, visited)
+	copied, ok := result.([]item)
+	require.True(t, ok)
+	assert.Len(t, copied, 0)
 }
 
 func TestCopyStruct_ConvertibleAndFallback(t *testing.T) {
