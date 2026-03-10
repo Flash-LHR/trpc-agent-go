@@ -354,6 +354,12 @@ func TestProcessStreamingResponses_PreservesTimingInfoWhenInvocationChanges(t *t
 		},
 	}
 	response2 := &model.Response{
+		IsPartial: true,
+		Choices: []model.Choice{
+			{Message: model.NewAssistantMessage("partial-updated")},
+		},
+	}
+	response3 := &model.Response{
 		Choices: []model.Choice{
 			{Message: model.NewAssistantMessage("done")},
 		},
@@ -362,6 +368,7 @@ func TestProcessStreamingResponses_PreservesTimingInfoWhenInvocationChanges(t *t
 		time.Sleep(time.Millisecond)
 		yield(response1)
 		yield(response2)
+		yield(response3)
 	}
 	eventChan := make(chan *event.Event, 10)
 	tracer := oteltrace.NewNoopTracerProvider().Tracer("t")
@@ -382,8 +389,8 @@ func TestProcessStreamingResponses_PreservesTimingInfoWhenInvocationChanges(t *t
 	require.NotNil(t, lastEvent)
 	require.NotNil(t, response1.Usage)
 	require.NotNil(t, response2.Usage)
-	require.NotNil(t, response1.Usage.TimingInfo)
-	require.NotNil(t, response2.Usage.TimingInfo)
+	require.NotSame(t, response1.Usage, response2.Usage)
+	require.Same(t, baseInvocation.GetOrCreateTimingInfo(), response1.Usage.TimingInfo)
 	require.Same(t, updatedInvocation.GetOrCreateTimingInfo(), response2.Usage.TimingInfo)
 	require.NotZero(t, response2.Usage.TimingInfo.FirstTokenDuration)
 	require.Equal(

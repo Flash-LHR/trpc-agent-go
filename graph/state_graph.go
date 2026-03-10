@@ -3423,20 +3423,31 @@ func trackModelResponseTelemetry(
 	tracker.TrackResponse(response)
 }
 
+type partialUsageState struct {
+	usage      *model.Usage
+	timingInfo *model.TimingInfo
+}
+
 func attachResponseUsageTiming(
 	response *model.Response,
 	timingInfo *model.TimingInfo,
-	partialUsageFallback **model.Usage,
+	partialUsageState *partialUsageState,
 ) {
 	if response == nil || timingInfo == nil {
 		return
 	}
 	if response.Usage == nil {
 		if response.IsPartial {
-			if *partialUsageFallback == nil {
-				*partialUsageFallback = &model.Usage{}
+			if partialUsageState == nil {
+				response.Usage = &model.Usage{}
+			} else {
+				if partialUsageState.usage == nil ||
+					partialUsageState.timingInfo != timingInfo {
+					partialUsageState.usage = &model.Usage{}
+					partialUsageState.timingInfo = timingInfo
+				}
+				response.Usage = partialUsageState.usage
 			}
-			response.Usage = *partialUsageFallback
 		} else {
 			response.Usage = &model.Usage{}
 		}
@@ -3532,7 +3543,7 @@ type modelResponseProcessor struct {
 	invocation                     *agent.Invocation
 	tracker                        *itelemetry.ChatMetricsTracker
 	timingInfo                     *model.TimingInfo
-	partialUsageFallback           *model.Usage
+	partialUsageState              partialUsageState
 	tap                            *modelDeltaStreamTap
 	reusableEvents                 []event.Event
 	reusableEventIdx               int
@@ -3637,7 +3648,7 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 	}
 	p.tap.WriteDelta(response)
 	trackModelResponseTelemetry(response, p.tracker)
-	attachResponseUsageTiming(response, p.timingInfo, &p.partialUsageFallback)
+	attachResponseUsageTiming(response, p.timingInfo, &p.partialUsageState)
 	p.toolCalls = collectToolCallsFromResponse(p.toolCalls, response)
 	p.finalResponse = response
 	reusableEvent := nextReusableModelEvent(p.reusableEvents, &p.reusableEventIdx)

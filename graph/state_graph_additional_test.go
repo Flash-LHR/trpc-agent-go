@@ -694,6 +694,12 @@ func TestExecuteModelAndProcessResponses_UsesUpdatedInvocationForResponseUsageTi
 			},
 		},
 		{
+			IsPartial: true,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("partial-updated")},
+			},
+		},
+		{
 			Done: true,
 			Choices: []model.Choice{
 				{Message: model.NewAssistantMessage("done")},
@@ -784,8 +790,8 @@ func TestExecuteModelAndProcessResponses_PreservesTimingInfoWhenInvocationChange
 	require.NotNil(t, resp)
 	require.NotNil(t, responses[0].Usage)
 	require.NotNil(t, responses[1].Usage)
-	require.NotNil(t, responses[0].Usage.TimingInfo)
-	require.NotNil(t, responses[1].Usage.TimingInfo)
+	require.NotSame(t, responses[0].Usage, responses[1].Usage)
+	require.Same(t, baseInvocation.GetOrCreateTimingInfo(), responses[0].Usage.TimingInfo)
 	require.Same(t, updatedInvocation.GetOrCreateTimingInfo(), responses[1].Usage.TimingInfo)
 	require.NotZero(t, responses[1].Usage.TimingInfo.FirstTokenDuration)
 	require.Equal(

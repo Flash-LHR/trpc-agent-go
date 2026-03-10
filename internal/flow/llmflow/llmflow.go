@@ -353,6 +353,11 @@ func (f *Flow) runOneStep(
 }
 
 // processStreamingResponses handles the streaming response processing logic.
+type partialUsageState struct {
+	usage      *model.Usage
+	timingInfo *model.TimingInfo
+}
+
 func (f *Flow) processStreamingResponses(
 	ctx context.Context,
 	invocation *agent.Invocation,
@@ -364,7 +369,7 @@ func (f *Flow) processStreamingResponses(
 	currentInvocation := invocationFromContextOrDefault(ctx, invocation)
 	var tracker *itelemetry.ChatMetricsTracker
 	var timingInfo *model.TimingInfo
-	var partialUsageFallback *model.Usage
+	var partialUsageState partialUsageState
 	if currentInvocation != nil {
 		timingInfo = responseUsageTimingInfo(currentInvocation)
 		tracker = itelemetry.NewChatMetricsTracker(
@@ -391,7 +396,7 @@ func (f *Flow) processStreamingResponses(
 			response,
 			tracker,
 		)
-		attachResponseUsageTiming(response, timingInfo, &partialUsageFallback)
+		attachResponseUsageTiming(response, timingInfo, &partialUsageState)
 		// Handle after model callbacks.
 		updatedCtx, customResp, cbErr := f.handleAfterModelCallbacks(
 			ctx,
@@ -545,17 +550,23 @@ func trackModelResponseTelemetry(
 func attachResponseUsageTiming(
 	response *model.Response,
 	timingInfo *model.TimingInfo,
-	partialUsageFallback **model.Usage,
+	partialUsageState *partialUsageState,
 ) {
 	if response == nil || timingInfo == nil {
 		return
 	}
 	if response.Usage == nil {
 		if response.IsPartial {
-			if *partialUsageFallback == nil {
-				*partialUsageFallback = &model.Usage{}
+			if partialUsageState == nil {
+				response.Usage = &model.Usage{}
+			} else {
+				if partialUsageState.usage == nil ||
+					partialUsageState.timingInfo != timingInfo {
+					partialUsageState.usage = &model.Usage{}
+					partialUsageState.timingInfo = timingInfo
+				}
+				response.Usage = partialUsageState.usage
 			}
-			response.Usage = *partialUsageFallback
 		} else {
 			response.Usage = &model.Usage{}
 		}
