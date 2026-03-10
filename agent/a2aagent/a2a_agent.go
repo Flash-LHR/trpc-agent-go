@@ -29,7 +29,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	ia2a "trpc.group/trpc-go/trpc-agent-go/internal/a2a"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
-	"trpc.group/trpc-go/trpc-agent-go/internal/traceutil"
+	itrace "trpc.group/trpc-go/trpc-agent-go/internal/trace"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
@@ -161,7 +161,7 @@ func (r *A2AAgent) validateA2ARequestOptions(invocation *agent.Invocation) error
 func (r *A2AAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
 	var err error
 	useStreaming := r.shouldUseStreaming(invocation)
-	ctx, span, startedSpan := traceutil.StartSpan(
+	ctx, span, startedSpan := itrace.StartSpan(
 		ctx,
 		invocation,
 		fmt.Sprintf("%s %s", itelemetry.OperationInvokeAgent, r.name),

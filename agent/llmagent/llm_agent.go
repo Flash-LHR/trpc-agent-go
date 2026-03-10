@@ -32,7 +32,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/internal/skillprofile"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	itool "trpc.group/trpc-go/trpc-agent-go/internal/tool"
-	"trpc.group/trpc-go/trpc-agent-go/internal/traceutil"
+	itrace "trpc.group/trpc-go/trpc-agent-go/internal/trace"
 	knowledgetool "trpc.group/trpc-go/trpc-agent-go/knowledge/tool"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/planner"
@@ -610,7 +610,7 @@ func buildSkillRunTool(options *Options) *toolskill.RunTool {
 // It executes the LLM agent flow and returns a channel of events.
 func (a *LLMAgent) Run(ctx context.Context, invocation *agent.Invocation) (e <-chan *event.Event, err error) {
 	a.setupInvocation(invocation)
-	ctx, span, startedSpan := traceutil.StartSpan(
+	ctx, span, startedSpan := itrace.StartSpan(
 		ctx,
 		invocation,
 		fmt.Sprintf(

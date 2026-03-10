@@ -18,7 +18,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	iagent "trpc.group/trpc-go/trpc-agent-go/internal/agent"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
-	"trpc.group/trpc-go/trpc-agent-go/internal/traceutil"
+	itrace "trpc.group/trpc-go/trpc-agent-go/internal/trace"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -86,7 +86,7 @@ func (a *ChainAgent) executeChainRun(
 	eventChan chan<- *event.Event,
 ) {
 	stream := iagent.ResolveInvokeAgentStream(invocation, nil)
-	ctx, span, startedSpan := traceutil.StartSpan(
+	ctx, span, startedSpan := itrace.StartSpan(
 		ctx,
 		invocation,
 		fmt.Sprintf("%s %s", itelemetry.OperationInvokeAgent, a.name),

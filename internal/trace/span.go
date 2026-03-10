@@ -6,7 +6,7 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
-package traceutil
+package trace
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
-	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
+	telemetrytrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 )
 
 // StartSpan returns a no-op span when tracing is disabled for the invocation.
@@ -23,6 +23,6 @@ func StartSpan(ctx context.Context, invocation *agent.Invocation, spanName strin
 	if invocation != nil && invocation.RunOptions.DisableTracing {
 		return ctx, noop.Span{}, false
 	}
-	ctx, span := trace.Tracer.Start(ctx, spanName)
+	ctx, span := telemetrytrace.Tracer.Start(ctx, spanName)
 	return ctx, span, true
 }

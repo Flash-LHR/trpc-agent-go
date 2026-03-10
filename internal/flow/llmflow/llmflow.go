@@ -27,7 +27,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/internal/jsonrepair"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/internal/toolcall"
-	"trpc.group/trpc-go/trpc-agent-go/internal/traceutil"
+	itrace "trpc.group/trpc-go/trpc-agent-go/internal/trace"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -339,7 +339,7 @@ func (f *Flow) runOneStep(
 	if invocation.Model != nil {
 		modelName = invocation.Model.Info().Name
 	}
-	_, span, startedSpan := traceutil.StartSpan(ctx, invocation, itelemetry.NewChatSpanName(modelName))
+	_, span, startedSpan := itrace.StartSpan(ctx, invocation, itelemetry.NewChatSpanName(modelName))
 	if startedSpan {
 		defer span.End()
 	}

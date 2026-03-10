@@ -25,7 +25,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	itool "trpc.group/trpc-go/trpc-agent-go/internal/tool"
-	"trpc.group/trpc-go/trpc-agent-go/internal/traceutil"
+	itrace "trpc.group/trpc-go/trpc-agent-go/internal/trace"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -340,7 +340,7 @@ func (p *FunctionCallResponseProcessor) executeSingleToolCallSequential(
 	index int,
 	toolCall model.ToolCall,
 ) (*event.Event, error) {
-	ctx, span, startedSpan := traceutil.StartSpan(ctx, invocation, itelemetry.NewExecuteToolSpanName(toolCall.Function.Name))
+	ctx, span, startedSpan := itrace.StartSpan(ctx, invocation, itelemetry.NewExecuteToolSpanName(toolCall.Function.Name))
 	if startedSpan {
 		defer span.End()
 	}
@@ -512,7 +512,7 @@ func (p *FunctionCallResponseProcessor) runParallelToolCall(
 		}
 	}()
 	// Trace the tool execution for observability.
-	ctx, span, startedSpan := traceutil.StartSpan(ctx, invocation, itelemetry.NewExecuteToolSpanName(tc.Function.Name))
+	ctx, span, startedSpan := itrace.StartSpan(ctx, invocation, itelemetry.NewExecuteToolSpanName(tc.Function.Name))
 	if startedSpan {
 		defer span.End()
 	}
@@ -747,7 +747,7 @@ func (p *FunctionCallResponseProcessor) buildMergedParallelEvent(
 		mergedEvent = mergeParallelToolCallResponseEvents(toolCallEvents)
 	}
 	if len(toolCallEvents) > 1 {
-		_, span, startedSpan := traceutil.StartSpan(
+		_, span, startedSpan := itrace.StartSpan(
 			ctx,
 			invocation,
 			itelemetry.NewExecuteToolSpanName(itelemetry.ToolNameMergedTools),
