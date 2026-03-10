@@ -1294,11 +1294,12 @@ func (r *llmRunner) executeModel(
 	}
 
 	var (
-		modelInput             string
-		modelName              string
-		modelEventInvocation   *agent.Invocation
-		modelEventInvocationID string
-		startTime              time.Time
+		modelInput               string
+		modelName                string
+		modelEventBaseInvocation *agent.Invocation
+		modelEventInvocation     *agent.Invocation
+		modelEventInvocationID   string
+		startTime                time.Time
 	)
 	ctx, invocation, result, err := executeModelAndProcessResponsesWithContext(ctx, modelExecutionConfig{
 		Invocation:     invocation,
@@ -1318,6 +1319,10 @@ func (r *llmRunner) executeModel(
 			if shouldDisableModelExecutionEvents(modelInvocation) {
 				return
 			}
+			modelEventBaseInvocation = invocation
+			if modelEventBaseInvocation == nil {
+				modelEventBaseInvocation = modelInvocation
+			}
 			modelEventInvocation = modelInvocation
 			modelEventInvocationID = invocationID
 			if modelEventInvocation != nil && modelEventInvocation.InvocationID != "" {
@@ -1330,7 +1335,7 @@ func (r *llmRunner) executeModel(
 			modelName = getModelName(r.llmModel)
 			emitModelStartEvent(
 				modelCtx,
-				modelEventInvocation,
+				modelEventBaseInvocation,
 				eventChan,
 				modelEventInvocationID,
 				modelName,
@@ -1361,7 +1366,7 @@ func (r *llmRunner) executeModel(
 		}
 		emitModelCompleteEvent(
 			ctx,
-			modelEventInvocation,
+			modelEventBaseInvocation,
 			eventChan,
 			modelEventInvocationID,
 			modelName,
@@ -3257,7 +3262,7 @@ func emitModelStartEvent(
 		WithModelEventStartTime(startTime),
 		WithModelEventInput(modelInput),
 	)
-	agent.EmitEvent(ctx, invocation, eventChan, modelStartEvent)
+	emitInvocationScopedEvent(ctx, invocation, eventChan, invocationID, modelStartEvent)
 }
 
 // emitModelCompleteEvent emits a model execution complete event.
@@ -3285,7 +3290,24 @@ func emitModelCompleteEvent(
 		WithModelEventError(err),
 		WithModelEventResponseID(responseID),
 	)
-	agent.EmitEvent(ctx, invocation, eventChan, modelCompleteEvent)
+	emitInvocationScopedEvent(ctx, invocation, eventChan, invocationID, modelCompleteEvent)
+}
+
+func emitInvocationScopedEvent(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	eventChan chan<- *event.Event,
+	invocationID string,
+	ev *event.Event,
+) {
+	if ev == nil || eventChan == nil {
+		return
+	}
+	agent.InjectIntoEvent(invocation, ev)
+	if invocationID != "" {
+		ev.InvocationID = invocationID
+	}
+	_ = event.EmitEvent(ctx, eventChan, ev)
 }
 
 // modelExecutionConfig contains configuration for model execution with events.
