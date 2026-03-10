@@ -276,9 +276,7 @@ func (e *Executor) Execute(
 		var span oteltrace.Span
 		var workflow *itelemetry.Workflow
 		startedSpan := false
-		if invocation.RunOptions.DisableTracing {
-			span = oteltrace.SpanFromContext(ctx)
-		} else {
+		if !invocation.RunOptions.DisableTracing {
 			workflowName := "execute_graph " + invocation.AgentName
 			ctx, span = trace.Tracer.Start(
 				ctx,
