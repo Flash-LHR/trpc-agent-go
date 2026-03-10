@@ -435,7 +435,7 @@ func (e *Executor) executeGraph(
 
 	if invocation == nil || !invocation.RunOptions.DisableGraphCompletionEvent {
 		if err := agent.EmitEvent(ctx, invocation, eventChan, e.buildCompletionEvent(execCtx, startTime, stepsExecuted)); err != nil {
-			return err
+			log.WarnfContext(ctx, "Failed to emit graph completion event: %v", err)
 		}
 	}
 	return nil
@@ -3384,6 +3384,9 @@ func (e *Executor) emitNodeErrorEvent(
 	err error,
 	extra ...NodeEventOption,
 ) {
+	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+		return
+	}
 	if execCtx.EventChan == nil {
 		return
 	}

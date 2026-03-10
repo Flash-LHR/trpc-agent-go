@@ -308,12 +308,39 @@ func TestExecutor_DisableGraphExecutorEvents_SuppressesEventHelpers(t *testing.T
 
 	exec.emitExecutionStepEvent(context.Background(), invocation, execCtx, []*Task{{NodeID: "node-a"}}, 1)
 	exec.emitNodeStartEvent(context.Background(), invocation, execCtx, "node-a", NodeTypeFunction, 1, time.Now())
+	exec.emitNodeErrorEvent(context.Background(), invocation, execCtx, "node-a", NodeTypeFunction, 1, errors.New("boom"))
 	exec.emitChannelUpdateEvent(context.Background(), invocation, execCtx, "messages", ichannel.BehaviorLastValue, []string{"node-a"})
 	exec.emitNodeCompleteEvent(context.Background(), invocation, execCtx, "node-a", NodeTypeFunction, 1, time.Now(), false)
 	exec.emitUpdateStepEvent(context.Background(), invocation, execCtx, 1)
 	exec.emitStateUpdateEvent(context.Background(), invocation, execCtx)
 
 	require.Len(t, eventCh, 0)
+}
+
+func TestExecutor_CompletionEmitErrorDoesNotFailExecution(t *testing.T) {
+	stateGraph := NewStateGraph(NewStateSchema())
+	stateGraph.AddNode("noop", func(context.Context, State) (any, error) {
+		return State{}, nil
+	})
+	stateGraph.SetEntryPoint("noop")
+	stateGraph.SetFinishPoint("noop")
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(g)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphExecutorEvents: true,
+		}),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- exec.executeGraph(ctx, State{}, invocation, make(chan *event.Event), time.Now())
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	require.NoError(t, <-errCh)
 }
 
 // Ensure handleInterrupt still emits the interrupt event even when

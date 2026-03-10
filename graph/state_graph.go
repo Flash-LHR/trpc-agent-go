@@ -2644,6 +2644,8 @@ func buildAgentInvocationWithStateScopeAndInputKey(
 	if parentInvocation, ok := agent.InvocationFromContext(ctx); ok &&
 		parentInvocation != nil {
 		runOptions := parentInvocation.RunOptions
+		// Child graph agents must keep their terminal completion event for state handoff.
+		runOptions.DisableGraphCompletionEvent = false
 		runOptions.RuntimeState = runtime
 		runOptions.CustomAgentConfigs = withScopedGraphCallOptions(
 			runOptions.CustomAgentConfigs,
