@@ -762,6 +762,29 @@ func TestMessageReducer_NoOpDoesNotAliasExistingNestedState(t *testing.T) {
 		require.True(t, ok)
 		mutateAndAssertOriginal(t, out, existing)
 	})
+	t.Run("empty message slice update", func(t *testing.T) {
+		existing := buildExisting()
+		outAny := MessageReducer(existing, []model.Message{})
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		mutateAndAssertOriginal(t, out, existing)
+	})
+	t.Run("empty append messages update", func(t *testing.T) {
+		existing := buildExisting()
+		outAny := MessageReducer(existing, AppendMessages{Items: nil})
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		mutateAndAssertOriginal(t, out, existing)
+	})
+	t.Run("empty append messages op fast path", func(t *testing.T) {
+		existing := buildExisting()
+		outAny := MessageReducer(existing, []MessageOp{
+			AppendMessages{Items: nil},
+		})
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		mutateAndAssertOriginal(t, out, existing)
+	})
 }
 
 func TestMessageReducer_BuiltInOpsDoNotAliasUpdateNestedState(t *testing.T) {
@@ -808,6 +831,20 @@ func TestMessageReducer_BuiltInOpsDoNotAliasUpdateNestedState(t *testing.T) {
 		require.NotNil(t, out[0].ContentParts[0].Text)
 		assert.Equal(t, "batch-part", *out[0].ContentParts[0].Text)
 		assert.Equal(t, byte('b'), out[0].ToolCalls[0].Function.Arguments[0])
+	})
+	t.Run("append messages op fast path", func(t *testing.T) {
+		update := []model.Message{buildUpdateMessage("fast-batch")}
+		outAny := MessageReducer([]model.Message{}, []MessageOp{
+			AppendMessages{Items: update},
+		})
+		out, ok := outAny.([]model.Message)
+		require.True(t, ok)
+		mutated := "mutated-part"
+		update[0].ContentParts[0].Text = &mutated
+		update[0].ToolCalls[0].Function.Arguments[0] = 'Q'
+		require.NotNil(t, out[0].ContentParts[0].Text)
+		assert.Equal(t, "fast-batch-part", *out[0].ContentParts[0].Text)
+		assert.Equal(t, byte('f'), out[0].ToolCalls[0].Function.Arguments[0])
 	})
 }
 

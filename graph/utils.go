@@ -304,7 +304,6 @@ func deepCopyMessageOpsWithVisited(
 			return cached.([]MessageOp), true
 		}
 		out := make([]MessageOp, len(in))
-		visited[key] = out
 		for i, op := range in {
 			if op == nil {
 				continue
@@ -315,6 +314,7 @@ func deepCopyMessageOpsWithVisited(
 			}
 			out[i] = copied
 		}
+		visited[key] = out
 		return out, true
 	}
 	out := make([]MessageOp, len(in))

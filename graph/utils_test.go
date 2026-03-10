@@ -336,6 +336,31 @@ func TestDeepCopyAny_MessageOpsPreserveTopLevelSliceSharing(t *testing.T) {
 	require.True(t, ok)
 }
 
+func TestDeepCopyAny_CustomMessageOpsFallbackPreservesElements(t *testing.T) {
+	ops := []MessageOp{
+		testMessageOp{out: []model.Message{model.NewAssistantMessage("custom")}},
+	}
+	copiedAny := deepCopyAny(map[string]any{
+		"left":  ops,
+		"right": ops,
+	})
+	copied, ok := copiedAny.(map[string]any)
+	require.True(t, ok)
+	left, ok := copied["left"].([]MessageOp)
+	require.True(t, ok)
+	right, ok := copied["right"].([]MessageOp)
+	require.True(t, ok)
+	require.Equal(
+		t,
+		reflect.ValueOf(left).Pointer(),
+		reflect.ValueOf(right).Pointer(),
+	)
+	_, ok = left[0].(testMessageOp)
+	require.True(t, ok)
+	_, ok = right[0].(testMessageOp)
+	require.True(t, ok)
+}
+
 func TestDeepCopyAny_MessageToolCallExtraFieldsPreserveGraphShape(t *testing.T) {
 	extra := map[string]any{}
 	shared := map[string]any{"value": "keep"}
