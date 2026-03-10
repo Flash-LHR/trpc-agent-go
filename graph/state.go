@@ -339,6 +339,35 @@ func messageReducerCanUseRawCurrentValue(currentValue any) bool {
 	return ok
 }
 
+// applyLegacyMessageReducerDisableDeepCopy preserves main-branch semantics.
+func applyLegacyMessageReducerDisableDeepCopy(existing, update any) any {
+	if existing == nil {
+		existing = []model.Message{}
+	}
+	existingMsgs, ok := existing.([]model.Message)
+	if !ok {
+		return update
+	}
+	switch x := update.(type) {
+	case nil:
+		return existingMsgs
+	case model.Message:
+		return append(existingMsgs, x)
+	case []model.Message:
+		return append(existingMsgs, x...)
+	case MessageOp:
+		return x.Apply(existingMsgs)
+	case []MessageOp:
+		result := existingMsgs
+		for _, op := range x {
+			result = op.Apply(result)
+		}
+		return result
+	default:
+		return update
+	}
+}
+
 // NewStateSchema creates a new state schema.
 func NewStateSchema() *StateSchema {
 	return &StateSchema{
@@ -392,6 +421,18 @@ func (s *StateSchema) ApplyUpdate(currentState State, update State) State {
 			currentValue = field.Default()
 		}
 
+		if field.DisableDeepCopy {
+			if isMessageReducer(field.Reducer) {
+				result[key] = applyLegacyMessageReducerDisableDeepCopy(
+					currentValue,
+					updateValue,
+				)
+				continue
+			}
+			result[key] = field.Reducer(currentValue, updateValue)
+			continue
+		}
+
 		// MergeReducer already deep-copies map entries and values, so we can
 		// safely skip the generic deep-copy path here to avoid redundant work.
 		if isMergeReducer(field.Reducer) {
@@ -401,11 +442,6 @@ func (s *StateSchema) ApplyUpdate(currentState State, update State) State {
 		if isMessageReducer(field.Reducer) &&
 			messageReducerCanUseRawCurrentValue(currentValue) &&
 			messageReducerCanUseRawUpdate(updateValue) {
-			result[key] = field.Reducer(currentValue, updateValue)
-			continue
-		}
-
-		if field.DisableDeepCopy {
 			result[key] = field.Reducer(currentValue, updateValue)
 			continue
 		}

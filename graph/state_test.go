@@ -1060,6 +1060,38 @@ func TestStateSchemaApplyUpdate_MessageReducerSemantics(t *testing.T) {
 		assert.Equal(t, 1, update.Applied)
 		assert.Equal(t, "mutated-1", update.Out[0].Content)
 	})
+	t.Run("disable deep copy allows raw message slice to alias update", func(t *testing.T) {
+		schema := buildDisableDeepCopySchema()
+		update := []model.Message{buildMessage("disable-raw-slice")}
+		next := schema.ApplyUpdate(State{"messages": []model.Message{}}, State{
+			"messages": update,
+		})
+		out, ok := next["messages"].([]model.Message)
+		require.True(t, ok)
+		require.Len(t, out, 1)
+		mutated := "mutated-part"
+		update[0].ContentParts[0].Text = &mutated
+		update[0].ToolCalls[0].Function.Arguments[0] = 'Q'
+		require.NotNil(t, out[0].ContentParts[0].Text)
+		assert.Equal(t, "mutated-part", *out[0].ContentParts[0].Text)
+		assert.Equal(t, byte('Q'), out[0].ToolCalls[0].Function.Arguments[0])
+	})
+	t.Run("disable deep copy allows append messages to alias update", func(t *testing.T) {
+		schema := buildDisableDeepCopySchema()
+		update := []model.Message{buildMessage("disable-append")}
+		next := schema.ApplyUpdate(State{"messages": []model.Message{}}, State{
+			"messages": AppendMessages{Items: update},
+		})
+		out, ok := next["messages"].([]model.Message)
+		require.True(t, ok)
+		require.Len(t, out, 1)
+		mutated := "mutated-part"
+		update[0].ContentParts[0].Text = &mutated
+		update[0].ToolCalls[0].Function.Arguments[0] = 'Q'
+		require.NotNil(t, out[0].ContentParts[0].Text)
+		assert.Equal(t, "mutated-part", *out[0].ContentParts[0].Text)
+		assert.Equal(t, byte('Q'), out[0].ToolCalls[0].Function.Arguments[0])
+	})
 }
 
 func TestMergeReducerAndMessageReducerCoveragePaths(t *testing.T) {
