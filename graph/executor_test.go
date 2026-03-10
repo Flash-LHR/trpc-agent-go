@@ -291,6 +291,65 @@ func TestExecutor_NodeStartEvent_UsesCustomUserInputKey(t *testing.T) {
 	require.Equal(t, testCustomInput, got)
 }
 
+func TestExecutor_LLMNodeTypeOverride_PropagatesToCallbacksAndEvents(t *testing.T) {
+	const testNodeID = "llm"
+	var callbackNodeType NodeType
+	sg := NewStateGraph(MessagesStateSchema())
+	sg.WithNodeCallbacks(NewNodeCallbacks().RegisterBeforeNode(
+		func(ctx context.Context, cb *NodeCallbackContext, st State) (any, error) {
+			callbackNodeType = cb.NodeType
+			return nil, nil
+		},
+	))
+	sg.AddLLMNode(
+		testNodeID,
+		&MockModel{responses: map[string]string{}},
+		"inst",
+		nil,
+		WithNodeType(NodeTypeTool),
+		WithUserInputKey("custom_input"),
+	)
+	sg.SetEntryPoint(testNodeID)
+	sg.SetFinishPoint(testNodeID)
+	g, err := sg.Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(g)
+	require.NoError(t, err)
+	eventChan, err := exec.Execute(
+		context.Background(),
+		State{
+			StateKeyUserInput: "from-user",
+			"custom_input":    "from-custom",
+		},
+		&agent.Invocation{InvocationID: "inv-node-type-override"},
+	)
+	require.NoError(t, err)
+	var (
+		foundMeta bool
+		gotMeta   NodeExecutionMetadata
+	)
+	for ev := range eventChan {
+		if ev == nil || ev.Object != ObjectTypeGraphNodeStart {
+			continue
+		}
+		raw, ok := ev.StateDelta[MetadataKeyNode]
+		if !ok {
+			continue
+		}
+		var meta NodeExecutionMetadata
+		require.NoError(t, json.Unmarshal(raw, &meta))
+		if meta.NodeID != testNodeID {
+			continue
+		}
+		foundMeta = true
+		gotMeta = meta
+	}
+	require.True(t, foundMeta)
+	require.Equal(t, NodeTypeTool, callbackNodeType)
+	require.Equal(t, NodeTypeTool, gotMeta.NodeType)
+	require.Empty(t, gotMeta.ModelInput)
+}
+
 // Ensure handleInterrupt still emits the interrupt event even when
 // the provided context is canceled, because it uses a fresh background
 // context with a timeout for emission.
