@@ -41,6 +41,23 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
+type disableTracingModel struct{}
+
+func (m *disableTracingModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
+	out := make(chan *model.Response, 1)
+	out <- &model.Response{
+		Choices: []model.Choice{
+			{Message: model.NewAssistantMessage("ok")},
+		},
+	}
+	close(out)
+	return out, nil
+}
+
+func (m *disableTracingModel) Info() model.Info {
+	return model.Info{Name: "disable-tracing-model"}
+}
+
 func TestNewGraphAgent(t *testing.T) {
 	// Create a simple graph using the new API.
 	schema := graph.NewStateSchema().
@@ -144,6 +161,38 @@ func TestGraphAgentRun_NilInvocation(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, eventCh)
 	require.Equal(t, invocationNilErrMsg, err.Error())
+}
+
+func TestGraphAgentRun_DisableTracingFastPath(t *testing.T) {
+	stateGraph := graph.NewStateGraph(graph.MessagesStateSchema())
+	stateGraph.AddLLMNode("llm", &disableTracingModel{}, "analyze", nil)
+	stateGraph.SetEntryPoint("llm")
+	stateGraph.SetFinishPoint("llm")
+
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+
+	graphAgent, err := New("test-agent", g)
+	require.NoError(t, err)
+
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-tracing"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableTracing: true,
+		}),
+	)
+
+	events, err := graphAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+
+	var sawResponse bool
+	for evt := range events {
+		if evt != nil && evt.Response != nil {
+			sawResponse = true
+		}
+	}
+
+	require.True(t, sawResponse)
 }
 
 func TestGraphAgent_WithMaxConcurrency(t *testing.T) {

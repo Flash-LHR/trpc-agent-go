@@ -17,9 +17,11 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -353,6 +355,51 @@ func TestLLMNode_PlaceholdersOptionalMissing(t *testing.T) {
 	require.Contains(t, sys.Content, "AI")
 	require.NotContains(t, sys.Content, "{user:topics?")
 	require.NotContains(t, sys.Content, "{app:banner?")
+}
+
+func TestLLMNode_DisableTracingUsesCurrentSpan(t *testing.T) {
+	schema := MessagesStateSchema()
+	cm := &captureModel{}
+	sg := NewStateGraph(schema)
+	sg.AddLLMNode("llm", cm, "inst", nil)
+
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{DisableTracing: true}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	node := sg.graph.nodes["llm"]
+
+	_, err := node.Function(ctx, State{StateKeyUserInput: "hi"})
+	require.NoError(t, err)
+	require.NotNil(t, cm.lastReq)
+
+	_, ch, err := runModel(ctx, nil, cm, &model.Request{Messages: []model.Message{model.NewUserMessage("hi")}})
+	require.NoError(t, err)
+	for range ch {
+	}
+}
+
+func TestTraceProcessedModelResponse_DisableTracing(t *testing.T) {
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{DisableTracing: true}),
+	)
+	tracker := itelemetry.NewChatMetricsTracker(
+		context.Background(),
+		invocation,
+		&model.Request{},
+		nil,
+		nil,
+		nil,
+	)
+
+	traceChatIfLastEvent(
+		noop.Span{},
+		tracker,
+		invocation,
+		&model.Request{},
+		&model.Response{Choices: []model.Choice{{Message: model.NewAssistantMessage("ok")}}},
+		&event.Event{ID: "evt-1"},
+	)
 }
 
 // Verify StateSchema.ApplyUpdate skips unknown internal keys while still
