@@ -365,9 +365,10 @@ func (f *Flow) processStreamingResponses(
 	var tracker *itelemetry.ChatMetricsTracker
 	var timingInfo *model.TimingInfo
 	var partialUsageFallback *model.Usage
-	if currentInvocation != nil &&
-		!currentInvocation.RunOptions.DisableResponseUsageTracking {
-		timingInfo = currentInvocation.GetOrCreateTimingInfo()
+	if currentInvocation != nil {
+		if !currentInvocation.RunOptions.DisableResponseUsageTracking {
+			timingInfo = currentInvocation.GetOrCreateTimingInfo()
+		}
 		tracker = itelemetry.NewChatMetricsTracker(
 			ctx,
 			currentInvocation,
@@ -384,12 +385,11 @@ func (f *Flow) processStreamingResponses(
 			ctx,
 			currentInvocation,
 		)
-		applyModelResponseTracking(
+		trackModelResponseTelemetry(
 			response,
 			tracker,
-			timingInfo,
-			&partialUsageFallback,
 		)
+		attachResponseUsageTiming(response, timingInfo, &partialUsageFallback)
 		// Handle after model callbacks.
 		updatedCtx, customResp, cbErr := f.handleAfterModelCallbacks(
 			ctx,
@@ -530,16 +530,24 @@ func invocationFromContextOrDefault(
 	return invocation
 }
 
-func applyModelResponseTracking(
+func trackModelResponseTelemetry(
 	response *model.Response,
 	tracker *itelemetry.ChatMetricsTracker,
-	timingInfo *model.TimingInfo,
-	partialUsageFallback **model.Usage,
 ) {
 	if tracker == nil || response == nil {
 		return
 	}
 	tracker.TrackResponse(response)
+}
+
+func attachResponseUsageTiming(
+	response *model.Response,
+	timingInfo *model.TimingInfo,
+	partialUsageFallback **model.Usage,
+) {
+	if response == nil || timingInfo == nil {
+		return
+	}
 	if response.Usage == nil {
 		if response.IsPartial {
 			if *partialUsageFallback == nil {

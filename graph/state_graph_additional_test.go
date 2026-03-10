@@ -288,6 +288,37 @@ func TestEmitFastModelResponseEvent_DisablesPartialMetadata(t *testing.T) {
 		require.NotNil(t, ev)
 		require.Same(t, resp, ev.Response)
 	})
+
+	t.Run("partial response uses event creation time by default", func(t *testing.T) {
+		ch := make(chan *event.Event, 1)
+		respTimestamp := time.Unix(1, 0).UTC()
+		resp := &model.Response{
+			IsPartial: true,
+			Timestamp: respTimestamp,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("partial")},
+			},
+		}
+		ev, err := emitFastModelResponseEvent(
+			context.Background(),
+			agent.NewInvocation(agent.WithInvocationID("inv-fast-default-ts")),
+			modelExecutionConfig{
+				InvocationID: "inv-fast-default-ts",
+				EventChan:    ch,
+				Span:         noop.Span{},
+			},
+			resp,
+			"llm",
+			false,
+			false,
+			nil,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, ev)
+		require.False(t, ev.Timestamp.IsZero())
+		require.True(t, ev.Timestamp.After(respTimestamp))
+		require.Same(t, ev, <-ch)
+	})
 }
 
 func TestModelResponseProcessorConsume_FastPathSeq(t *testing.T) {
@@ -499,6 +530,69 @@ func TestExecuteModelAndProcessResponses_UsesInvocationFromCallbackContext(t *te
 	finalResponse, ok := resp.(*model.Response)
 	require.True(t, ok)
 	require.Nil(t, finalResponse.Usage)
+}
+
+func TestExecuteModelAndProcessResponses_DisableResponseUsageTrackingStillRecordsMetrics(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	originalProvider := itelemetry.MeterProvider
+	originalMeter := itelemetry.ChatMeter
+	originalRequestCnt := itelemetry.ChatMetricTRPCAgentGoClientRequestCnt
+	originalTokenUsage := itelemetry.ChatMetricGenAIClientTokenUsage
+	originalOperationDuration := itelemetry.ChatMetricGenAIClientOperationDuration
+	originalServerTimeToFirstToken := itelemetry.ChatMetricGenAIServerTimeToFirstToken
+	originalClientTimeToFirstToken := itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken
+	originalTimePerOutputToken := itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken
+	originalOutputTokenPerTime := itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime
+	defer func() {
+		itelemetry.MeterProvider = originalProvider
+		itelemetry.ChatMeter = originalMeter
+		itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = originalRequestCnt
+		itelemetry.ChatMetricGenAIClientTokenUsage = originalTokenUsage
+		itelemetry.ChatMetricGenAIClientOperationDuration = originalOperationDuration
+		itelemetry.ChatMetricGenAIServerTimeToFirstToken = originalServerTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = originalClientTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = originalTimePerOutputToken
+		itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = originalOutputTokenPerTime
+	}()
+	itelemetry.MeterProvider = provider
+	itelemetry.ChatMeter = provider.Meter(semconvmetrics.MeterNameChat)
+	requestCnt, err := itelemetry.ChatMeter.Int64Counter("trpc_agent_go.client.request.cnt")
+	require.NoError(t, err)
+	itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = requestCnt
+	itelemetry.ChatMetricGenAIClientTokenUsage = nil
+	itelemetry.ChatMetricGenAIClientOperationDuration = nil
+	itelemetry.ChatMetricGenAIServerTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = nil
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-usage-metrics"),
+		agent.WithInvocationModel(&captureModel{}),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableResponseUsageTracking: true,
+		}),
+		agent.WithInvocationSession(&session.Session{ID: "sess-disable-usage-metrics"}),
+	)
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), invocation),
+		modelExecutionConfig{
+			Invocation:   invocation,
+			LLMModel:     invocation.Model,
+			Request:      &model.Request{},
+			InvocationID: invocation.InvocationID,
+			SessionID:    invocation.Session.ID,
+			Span:         noop.Span{},
+			NodeID:       "llm",
+		},
+	)
+	require.NoError(t, err)
+	finalResponse, ok := resp.(*model.Response)
+	require.True(t, ok)
+	require.Nil(t, finalResponse.Usage)
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	require.NotEmpty(t, rm.ScopeMetrics)
 }
 
 func TestAddLLMNode_SkipsModelCompleteEventWhenCallbackDisablesModelExecutionEvents(t *testing.T) {

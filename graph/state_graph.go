@@ -3387,17 +3387,24 @@ func nextReusableModelEvent(
 	return ev
 }
 
-func applyModelResponseTracking(
+func trackModelResponseTelemetry(
 	response *model.Response,
 	tracker *itelemetry.ChatMetricsTracker,
-	timingInfo *model.TimingInfo,
-	partialUsageFallback **model.Usage,
 ) {
 	if tracker == nil || response == nil {
 		return
 	}
-
 	tracker.TrackResponse(response)
+}
+
+func attachResponseUsageTiming(
+	response *model.Response,
+	timingInfo *model.TimingInfo,
+	partialUsageFallback **model.Usage,
+) {
+	if response == nil || timingInfo == nil {
+		return
+	}
 	if response.Usage == nil {
 		if response.IsPartial {
 			if *partialUsageFallback == nil {
@@ -3431,10 +3438,13 @@ func emitFastModelResponseEvent(
 	if shouldEmit && (!response.IsPartial || !partialEventIDsDisabled) {
 		eventID = uuid.NewString()
 	}
-	eventTimestamp := response.Timestamp
-	if shouldEmit && eventTimestamp.IsZero() &&
-		(!response.IsPartial || !partialEventTimestampsDisabled) {
-		eventTimestamp = time.Now()
+	eventTimestamp := time.Time{}
+	if shouldEmit {
+		if response.IsPartial && partialEventTimestampsDisabled {
+			eventTimestamp = response.Timestamp
+		} else {
+			eventTimestamp = time.Now()
+		}
 	}
 
 	llmEvent.Response = response
@@ -3516,8 +3526,10 @@ func newModelResponseProcessor(
 	}
 
 	usageTrackingDisabled := invocation != nil && invocation.RunOptions.DisableResponseUsageTracking
-	if !usageTrackingDisabled {
-		p.timingInfo = invocation.GetOrCreateTimingInfo()
+	if invocation != nil {
+		if !usageTrackingDisabled {
+			p.timingInfo = invocation.GetOrCreateTimingInfo()
+		}
 		p.tracker = itelemetry.NewChatMetricsTracker(
 			ctx,
 			invocation,
@@ -3591,7 +3603,8 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 	}
 
 	p.tap.WriteDelta(response)
-	applyModelResponseTracking(response, p.tracker, p.timingInfo, &p.partialUsageFallback)
+	trackModelResponseTelemetry(response, p.tracker)
+	attachResponseUsageTiming(response, p.timingInfo, &p.partialUsageFallback)
 
 	p.toolCalls = collectToolCallsFromResponse(p.toolCalls, response)
 	p.finalResponse = response
