@@ -683,29 +683,23 @@ func MessageReducer(existing, update any) any {
 }
 
 func appendOwnedMessage(existing []model.Message, msg model.Message) []model.Message {
-	out := make([]model.Message, len(existing)+1)
-	copy(out, existing)
-	out[len(existing)] = msg
-	return out
+	out := cloneMessageSlicePreserveEmpty(existing)
+	return append(out, msg)
 }
 
 func appendOwnedMessages(existing, updates []model.Message) []model.Message {
 	if len(updates) == 0 {
 		return existing
 	}
-	out := make([]model.Message, len(existing)+len(updates))
-	copy(out, existing)
-	copy(out[len(existing):], updates)
-	return out
+	out := cloneMessageSlicePreserveEmpty(existing)
+	return append(out, updates...)
 }
 
 func cloneMessageSlicePreserveEmpty(in []model.Message) []model.Message {
 	if in == nil {
 		return nil
 	}
-	out := make([]model.Message, len(in))
-	copy(out, in)
-	return out
+	return deepCopyModelMessages(in)
 }
 
 func replaceLastUserOwned(existing []model.Message, content string) []model.Message {
@@ -763,9 +757,10 @@ func fastAppendMessageOps(existing []model.Message, ops []MessageOp) ([]model.Me
 	if totalAppend == 0 {
 		return existing, true
 	}
-	out := make([]model.Message, len(existing)+totalAppend)
-	copy(out, existing)
-	pos := len(existing)
+	base := cloneMessageSlicePreserveEmpty(existing)
+	out := make([]model.Message, len(base)+totalAppend)
+	copy(out, base)
+	pos := len(base)
 	for _, op := range ops {
 		appendOp, ok := op.(AppendMessages)
 		if !ok || len(appendOp.Items) == 0 {

@@ -630,12 +630,60 @@ func TestMessageReducer_CustomOpDoesNotMutateExistingNestedState(t *testing.T) {
 	})
 }
 
-func TestMessageReducer_BuiltInOpsDoNotAliasExistingSlice(t *testing.T) {
+func TestMessageReducer_BuiltInOpsDoNotAliasExistingNestedState(t *testing.T) {
 	buildExisting := func() []model.Message {
 		existing := make([]model.Message, 2, 4)
-		existing[0] = model.NewAssistantMessage("a1")
-		existing[1] = model.NewUserMessage("u1")
+		text0 := "a1-part"
+		text1 := "u1-part"
+		args0 := []byte("abc")
+		args1 := []byte("xyz")
+		existing[0] = model.Message{
+			Role:    model.RoleAssistant,
+			Content: "a1",
+			ContentParts: []model.ContentPart{
+				{Type: model.ContentTypeText, Text: &text0},
+			},
+			ToolCalls: []model.ToolCall{
+				{
+					Type: "function",
+					ID:   "call-a1",
+					Function: model.FunctionDefinitionParam{
+						Arguments: args0,
+					},
+				},
+			},
+		}
+		existing[1] = model.Message{
+			Role:    model.RoleUser,
+			Content: "u1",
+			ContentParts: []model.ContentPart{
+				{Type: model.ContentTypeText, Text: &text1},
+			},
+			ToolCalls: []model.ToolCall{
+				{
+					Type: "function",
+					ID:   "call-u1",
+					Function: model.FunctionDefinitionParam{
+						Arguments: args1,
+					},
+				},
+			},
+		}
 		return existing
+	}
+	mutateAndAssertOriginal := func(t *testing.T, out, existing []model.Message, idx int) {
+		t.Helper()
+		mutated := "mutated-part"
+		out[idx].ContentParts[0].Text = &mutated
+		out[idx].ToolCalls[0].Function.Arguments[0] = 'Q'
+		require.NotNil(t, existing[idx].ContentParts[0].Text)
+		if idx == 0 {
+			assert.Equal(t, "a1-part", *existing[idx].ContentParts[0].Text)
+			assert.Equal(t, byte('a'), existing[idx].ToolCalls[0].Function.Arguments[0])
+			return
+		}
+		assert.Equal(t, "u1-part", *existing[idx].ContentParts[0].Text)
+		assert.Equal(t, byte('x'), existing[idx].ToolCalls[0].Function.Arguments[0])
 	}
 	t.Run("append message", func(t *testing.T) {
 		existing := buildExisting()
@@ -644,8 +692,7 @@ func TestMessageReducer_BuiltInOpsDoNotAliasExistingSlice(t *testing.T) {
 		out, ok := outAny.([]model.Message)
 		require.True(t, ok)
 		require.NotEqual(t, existingPtr, reflect.ValueOf(out).Pointer())
-		out[0].Content = "mutated"
-		assert.Equal(t, "a1", existing[0].Content)
+		mutateAndAssertOriginal(t, out, existing, 0)
 	})
 	t.Run("append message op fast path", func(t *testing.T) {
 		existing := buildExisting()
@@ -656,8 +703,7 @@ func TestMessageReducer_BuiltInOpsDoNotAliasExistingSlice(t *testing.T) {
 		out, ok := outAny.([]model.Message)
 		require.True(t, ok)
 		require.NotEqual(t, existingPtr, reflect.ValueOf(out).Pointer())
-		out[1].Content = "mutated"
-		assert.Equal(t, "u1", existing[1].Content)
+		mutateAndAssertOriginal(t, out, existing, 1)
 	})
 	t.Run("replace last user", func(t *testing.T) {
 		existing := buildExisting()
@@ -666,8 +712,7 @@ func TestMessageReducer_BuiltInOpsDoNotAliasExistingSlice(t *testing.T) {
 		out, ok := outAny.([]model.Message)
 		require.True(t, ok)
 		require.NotEqual(t, existingPtr, reflect.ValueOf(out).Pointer())
-		out[1].Content = "mutated"
-		assert.Equal(t, "u1", existing[1].Content)
+		mutateAndAssertOriginal(t, out, existing, 1)
 	})
 }
 
