@@ -2318,6 +2318,67 @@ func TestRunner_GraphAgentPersistsLLMDoneResponses(t *testing.T) {
 		sess.Events[2].Choices[0].Message.Content)
 }
 
+func TestRunner_GraphAgentPersistsLLMDoneResponsesWithCallbacksAndHiddenCompletion(t *testing.T) {
+	schema := graph.MessagesStateSchema()
+	sg := graph.NewStateGraph(schema)
+	sg.AddLLMNode(
+		"n1",
+		&staticModel{name: "m1", content: "first"},
+		"i1",
+		nil,
+	)
+	sg.AddLLMNode(
+		"n2",
+		&staticModel{name: "m2", content: "second"},
+		"i2",
+		nil,
+	)
+	sg.AddEdge("n1", "n2")
+	compiled := sg.SetEntryPoint("n1").SetFinishPoint("n2").MustCompile()
+	callbacks := agent.NewCallbacks()
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		return nil, nil
+	})
+	ga, err := graphagent.New("ga", compiled, graphagent.WithAgentCallbacks(callbacks))
+	require.NoError(t, err)
+
+	svc := sessioninmemory.NewSessionService()
+	r := NewRunner("app", ga, WithSessionService(svc))
+
+	ch, err := r.Run(
+		context.Background(),
+		"u",
+		"s",
+		model.NewUserMessage("hi"),
+		agent.WithGraphEmitFinalModelResponses(true),
+		agent.WithDisableGraphCompletionEvent(true),
+	)
+	require.NoError(t, err)
+
+	var completion *event.Event
+	for e := range ch {
+		require.False(t, e.Done && e.Object == graph.ObjectTypeGraphExecution)
+		if e.Object == model.ObjectTypeRunnerCompletion {
+			completion = e
+		}
+	}
+	require.NotNil(t, completion)
+	require.NotNil(t, completion.StateDelta)
+	require.Equal(t, `"second"`, string(completion.StateDelta[graph.StateKeyLastResponse]))
+	require.Empty(t, completion.Response.Choices)
+
+	sess, err := svc.GetSession(context.Background(), session.Key{
+		AppName:   "app",
+		UserID:    "u",
+		SessionID: "s",
+	})
+	require.NoError(t, err)
+	require.Len(t, sess.Events, 3)
+	require.True(t, sess.Events[0].IsUserMessage())
+	require.Equal(t, "first", sess.Events[1].Choices[0].Message.Content)
+	require.Equal(t, "second", sess.Events[2].Choices[0].Message.Content)
+}
+
 func TestPropagateGraphCompletion_NilStateValue(t *testing.T) {
 	// Call propagateGraphCompletion directly to cover the nil-value copy branch.
 	rr := NewRunner("app", &noOpAgent{name: "a"}).(*runner)
