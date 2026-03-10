@@ -11,6 +11,7 @@ package graph_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -199,4 +200,87 @@ func TestSubgraph_DisableGraphCompletionEvent_PreservesNestedCycleEscalation(t *
 
 	require.Equal(t, 1, childVisibleCompletionCount)
 	require.Equal(t, valuePrefix+userInput, lastAssistant)
+}
+
+func TestSubgraph_DisableGraphCompletionEvent_DropsStaleOutputAfterChildAfterCallbackError(t *testing.T) {
+	const (
+		childNodeName     = "child_handoff"
+		childValueKey     = "child_value"
+		valueFromChildKey = "value_from_child"
+	)
+	childSchema := graph.NewStateSchema().
+		AddField(graph.StateKeyUserInput, graph.StateField{Type: reflect.TypeOf("")}).
+		AddField(graph.StateKeyLastResponse, graph.StateField{Type: reflect.TypeOf("")}).
+		AddField(childValueKey, graph.StateField{Type: reflect.TypeOf("")})
+	childGraph := graph.NewStateGraph(childSchema)
+	childGraph.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		return graph.State{
+			childValueKey:              "child-state",
+			graph.StateKeyLastResponse: "child-state",
+		}, nil
+	})
+	childCompiled := childGraph.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	callbacks := agent.NewCallbacks()
+	callbacks.RegisterAfterAgent(func(
+		ctx context.Context,
+		args *agent.AfterAgentArgs,
+	) (*agent.AfterAgentResult, error) {
+		return nil, errors.New("after callback failed")
+	})
+	childAgent, err := graphagent.New(
+		childNodeName,
+		childCompiled,
+		graphagent.WithAgentCallbacks(callbacks),
+	)
+	require.NoError(t, err)
+
+	parentSchema := graph.NewStateSchema().
+		AddField(graph.StateKeyUserInput, graph.StateField{Type: reflect.TypeOf("")}).
+		AddField(valueFromChildKey, graph.StateField{Type: reflect.TypeOf("")})
+	parentGraph := graph.NewStateGraph(parentSchema)
+	parentGraph.AddAgentNode(
+		childNodeName,
+		graph.WithSubgraphOutputMapper(func(_ graph.State, result graph.SubgraphResult) graph.State {
+			value, ok := graph.GetStateValue[string](result.FinalState, childValueKey)
+			if !ok {
+				return nil
+			}
+			return graph.State{valueFromChildKey: value}
+		}),
+	)
+	parentCompiled := parentGraph.SetEntryPoint(childNodeName).SetFinishPoint(childNodeName).MustCompile()
+	parentAgent, err := graphagent.New(
+		"parent",
+		parentCompiled,
+		graphagent.WithSubAgents([]agent.Agent{childAgent}),
+	)
+	require.NoError(t, err)
+
+	invocation := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("hello")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	eventCh, err := parentAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+
+	var sawCallbackError bool
+	var sawStaleChildValue bool
+	for evt := range eventCh {
+		if evt != nil &&
+			evt.Error != nil &&
+			evt.Error.Type == agent.ErrorTypeAgentCallbackError &&
+			evt.Error.Message == "after callback failed" {
+			sawCallbackError = true
+		}
+		if evt != nil &&
+			evt.StateDelta != nil &&
+			string(evt.StateDelta[valueFromChildKey]) == `"child-state"` {
+			sawStaleChildValue = true
+		}
+	}
+
+	require.True(t, sawCallbackError)
+	require.False(t, sawStaleChildValue)
 }

@@ -2452,6 +2452,7 @@ func updateAgentStreamResultFromEvent(
 	updateAgentTokenUsage(res, ev, tracker)
 	updateAgentInterrupt(res, ev)
 	updateAgentFinalState(ctx, res, ev)
+	clearAgentSuccessResultOnError(res, ev)
 }
 
 func updateAgentLastResponse(res *agentEventStreamResult, ev *event.Event) {
@@ -2510,6 +2511,16 @@ func updateAgentInterrupt(res *agentEventStreamResult, ev *event.Event) {
 		return
 	}
 	res.interrupt = intr
+}
+
+func clearAgentSuccessResultOnError(res *agentEventStreamResult, ev *event.Event) {
+	if res == nil || ev == nil || ev.Response == nil || ev.Response.Error == nil {
+		return
+	}
+	res.lastResponse = ""
+	res.finalState = nil
+	res.rawDelta = nil
+	res.structuredOutput = nil
 }
 
 func updateAgentFinalState(
