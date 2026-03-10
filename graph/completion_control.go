@@ -179,9 +179,7 @@ func shouldClearVisibleGraphCompletionChoices(
 	responseID := completionResponseIDFromStateDelta(evt.StateDelta)
 	if responseID != "" {
 		_, ok := emittedAssistantResponseIDs["id:"+responseID]
-		if ok {
-			return true
-		}
+		return ok
 	}
 	signature := assistantChoiceSignature(evt.Response.Choices)
 	if signature == "" {
@@ -210,7 +208,27 @@ func assistantChoiceSignature(choices []model.Choice) string {
 	if len(choices) == 0 {
 		return ""
 	}
-	b, err := json.Marshal(choices)
+	type signatureChoice struct {
+		Index   int        `json:"index"`
+		Role    model.Role `json:"role"`
+		Content string     `json:"content"`
+	}
+	signatureChoices := make([]signatureChoice, 0, len(choices))
+	for _, choice := range choices {
+		if choice.Message.Role != model.RoleAssistant ||
+			choice.Message.Content == "" {
+			continue
+		}
+		signatureChoices = append(signatureChoices, signatureChoice{
+			Index:   choice.Index,
+			Role:    choice.Message.Role,
+			Content: choice.Message.Content,
+		})
+	}
+	if len(signatureChoices) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(signatureChoices)
 	if err != nil {
 		return ""
 	}

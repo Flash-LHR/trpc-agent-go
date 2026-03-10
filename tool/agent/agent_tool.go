@@ -594,9 +594,7 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 						pendingCompletionChunk = &pendingChunk
 						sawGraphCompletionSnapshot = true
 					}
-					if isGraphCompletionEvent(ev) {
-						continue
-					}
+					continue
 				}
 				graphCompletionSnapshot := isGraphCompletionSnapshotEvent(ev)
 				if graphCompletionSnapshot {

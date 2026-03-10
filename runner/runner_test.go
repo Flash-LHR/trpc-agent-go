@@ -1552,6 +1552,34 @@ func TestRunner_GraphCompletion_DedupFinalChoices(t *testing.T) {
 	require.Empty(t, completion.Response.Choices)
 }
 
+func TestRunner_GraphCompletion_DifferentResponseIDDoesNotDedupBySignature(t *testing.T) {
+	sessionService := sessioninmemory.NewSessionService()
+	ag := &mismatchedIDGraphCompletionAgent{
+		name:          "mismatch-agent",
+		assistantText: "answer",
+	}
+	r := NewRunner("app", ag, WithSessionService(sessionService))
+	ch, err := r.Run(
+		context.Background(),
+		"user",
+		"session-mismatch-id",
+		model.NewUserMessage(""),
+		agent.WithGraphEmitFinalModelResponses(true),
+	)
+	require.NoError(t, err)
+
+	var completion *event.Event
+	for e := range ch {
+		if e.Object == model.ObjectTypeRunnerCompletion {
+			completion = e
+		}
+	}
+
+	require.NotNil(t, completion)
+	require.Len(t, completion.Response.Choices, 1)
+	require.Equal(t, "answer", completion.Response.Choices[0].Message.Content)
+}
+
 func TestRunner_StreamModeUpdates_WithFinalModelResponses_EmptyResponseIDDedupsSessionText(
 	t *testing.T,
 ) {
@@ -1895,6 +1923,11 @@ type dedupGraphCompletionAgent struct {
 	stateVal      string
 }
 
+type mismatchedIDGraphCompletionAgent struct {
+	name          string
+	assistantText string
+}
+
 func (m *dedupGraphCompletionAgent) Info() agent.Info {
 	return agent.Info{
 		Name:        m.name,
@@ -1962,6 +1995,65 @@ func (m *dedupGraphCompletionAgent) Run(
 		Timestamp:    time.Now(),
 	}
 
+	eventCh <- assistantEvent
+	eventCh <- graphCompletionEvent
+	close(eventCh)
+	return eventCh, nil
+}
+
+func (m *mismatchedIDGraphCompletionAgent) Info() agent.Info {
+	return agent.Info{
+		Name:        m.name,
+		Description: "Mock agent for final response mismatch dedup testing",
+	}
+}
+
+func (m *mismatchedIDGraphCompletionAgent) SubAgents() []agent.Agent { return nil }
+
+func (m *mismatchedIDGraphCompletionAgent) FindSubAgent(name string) agent.Agent {
+	return nil
+}
+
+func (m *mismatchedIDGraphCompletionAgent) Tools() []tool.Tool { return nil }
+
+func (m *mismatchedIDGraphCompletionAgent) Run(
+	ctx context.Context,
+	invocation *agent.Invocation,
+) (<-chan *event.Event, error) {
+	eventCh := make(chan *event.Event, 2)
+	assistantEvent := &event.Event{
+		Response: &model.Response{
+			ID:     "resp-1",
+			Object: model.ObjectTypeChatCompletion,
+			Done:   true,
+			Choices: []model.Choice{{
+				Index:   0,
+				Message: model.NewAssistantMessage(m.assistantText),
+			}},
+		},
+		InvocationID: invocation.InvocationID,
+		Author:       m.name,
+		ID:           "assistant-event-id",
+		Timestamp:    time.Now(),
+	}
+	graphCompletionEvent := &event.Event{
+		Response: &model.Response{
+			ID:     "graph-event-id",
+			Object: graph.ObjectTypeGraphExecution,
+			Done:   true,
+			Choices: []model.Choice{{
+				Index:   0,
+				Message: model.NewAssistantMessage(m.assistantText),
+			}},
+		},
+		StateDelta: map[string][]byte{
+			graph.StateKeyLastResponseID: []byte(`"resp-2"`),
+		},
+		InvocationID: invocation.InvocationID,
+		Author:       m.name,
+		ID:           "graph-event-id",
+		Timestamp:    time.Now(),
+	}
 	eventCh <- assistantEvent
 	eventCh <- graphCompletionEvent
 	close(eventCh)

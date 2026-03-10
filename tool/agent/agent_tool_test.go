@@ -50,6 +50,10 @@ type assistantThenVisibleStateOnlyCompletionAgent struct {
 	name string
 }
 
+type visibleCompletionThenErrorAgent struct {
+	name string
+}
+
 func newGraphAgentWithAfterCallback(
 	t *testing.T,
 	state graph.State,
@@ -190,6 +194,47 @@ func (a *assistantThenVisibleStateOnlyCompletionAgent) Run(
 	return ch, nil
 }
 
+func (a *visibleCompletionThenErrorAgent) Run(
+	ctx context.Context,
+	invocation *agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event, 2)
+	go func() {
+		defer close(ch)
+		invocationID := "visible-completion-then-error-agent"
+		author := a.name
+		if invocation != nil {
+			invocationID = invocation.InvocationID
+			if invocation.AgentName != "" {
+				author = invocation.AgentName
+			}
+		}
+		rawCompletion := graph.NewGraphCompletionEvent(
+			graph.WithCompletionEventInvocationID(invocationID),
+			graph.WithCompletionEventFinalState(graph.State{
+				graph.StateKeyLastResponse: "child-final",
+			}),
+		)
+		visibleCompletion, ok := graph.VisibleGraphCompletionEvent(rawCompletion)
+		if !ok {
+			return
+		}
+		_ = agent.EmitEvent(ctx, invocation, ch, visibleCompletion)
+		_ = agent.EmitEvent(
+			ctx,
+			invocation,
+			ch,
+			event.NewErrorEvent(
+				invocationID,
+				author,
+				"after_callback_error",
+				"after callback failed",
+			),
+		)
+	}()
+	return ch, nil
+}
+
 func (a *visibleCompletionThenAfterAgent) Tools() []tool.Tool {
 	return nil
 }
@@ -220,6 +265,23 @@ func (a *assistantThenVisibleStateOnlyCompletionAgent) SubAgents() []agent.Agent
 }
 
 func (a *assistantThenVisibleStateOnlyCompletionAgent) FindSubAgent(name string) agent.Agent {
+	_ = name
+	return nil
+}
+
+func (a *visibleCompletionThenErrorAgent) Tools() []tool.Tool {
+	return nil
+}
+
+func (a *visibleCompletionThenErrorAgent) Info() agent.Info {
+	return agent.Info{Name: a.name}
+}
+
+func (a *visibleCompletionThenErrorAgent) SubAgents() []agent.Agent {
+	return nil
+}
+
+func (a *visibleCompletionThenErrorAgent) FindSubAgent(name string) agent.Agent {
 	_ = name
 	return nil
 }
@@ -1817,7 +1879,6 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 	require.NoError(t, err)
 	defer reader.Close()
 
-	var sawVisibleSnapshot bool
 	var sawAfterCallback bool
 	var finalChunk tool.FinalResultChunk
 	var sawFinalChunk bool
@@ -1828,9 +1889,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 		}
 		require.NoError(t, recvErr)
 		if evt, ok := chunk.Content.(*event.Event); ok {
-			if graph.IsVisibleGraphCompletionEvent(evt) {
-				sawVisibleSnapshot = true
-			}
+			require.False(t, graph.IsVisibleGraphCompletionEvent(evt))
 			if evt.Object == "after.custom" {
 				sawAfterCallback = true
 			}
@@ -1842,11 +1901,49 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 		sawFinalChunk = true
 	}
 
-	require.True(t, sawVisibleSnapshot)
 	require.True(t, sawAfterCallback)
 	require.True(t, sawFinalChunk)
 	require.Equal(t, "after callback", finalChunk.Result)
 	require.Equal(t, []byte(`"child-final"`), finalChunk.StateDelta[graph.StateKeyLastResponse])
+}
+
+func TestTool_StreamableCall_DisableGraphCompletionEvent_SuppressesVisibleCompletionBeforeError(
+	t *testing.T,
+) {
+	at := NewTool(
+		&visibleCompletionThenErrorAgent{name: "visible-completion-then-error-agent"},
+		WithStreamInner(true),
+		WithHistoryScope(HistoryScopeParentBranch),
+	)
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	defer reader.Close()
+
+	var sawError bool
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		if evt, ok := chunk.Content.(*event.Event); ok {
+			require.False(t, graph.IsVisibleGraphCompletionEvent(evt))
+			if evt.Object == model.ObjectTypeError {
+				sawError = true
+			}
+			continue
+		}
+		require.Failf(t, "unexpected final result chunk", "%#v", chunk.Content)
+	}
+
+	require.True(t, sawError)
 }
 
 func TestTool_StreamableCall_DisableGraphCompletionEvent_DropsPendingFinalResultAfterCallbackError(t *testing.T) {

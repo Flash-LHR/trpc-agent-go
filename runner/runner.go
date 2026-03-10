@@ -1353,9 +1353,7 @@ func shouldClearRunnerCompletionChoicesInSession(
 	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)
 	if finalResponseID != "" {
 		_, ok := loop.filteredPersistedAssistantResponseIDs[finalResponseID]
-		if ok {
-			return true
-		}
+		return ok
 	}
 	signature := assistantChoiceSignature(finalChoices)
 	if signature == "" {
@@ -1418,9 +1416,7 @@ func (r *runner) shouldEchoFinalChoicesInCompletion(
 	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)
 	if finalResponseID != "" {
 		_, alreadyEmitted := loop.emittedAssistantResponseIDs[finalResponseID]
-		if alreadyEmitted {
-			return false
-		}
+		return !alreadyEmitted
 	}
 	signature := assistantChoiceSignature(finalChoices)
 	if signature == "" {
@@ -1444,7 +1440,27 @@ func assistantChoiceSignature(choices []model.Choice) string {
 	if len(choices) == 0 {
 		return ""
 	}
-	b, err := json.Marshal(choices)
+	type signatureChoice struct {
+		Index   int        `json:"index"`
+		Role    model.Role `json:"role"`
+		Content string     `json:"content"`
+	}
+	signatureChoices := make([]signatureChoice, 0, len(choices))
+	for _, choice := range choices {
+		if choice.Message.Role != model.RoleAssistant ||
+			choice.Message.Content == "" {
+			continue
+		}
+		signatureChoices = append(signatureChoices, signatureChoice{
+			Index:   choice.Index,
+			Role:    choice.Message.Role,
+			Content: choice.Message.Content,
+		})
+	}
+	if len(signatureChoices) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(signatureChoices)
 	if err != nil {
 		return ""
 	}

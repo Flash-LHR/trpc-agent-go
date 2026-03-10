@@ -266,6 +266,8 @@ func restoreGraphAgentRunContext(
 	}
 	if graph.ShouldCaptureGraphCompletion(baseCtx) {
 		restoredCtx = graph.WithGraphCompletionCapture(restoredCtx)
+	} else {
+		restoredCtx = graph.WithoutGraphCompletionCapture(restoredCtx)
 	}
 	return restoredCtx
 }

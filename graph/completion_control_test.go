@@ -41,13 +41,15 @@ func TestVisibleGraphCompletionEvent_AddsCompletionMetadataWhenMissing(t *testin
 func TestVisibleGraphCompletionEventWithDedup_DedupsByAssistantChoicesWhenResponseIDEmpty(
 	t *testing.T,
 ) {
+	finishReason := "stop"
 	emitted := RecordAssistantResponseID(nil, &event.Event{
 		Response: &model.Response{
 			ID:     "",
 			Object: model.ObjectTypeChatCompletion,
 			Done:   true,
 			Choices: []model.Choice{{
-				Message: model.NewAssistantMessage("answer"),
+				Message:      model.NewAssistantMessage("answer"),
+				FinishReason: &finishReason,
 			}},
 		},
 	})
@@ -62,4 +64,31 @@ func TestVisibleGraphCompletionEventWithDedup_DedupsByAssistantChoicesWhenRespon
 	require.True(t, IsVisibleGraphCompletionEvent(visible))
 	require.Empty(t, visible.Response.Choices)
 	require.Equal(t, []byte(`"answer"`), visible.StateDelta[StateKeyLastResponse])
+}
+
+func TestVisibleGraphCompletionEventWithDedup_DoesNotFallbackToSignatureWhenResponseIDDiffers(
+	t *testing.T,
+) {
+	emitted := RecordAssistantResponseID(nil, &event.Event{
+		Response: &model.Response{
+			ID:     "resp-1",
+			Object: model.ObjectTypeChatCompletion,
+			Done:   true,
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("answer"),
+			}},
+		},
+	})
+	raw := NewGraphCompletionEvent(
+		WithCompletionEventFinalState(State{
+			StateKeyLastResponse:   "answer",
+			StateKeyLastResponseID: "resp-2",
+		}),
+	)
+
+	visible, ok := VisibleGraphCompletionEventWithDedup(raw, emitted)
+	require.True(t, ok)
+	require.Len(t, visible.Response.Choices, 1)
+	require.Equal(t, "answer", visible.Response.Choices[0].Message.Content)
+	require.Equal(t, []byte(`"resp-2"`), visible.StateDelta[StateKeyLastResponseID])
 }

@@ -305,3 +305,47 @@ func TestGraphAgent_BeforeCallbackContextOverride_PreservesInvocationAndCapture(
 	require.True(t, sawRawCompletion)
 	require.False(t, sawVisibleCompletion)
 }
+
+func TestGraphAgent_BeforeCallbackContextOverride_CannotForceCompletionCapture(t *testing.T) {
+	schema := graph.MessagesStateSchema()
+	sg := graph.NewStateGraph(schema)
+	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		return graph.State{
+			graph.StateKeyLastResponse: "answer",
+		}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	callbacks := agent.NewCallbacks()
+	callbacks.RegisterBeforeAgent(func(ctx context.Context, args *agent.BeforeAgentArgs) (*agent.BeforeAgentResult, error) {
+		return &agent.BeforeAgentResult{
+			Context: graph.WithGraphCompletionCapture(context.Background()),
+		}, nil
+	})
+	graphAgent, err := New("test-graph", compiled, WithAgentCallbacks(callbacks))
+	require.NoError(t, err)
+
+	invocation := &agent.Invocation{
+		InvocationID: "test-invocation",
+		AgentName:    "test-graph",
+		Message:      model.NewUserMessage("test"),
+		RunOptions: agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		},
+	}
+	events, err := graphAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+
+	var sawRawCompletion bool
+	var sawVisibleCompletion bool
+	for evt := range events {
+		if evt.Done && evt.Object == graph.ObjectTypeGraphExecution {
+			sawRawCompletion = true
+		}
+		if graph.IsVisibleGraphCompletionEvent(evt) {
+			sawVisibleCompletion = true
+		}
+	}
+
+	require.False(t, sawRawCompletion)
+	require.True(t, sawVisibleCompletion)
+}
