@@ -361,6 +361,40 @@ func TestDeepCopyAny_CustomMessageOpsFallbackPreservesElements(t *testing.T) {
 	require.True(t, ok)
 }
 
+func TestDeepCopyAny_MessageOpsPreserveSelfReferences(t *testing.T) {
+	ops := make([]MessageOp, 1)
+	ops[0] = AppendMessages{
+		Items: []model.Message{
+			{
+				Role: model.RoleAssistant,
+				ToolCalls: []model.ToolCall{
+					{
+						Type: "function",
+						ID:   "call-1",
+						ExtraFields: map[string]any{
+							"self": ops,
+						},
+					},
+				},
+			},
+		},
+	}
+	copiedAny := deepCopyAny(ops)
+	copiedOps, ok := copiedAny.([]MessageOp)
+	require.True(t, ok)
+	require.Len(t, copiedOps, 1)
+	copiedAppend, ok := copiedOps[0].(AppendMessages)
+	require.True(t, ok)
+	require.Len(t, copiedAppend.Items, 1)
+	selfRef, ok := copiedAppend.Items[0].ToolCalls[0].ExtraFields["self"].([]MessageOp)
+	require.True(t, ok)
+	require.Equal(
+		t,
+		reflect.ValueOf(copiedOps).Pointer(),
+		reflect.ValueOf(selfRef).Pointer(),
+	)
+}
+
 func TestDeepCopyAny_MessageToolCallExtraFieldsPreserveGraphShape(t *testing.T) {
 	extra := map[string]any{}
 	shared := map[string]any{"value": "keep"}
