@@ -325,6 +325,74 @@ func TestProcessStreamingResponses_UsesUpdatedInvocationForResponseUsageTiming(t
 	require.Nil(t, response2.Usage)
 }
 
+func TestProcessStreamingResponses_PreservesTimingInfoWhenInvocationChanges(t *testing.T) {
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated-usage"),
+	)
+	var callbackCount int
+	f := New(nil, nil, Options{
+		ModelCallbacks: model.NewCallbacks().RegisterAfterModel(
+			func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+				callbackCount++
+				if callbackCount == 1 {
+					return &model.AfterModelResult{
+						Context: agent.NewInvocationContext(ctx, updatedInvocation),
+					}, nil
+				}
+				return &model.AfterModelResult{}, nil
+			},
+		),
+	})
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base-usage"),
+	)
+	req := &model.Request{}
+	response1 := &model.Response{
+		IsPartial: true,
+		Choices: []model.Choice{
+			{Message: model.NewAssistantMessage("partial")},
+		},
+	}
+	response2 := &model.Response{
+		Choices: []model.Choice{
+			{Message: model.NewAssistantMessage("done")},
+		},
+	}
+	responseSeq := func(yield func(*model.Response) bool) {
+		time.Sleep(time.Millisecond)
+		yield(response1)
+		yield(response2)
+	}
+	eventChan := make(chan *event.Event, 10)
+	tracer := oteltrace.NewNoopTracerProvider().Tracer("t")
+	ctx, span := tracer.Start(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		"s",
+	)
+	defer span.End()
+	lastEvent, err := f.processStreamingResponses(
+		ctx,
+		baseInvocation,
+		req,
+		responseSeq,
+		eventChan,
+		span,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, lastEvent)
+	require.NotNil(t, response1.Usage)
+	require.NotNil(t, response2.Usage)
+	require.NotNil(t, response1.Usage.TimingInfo)
+	require.NotNil(t, response2.Usage.TimingInfo)
+	require.Same(t, updatedInvocation.GetOrCreateTimingInfo(), response2.Usage.TimingInfo)
+	require.NotZero(t, response2.Usage.TimingInfo.FirstTokenDuration)
+	require.Equal(
+		t,
+		response1.Usage.TimingInfo.FirstTokenDuration,
+		response2.Usage.TimingInfo.FirstTokenDuration,
+	)
+}
+
 // mockAgent implements agent.Agent for testing
 type mockAgent struct {
 	name  string

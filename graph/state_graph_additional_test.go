@@ -104,11 +104,15 @@ func (m *noResponseModel) Info() model.Info {
 
 type multiResponseModel struct {
 	responses []*model.Response
+	delay     time.Duration
 }
 
 func (m *multiResponseModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
 	ch := make(chan *model.Response, len(m.responses))
 	for _, response := range m.responses {
+		if m.delay > 0 {
+			time.Sleep(m.delay)
+		}
 		ch <- response
 	}
 	close(ch)
@@ -726,6 +730,69 @@ func TestExecuteModelAndProcessResponses_UsesUpdatedInvocationForResponseUsageTi
 	require.NotNil(t, resp)
 	require.NotNil(t, responses[0].Usage)
 	require.Nil(t, responses[1].Usage)
+}
+
+func TestExecuteModelAndProcessResponses_PreservesTimingInfoWhenInvocationChanges(t *testing.T) {
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-usage-base"),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-usage-updated"),
+	)
+	responses := []*model.Response{
+		{
+			IsPartial: true,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("partial")},
+			},
+		},
+		{
+			Done: true,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("done")},
+			},
+		},
+	}
+	var callbackCount int
+	callbacks := model.NewCallbacks().RegisterAfterModel(
+		func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+			callbackCount++
+			if callbackCount == 1 {
+				return &model.AfterModelResult{
+					Context: agent.NewInvocationContext(ctx, updatedInvocation),
+				}, nil
+			}
+			return &model.AfterModelResult{}, nil
+		},
+	)
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		modelExecutionConfig{
+			Invocation:     baseInvocation,
+			ModelCallbacks: callbacks,
+			LLMModel: &multiResponseModel{
+				responses: responses,
+				delay:     time.Millisecond,
+			},
+			Request:      &model.Request{},
+			InvocationID: baseInvocation.InvocationID,
+			Span:         noop.Span{},
+			NodeID:       "llm",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.NotNil(t, responses[0].Usage)
+	require.NotNil(t, responses[1].Usage)
+	require.NotNil(t, responses[0].Usage.TimingInfo)
+	require.NotNil(t, responses[1].Usage.TimingInfo)
+	require.Same(t, updatedInvocation.GetOrCreateTimingInfo(), responses[1].Usage.TimingInfo)
+	require.NotZero(t, responses[1].Usage.TimingInfo.FirstTokenDuration)
+	require.Equal(
+		t,
+		responses[0].Usage.TimingInfo.FirstTokenDuration,
+		responses[1].Usage.TimingInfo.FirstTokenDuration,
+	)
 }
 
 func TestAddLLMNode_SkipsModelExecutionEventsWhenCallbackDisablesModelExecutionEvents(t *testing.T) {

@@ -384,6 +384,9 @@ func (f *Flow) processStreamingResponses(
 			currentInvocation,
 		)
 		timingInfo = responseUsageTimingInfo(currentInvocation)
+		if tracker != nil {
+			tracker.SetInvocationState(currentInvocation, timingInfo)
+		}
 		trackModelResponseTelemetry(
 			response,
 			tracker,

@@ -227,6 +227,33 @@ func (t *ChatMetricsTracker) GetTimingInfo() *model.TimingInfo {
 	return t.timingInfo
 }
 
+// SetInvocationState refreshes invocation-scoped tracking state for later chunks.
+func (t *ChatMetricsTracker) SetInvocationState(
+	invocation *agent.Invocation,
+	timingInfo *model.TimingInfo,
+) {
+	if t == nil {
+		return
+	}
+	t.invocation = invocation
+	if timingInfo == t.timingInfo {
+		return
+	}
+	if timingInfo != nil {
+		if timingInfo.FirstTokenDuration == 0 &&
+			!t.isFirstToken &&
+			t.firstTokenTimeDuration != 0 {
+			timingInfo.FirstTokenDuration = t.firstTokenTimeDuration
+		}
+		if timingInfo.ReasoningDuration == 0 &&
+			t.timingInfo != nil &&
+			t.timingInfo.ReasoningDuration != 0 {
+			timingInfo.ReasoningDuration = t.timingInfo.ReasoningDuration
+		}
+	}
+	t.timingInfo = timingInfo
+}
+
 func chatMetricsEnabled() bool {
 	return ChatMetricTRPCAgentGoClientRequestCnt != nil ||
 		ChatMetricGenAIClientTokenUsage != nil ||
