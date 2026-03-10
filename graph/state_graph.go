@@ -1735,6 +1735,9 @@ func runModelStream(
 			args := &model.BeforeModelArgs{Request: request}
 			result, err := callbacks.RunBeforeModel(ctx, args)
 			if err != nil {
+				if beforeGenerate != nil {
+					beforeGenerate(ctx)
+				}
 				span.SetAttributes(
 					attribute.String("trpc.go.agent.error", err.Error()),
 				)
@@ -1763,6 +1766,9 @@ func runModelStream(
 		args := &model.BeforeModelArgs{Request: request}
 		result, err := modelCallbacks.RunBeforeModel(ctx, args)
 		if err != nil {
+			if beforeGenerate != nil {
+				beforeGenerate(ctx)
+			}
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 			return ctx, modelResponseStream{}, fmt.Errorf("callback before model error: %w", err)

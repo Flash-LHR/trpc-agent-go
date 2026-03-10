@@ -1072,6 +1072,84 @@ func TestAddLLMNode_EmitsModelExecutionEventsForBeforeModelCustomResponse(t *tes
 	}, phases)
 }
 
+func TestAddLLMNode_EmitsModelExecutionEventsForBeforeModelError(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	cm := &captureModel{}
+	sg.AddLLMNode("llm", cm, "inst", nil)
+	n, ok := sg.graph.nodes["llm"]
+	require.True(t, ok)
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-before-error"),
+	)
+	callbacks := model.NewCallbacks().RegisterBeforeModel(
+		func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
+			return nil, errors.New("before failed")
+		},
+	)
+	ch := make(chan *event.Event, 8)
+	exec := &ExecutionContext{InvocationID: "inv-llm", EventChan: ch}
+	state := State{
+		StateKeyExecContext:    exec,
+		StateKeyCurrentNodeID:  "llm",
+		StateKeyUserInput:      "hi",
+		StateKeyModelCallbacks: callbacks,
+	}
+	_, err := n.Function(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		state,
+	)
+	require.ErrorContains(t, err, "callback before model error: before failed")
+	require.Nil(t, cm.lastReq)
+	phases := collectModelExecutionPhases(ch)
+	require.Equal(t, []ModelExecutionPhase{
+		ModelExecutionPhaseStart,
+		ModelExecutionPhaseComplete,
+	}, phases)
+}
+
+func TestAddLLMNode_EmitsModelExecutionEventsForPluginBeforeModelError(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	cm := &captureModel{}
+	sg.AddLLMNode("llm", cm, "inst", nil)
+	n, ok := sg.graph.nodes["llm"]
+	require.True(t, ok)
+	p := &hookPlugin{
+		name: "p",
+		reg: func(r *plugin.Registry) {
+			r.BeforeModel(func(
+				ctx context.Context,
+				args *model.BeforeModelArgs,
+			) (*model.BeforeModelResult, error) {
+				return nil, errors.New("plugin before failed")
+			})
+		},
+	}
+	pm := plugin.MustNewManager(p)
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-plugin-before-error"),
+	)
+	baseInvocation.Plugins = pm
+	ch := make(chan *event.Event, 8)
+	exec := &ExecutionContext{InvocationID: "inv-llm", EventChan: ch}
+	state := State{
+		StateKeyExecContext:   exec,
+		StateKeyCurrentNodeID: "llm",
+		StateKeyUserInput:     "hi",
+	}
+	_, err := n.Function(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		state,
+	)
+	require.ErrorContains(t, err, "callback before model error:")
+	require.ErrorContains(t, err, "plugin before failed")
+	require.Nil(t, cm.lastReq)
+	phases := collectModelExecutionPhases(ch)
+	require.Equal(t, []ModelExecutionPhase{
+		ModelExecutionPhaseStart,
+		ModelExecutionPhaseComplete,
+	}, phases)
+}
+
 func TestExecuteModelAndProcessResponses_TracksFinalizeErrors(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
