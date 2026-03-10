@@ -504,6 +504,40 @@ func TestEmitFastModelResponseEvent_DisablesPartialMetadata(t *testing.T) {
 		require.True(t, ev.Timestamp.After(respTimestamp))
 		require.Same(t, ev, <-ch)
 	})
+
+	t.Run("done response still keeps trace metadata without emitting", func(t *testing.T) {
+		ch := make(chan *event.Event, 1)
+		resp := &model.Response{
+			Done: true,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("final")},
+			},
+		}
+
+		ev, err := emitFastModelResponseEvent(
+			context.Background(),
+			agent.NewInvocation(agent.WithInvocationID("inv-fast-done")),
+			modelExecutionConfig{
+				InvocationID: "inv-fast-done",
+				EventChan:    ch,
+				Span:         noop.Span{},
+			},
+			resp,
+			"llm",
+			false,
+			false,
+			nil,
+		)
+		require.NoError(t, err)
+		require.NotNil(t, ev)
+		require.NotEmpty(t, ev.ID)
+		require.False(t, ev.Timestamp.IsZero())
+		select {
+		case emitted := <-ch:
+			require.FailNowf(t, "unexpected emitted event", "got %+v", emitted)
+		default:
+		}
+	})
 }
 
 func TestModelResponseProcessorConsume_FastPathSeq(t *testing.T) {

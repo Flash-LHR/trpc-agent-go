@@ -3619,16 +3619,12 @@ func emitFastModelResponseEvent(
 
 	shouldEmit := !response.Done
 	eventID := ""
-	if shouldEmit && (!response.IsPartial || !partialEventIDsDisabled) {
+	if !response.IsPartial || !partialEventIDsDisabled {
 		eventID = uuid.NewString()
 	}
-	eventTimestamp := time.Time{}
-	if shouldEmit {
-		if response.IsPartial && partialEventTimestampsDisabled {
-			eventTimestamp = response.Timestamp
-		} else {
-			eventTimestamp = time.Now()
-		}
+	eventTimestamp := time.Now()
+	if response.IsPartial && partialEventTimestampsDisabled {
+		eventTimestamp = response.Timestamp
 	}
 
 	llmEvent.Response = response
