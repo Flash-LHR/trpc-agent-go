@@ -209,6 +209,48 @@ func collectModelExecutionEvents(ch <-chan *event.Event) []*event.Event {
 	}
 }
 
+func requireModelExecutionEventMetadata(
+	t *testing.T,
+	events []*event.Event,
+	invocationID string,
+	parentInvocationID string,
+	branch string,
+	filterKey string,
+	requestID string,
+) {
+	t.Helper()
+	require.Len(t, events, 2)
+	for _, evt := range events {
+		var meta ModelExecutionMetadata
+		require.NoError(t, json.Unmarshal(evt.StateDelta[MetadataKeyModel], &meta))
+		require.Equal(t, invocationID, evt.InvocationID)
+		require.Equal(t, invocationID, meta.InvocationID)
+		require.Equal(t, parentInvocationID, evt.ParentInvocationID)
+		require.Equal(t, branch, evt.Branch)
+		require.Equal(t, filterKey, evt.FilterKey)
+		require.Equal(t, requestID, evt.RequestID)
+	}
+}
+
+func collectModelExecutionPhasesFromEvents(events []*event.Event) []ModelExecutionPhase {
+	phases := make([]ModelExecutionPhase, 0, len(events))
+	for _, evt := range events {
+		if evt == nil || evt.StateDelta == nil {
+			continue
+		}
+		b, ok := evt.StateDelta[MetadataKeyModel]
+		if !ok {
+			continue
+		}
+		var meta ModelExecutionMetadata
+		if err := json.Unmarshal(b, &meta); err != nil {
+			continue
+		}
+		phases = append(phases, meta.Phase)
+	}
+	return phases
+}
+
 func (a *stubAgent) Run(
 	ctx context.Context,
 	inv *agent.Invocation,
@@ -1571,8 +1613,16 @@ func TestAddLLMNode_EmitsModelExecutionEventsForPluginBeforeModelCustomResponse(
 		},
 	}
 	pm := plugin.MustNewManager(p)
-	baseInvocation := agent.NewInvocation(
+	parentInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-plugin-parent"),
+	)
+	baseInvocation := parentInvocation.Clone(
 		agent.WithInvocationID("inv-plugin-base"),
+		agent.WithInvocationBranch("graph/plugin-custom"),
+		agent.WithInvocationEventFilterKey("graph/plugin-custom/filter"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID: "req-plugin-custom",
+		}),
 	)
 	baseInvocation.Plugins = pm
 	ch := make(chan *event.Event, 8)
@@ -1587,12 +1637,22 @@ func TestAddLLMNode_EmitsModelExecutionEventsForPluginBeforeModelCustomResponse(
 		state,
 	)
 	require.NoError(t, err)
+	events := collectModelExecutionEvents(ch)
 	require.Nil(t, cm.lastReq)
-	phases := collectModelExecutionPhases(ch)
+	phases := collectModelExecutionPhasesFromEvents(events)
 	require.Equal(t, []ModelExecutionPhase{
 		ModelExecutionPhaseStart,
 		ModelExecutionPhaseComplete,
 	}, phases)
+	requireModelExecutionEventMetadata(
+		t,
+		events,
+		baseInvocation.InvocationID,
+		parentInvocation.InvocationID,
+		baseInvocation.Branch,
+		baseInvocation.GetEventFilterKey(),
+		baseInvocation.RunOptions.RequestID,
+	)
 }
 
 func TestAddLLMNode_EmitsModelExecutionEventsForBeforeModelCustomResponse(t *testing.T) {
@@ -1601,8 +1661,16 @@ func TestAddLLMNode_EmitsModelExecutionEventsForBeforeModelCustomResponse(t *tes
 	sg.AddLLMNode("llm", cm, "inst", nil)
 	n, ok := sg.graph.nodes["llm"]
 	require.True(t, ok)
-	baseInvocation := agent.NewInvocation(
-		agent.WithInvocationID("inv-base"),
+	parentInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-before-custom-parent"),
+	)
+	baseInvocation := parentInvocation.Clone(
+		agent.WithInvocationID("inv-before-custom"),
+		agent.WithInvocationBranch("graph/before-custom"),
+		agent.WithInvocationEventFilterKey("graph/before-custom/filter"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID: "req-before-custom",
+		}),
 	)
 	callbacks := model.NewCallbacks().RegisterBeforeModel(
 		func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
@@ -1629,12 +1697,22 @@ func TestAddLLMNode_EmitsModelExecutionEventsForBeforeModelCustomResponse(t *tes
 		state,
 	)
 	require.NoError(t, err)
+	events := collectModelExecutionEvents(ch)
 	require.Nil(t, cm.lastReq)
-	phases := collectModelExecutionPhases(ch)
+	phases := collectModelExecutionPhasesFromEvents(events)
 	require.Equal(t, []ModelExecutionPhase{
 		ModelExecutionPhaseStart,
 		ModelExecutionPhaseComplete,
 	}, phases)
+	requireModelExecutionEventMetadata(
+		t,
+		events,
+		baseInvocation.InvocationID,
+		parentInvocation.InvocationID,
+		baseInvocation.Branch,
+		baseInvocation.GetEventFilterKey(),
+		baseInvocation.RunOptions.RequestID,
+	)
 }
 
 func TestAddLLMNode_EmitsModelExecutionEventsForBeforeModelError(t *testing.T) {
@@ -1643,8 +1721,16 @@ func TestAddLLMNode_EmitsModelExecutionEventsForBeforeModelError(t *testing.T) {
 	sg.AddLLMNode("llm", cm, "inst", nil)
 	n, ok := sg.graph.nodes["llm"]
 	require.True(t, ok)
-	baseInvocation := agent.NewInvocation(
+	parentInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-before-error-parent"),
+	)
+	baseInvocation := parentInvocation.Clone(
 		agent.WithInvocationID("inv-before-error"),
+		agent.WithInvocationBranch("graph/before-error"),
+		agent.WithInvocationEventFilterKey("graph/before-error/filter"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID: "req-before-error",
+		}),
 	)
 	callbacks := model.NewCallbacks().RegisterBeforeModel(
 		func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
@@ -1664,12 +1750,22 @@ func TestAddLLMNode_EmitsModelExecutionEventsForBeforeModelError(t *testing.T) {
 		state,
 	)
 	require.ErrorContains(t, err, "callback before model error: before failed")
+	events := collectModelExecutionEvents(ch)
 	require.Nil(t, cm.lastReq)
-	phases := collectModelExecutionPhases(ch)
+	phases := collectModelExecutionPhasesFromEvents(events)
 	require.Equal(t, []ModelExecutionPhase{
 		ModelExecutionPhaseStart,
 		ModelExecutionPhaseComplete,
 	}, phases)
+	requireModelExecutionEventMetadata(
+		t,
+		events,
+		baseInvocation.InvocationID,
+		parentInvocation.InvocationID,
+		baseInvocation.Branch,
+		baseInvocation.GetEventFilterKey(),
+		baseInvocation.RunOptions.RequestID,
+	)
 }
 
 func TestAddLLMNode_EmitsModelExecutionEventsForPluginBeforeModelError(t *testing.T) {
@@ -1690,8 +1786,16 @@ func TestAddLLMNode_EmitsModelExecutionEventsForPluginBeforeModelError(t *testin
 		},
 	}
 	pm := plugin.MustNewManager(p)
-	baseInvocation := agent.NewInvocation(
+	parentInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-plugin-before-error-parent"),
+	)
+	baseInvocation := parentInvocation.Clone(
 		agent.WithInvocationID("inv-plugin-before-error"),
+		agent.WithInvocationBranch("graph/plugin-before-error"),
+		agent.WithInvocationEventFilterKey("graph/plugin-before-error/filter"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID: "req-plugin-before-error",
+		}),
 	)
 	baseInvocation.Plugins = pm
 	ch := make(chan *event.Event, 8)
@@ -1707,12 +1811,22 @@ func TestAddLLMNode_EmitsModelExecutionEventsForPluginBeforeModelError(t *testin
 	)
 	require.ErrorContains(t, err, "callback before model error:")
 	require.ErrorContains(t, err, "plugin before failed")
+	events := collectModelExecutionEvents(ch)
 	require.Nil(t, cm.lastReq)
-	phases := collectModelExecutionPhases(ch)
+	phases := collectModelExecutionPhasesFromEvents(events)
 	require.Equal(t, []ModelExecutionPhase{
 		ModelExecutionPhaseStart,
 		ModelExecutionPhaseComplete,
 	}, phases)
+	requireModelExecutionEventMetadata(
+		t,
+		events,
+		baseInvocation.InvocationID,
+		parentInvocation.InvocationID,
+		baseInvocation.Branch,
+		baseInvocation.GetEventFilterKey(),
+		baseInvocation.RunOptions.RequestID,
+	)
 }
 
 func TestExecuteModelAndProcessResponses_TracksFinalizeErrors(t *testing.T) {
