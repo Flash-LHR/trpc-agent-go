@@ -1476,6 +1476,8 @@ type modelResponseConfig struct {
 	Response         *model.Response
 	Invocation       *agent.Invocation
 	StableInvocation *agent.Invocation
+	Tracker          *itelemetry.ChatMetricsTracker
+	PartialUsage     *partialUsageState
 	ModelCallbacks   *model.Callbacks
 	EventChan        chan<- *event.Event
 	InvocationID     string
@@ -1671,6 +1673,11 @@ func processModelResponse(ctx context.Context, config modelResponseConfig) (cont
 		}
 	}
 	currentInvocation := invocationFromContextOrDefault(ctx, config.Invocation)
+	timingInfo := responseUsageTimingInfo(currentInvocation)
+	if config.Tracker != nil {
+		config.Tracker.SetInvocationState(currentInvocation, timingInfo)
+	}
+	attachResponseUsageTiming(config.Response, timingInfo, config.PartialUsage)
 	eventInvocation := config.StableInvocation
 	if eventInvocation == nil {
 		eventInvocation = config.Invocation
@@ -3805,11 +3812,11 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 	}
 	p.tap.WriteDelta(response)
 	trackModelResponseTelemetry(response, p.tracker)
-	attachResponseUsageTiming(response, p.timingInfo, &p.partialUsageState)
 	p.toolCalls = collectToolCallsFromResponse(p.toolCalls, response)
 	p.finalResponse = response
 	reusableEvent := nextReusableModelEvent(p.reusableEvents, &p.reusableEventIdx)
 	if p.fastResponsePath {
+		attachResponseUsageTiming(response, p.timingInfo, &p.partialUsageState)
 		lastEvent, err := emitFastModelResponseEvent(
 			p.ctx,
 			p.stableInvocation,
@@ -3830,6 +3837,8 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 			Response:         response,
 			Invocation:       p.invocation,
 			StableInvocation: p.stableInvocation,
+			Tracker:          p.tracker,
+			PartialUsage:     &p.partialUsageState,
 			ModelCallbacks:   p.config.ModelCallbacks,
 			EventChan:        p.config.EventChan,
 			InvocationID:     p.config.InvocationID,

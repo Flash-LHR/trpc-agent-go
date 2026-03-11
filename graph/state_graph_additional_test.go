@@ -1202,6 +1202,120 @@ func TestExecuteModelAndProcessResponses_AnchorsMetricsRequestModelToLLMModel(t 
 	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoAppName, updatedInvocation.Session.AppName))
 }
 
+func TestExecuteModelAndProcessResponses_UsesUpdatedInvocationForMetricsMetadataAfterCallbackOnSingleChunk(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	originalProvider := itelemetry.MeterProvider
+	originalMeter := itelemetry.ChatMeter
+	originalRequestCnt := itelemetry.ChatMetricTRPCAgentGoClientRequestCnt
+	originalTokenUsage := itelemetry.ChatMetricGenAIClientTokenUsage
+	originalOperationDuration := itelemetry.ChatMetricGenAIClientOperationDuration
+	originalServerTimeToFirstToken := itelemetry.ChatMetricGenAIServerTimeToFirstToken
+	originalClientTimeToFirstToken := itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken
+	originalTimePerOutputToken := itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken
+	originalOutputTokenPerTime := itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime
+	defer func() {
+		itelemetry.MeterProvider = originalProvider
+		itelemetry.ChatMeter = originalMeter
+		itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = originalRequestCnt
+		itelemetry.ChatMetricGenAIClientTokenUsage = originalTokenUsage
+		itelemetry.ChatMetricGenAIClientOperationDuration = originalOperationDuration
+		itelemetry.ChatMetricGenAIServerTimeToFirstToken = originalServerTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = originalClientTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = originalTimePerOutputToken
+		itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = originalOutputTokenPerTime
+	}()
+	itelemetry.MeterProvider = provider
+	itelemetry.ChatMeter = provider.Meter(semconvmetrics.MeterNameChat)
+	requestCnt, err := itelemetry.ChatMeter.Int64Counter("trpc_agent_go.client.request.cnt")
+	require.NoError(t, err)
+	itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = requestCnt
+	itelemetry.ChatMetricGenAIClientTokenUsage = nil
+	itelemetry.ChatMetricGenAIClientOperationDuration = nil
+	itelemetry.ChatMetricGenAIServerTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = nil
+	baseModel := &mockModel{name: "base-after-metrics-model"}
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base-after-metrics"),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated-after-metrics"),
+		agent.WithInvocationModel(baseModel),
+		agent.WithInvocationSession(&session.Session{
+			ID:      "sess-updated-after-metrics",
+			UserID:  "user-updated-after-metrics",
+			AppName: "app-updated-after-metrics",
+		}),
+	)
+	updatedInvocation.AgentName = "agent-updated-after-metrics"
+	callbacks := model.NewCallbacks().RegisterAfterModel(
+		func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+			return &model.AfterModelResult{
+				Context: agent.NewInvocationContext(ctx, updatedInvocation),
+			}, nil
+		},
+	)
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		modelExecutionConfig{
+			Invocation:     baseInvocation,
+			ModelCallbacks: callbacks,
+			LLMModel:       baseModel,
+			Request:        &model.Request{},
+			InvocationID:   baseInvocation.InvocationID,
+			SessionID:      updatedInvocation.Session.ID,
+			Span:           noop.Span{},
+			NodeID:         "llm",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, updatedInvocation.AgentName))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIRequestModel, baseModel.Info().Name))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, updatedInvocation.Session.ID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoUserID, updatedInvocation.Session.UserID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoAppName, updatedInvocation.Session.AppName))
+}
+
+func TestExecuteModelAndProcessResponses_UsesUpdatedInvocationForResponseUsageTimingOnSingleChunk(t *testing.T) {
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base-single-usage"),
+	)
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated-single-usage"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableResponseUsageTracking: true,
+		}),
+	)
+	callbacks := model.NewCallbacks().RegisterAfterModel(
+		func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+			return &model.AfterModelResult{
+				Context: agent.NewInvocationContext(ctx, updatedInvocation),
+			}, nil
+		},
+	)
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		modelExecutionConfig{
+			Invocation:     baseInvocation,
+			ModelCallbacks: callbacks,
+			LLMModel:       &mockModel{name: "single-usage-model"},
+			Request:        &model.Request{},
+			InvocationID:   baseInvocation.InvocationID,
+			Span:           noop.Span{},
+			NodeID:         "llm",
+		},
+	)
+	require.NoError(t, err)
+	finalResponse, ok := resp.(*model.Response)
+	require.True(t, ok)
+	require.Nil(t, finalResponse.Usage)
+}
+
 func TestExecuteModelAndProcessResponses_UsesUpdatedInvocationForResponseUsageTiming(t *testing.T) {
 	baseInvocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-usage-base"),
@@ -1236,7 +1350,7 @@ func TestExecuteModelAndProcessResponses_UsesUpdatedInvocationForResponseUsageTi
 	callbacks := model.NewCallbacks().RegisterAfterModel(
 		func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
 			callbackCount++
-			if callbackCount == 1 {
+			if callbackCount == 2 {
 				return &model.AfterModelResult{
 					Context: agent.NewInvocationContext(ctx, updatedInvocation),
 				}, nil
@@ -1295,7 +1409,7 @@ func TestExecuteModelAndProcessResponses_PreservesTimingInfoWhenInvocationChange
 	callbacks := model.NewCallbacks().RegisterAfterModel(
 		func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
 			callbackCount++
-			if callbackCount == 1 {
+			if callbackCount == 2 {
 				return &model.AfterModelResult{
 					Context: agent.NewInvocationContext(ctx, updatedInvocation),
 				}, nil
