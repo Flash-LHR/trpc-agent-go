@@ -3685,6 +3685,7 @@ type modelResponseProcessor struct {
 	ctx                            context.Context
 	config                         modelExecutionConfig
 	stableInvocation               *agent.Invocation
+	observabilityInvocation        *agent.Invocation
 	invocation                     *agent.Invocation
 	tracker                        *itelemetry.ChatMetricsTracker
 	timingInfo                     *model.TimingInfo
@@ -3717,12 +3718,12 @@ func newModelResponseProcessor(
 	if p.stableInvocation == nil {
 		p.stableInvocation = invocation
 	}
-	trackerInvocation := metricsTrackerInvocation(p.stableInvocation, config.LLMModel)
-	if trackerInvocation != nil {
+	p.observabilityInvocation = observabilityInvocationView(p.stableInvocation, config)
+	if p.observabilityInvocation != nil {
 		p.timingInfo = responseUsageTimingInfo(invocation)
 		p.tracker = itelemetry.NewChatMetricsTracker(
 			ctx,
-			trackerInvocation,
+			p.observabilityInvocation,
 			config.Request,
 			p.timingInfo,
 			nil,
@@ -3751,33 +3752,63 @@ func newModelResponseProcessor(
 	return p
 }
 
-func metricsTrackerInvocation(
+func observabilityInvocationView(
 	invocation *agent.Invocation,
-	llmModel model.Model,
+	config modelExecutionConfig,
 ) *agent.Invocation {
-	if invocation == nil && llmModel == nil {
+	if invocation == nil &&
+		config.InvocationID == "" &&
+		config.SessionID == "" &&
+		config.UserID == "" &&
+		config.AppName == "" &&
+		config.LLMModel == nil {
 		return nil
 	}
-	var agentName string
-	var sessionView *session.Session
+	var (
+		invocationID string
+		agentName    string
+		sessionID    string
+		userID       string
+		appName      string
+		sessionView  *session.Session
+	)
 	if invocation != nil {
+		invocationID = invocation.InvocationID
 		agentName = invocation.AgentName
 		if invocation.Session != nil {
-			sessionView = &session.Session{
-				ID:      invocation.Session.ID,
-				UserID:  invocation.Session.UserID,
-				AppName: invocation.Session.AppName,
-			}
+			sessionID = invocation.Session.ID
+			userID = invocation.Session.UserID
+			appName = invocation.Session.AppName
 		}
 	}
-	modelValue := llmModel
+	if invocationID == "" {
+		invocationID = config.InvocationID
+	}
+	if sessionID == "" {
+		sessionID = config.SessionID
+	}
+	if userID == "" {
+		userID = config.UserID
+	}
+	if appName == "" {
+		appName = config.AppName
+	}
+	if sessionID != "" || userID != "" || appName != "" {
+		sessionView = &session.Session{
+			ID:      sessionID,
+			UserID:  userID,
+			AppName: appName,
+		}
+	}
+	modelValue := config.LLMModel
 	if modelValue == nil && invocation != nil {
 		modelValue = invocation.Model
 	}
 	return &agent.Invocation{
-		AgentName: agentName,
-		Model:     modelValue,
-		Session:   sessionView,
+		InvocationID: invocationID,
+		AgentName:    agentName,
+		Model:        modelValue,
+		Session:      sessionView,
 	}
 }
 
@@ -3875,7 +3906,7 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 	traceProcessedModelResponse(
 		p.config.Span,
 		p.tracker,
-		p.stableInvocation,
+		p.observabilityInvocation,
 		p.config.Request,
 		response,
 		p.lastEvent,

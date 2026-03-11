@@ -1202,6 +1202,70 @@ func TestExecuteModelAndProcessResponses_AnchorsMetricsRequestModelToLLMModel(t 
 	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoAppName, updatedInvocation.Session.AppName))
 }
 
+func TestExecuteModelAndProcessResponses_UsesConfigFallbackForSparseStableMetricsMetadata(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	originalProvider := itelemetry.MeterProvider
+	originalMeter := itelemetry.ChatMeter
+	originalRequestCnt := itelemetry.ChatMetricTRPCAgentGoClientRequestCnt
+	originalTokenUsage := itelemetry.ChatMetricGenAIClientTokenUsage
+	originalOperationDuration := itelemetry.ChatMetricGenAIClientOperationDuration
+	originalServerTimeToFirstToken := itelemetry.ChatMetricGenAIServerTimeToFirstToken
+	originalClientTimeToFirstToken := itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken
+	originalTimePerOutputToken := itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken
+	originalOutputTokenPerTime := itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime
+	defer func() {
+		itelemetry.MeterProvider = originalProvider
+		itelemetry.ChatMeter = originalMeter
+		itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = originalRequestCnt
+		itelemetry.ChatMetricGenAIClientTokenUsage = originalTokenUsage
+		itelemetry.ChatMetricGenAIClientOperationDuration = originalOperationDuration
+		itelemetry.ChatMetricGenAIServerTimeToFirstToken = originalServerTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = originalClientTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = originalTimePerOutputToken
+		itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = originalOutputTokenPerTime
+	}()
+	itelemetry.MeterProvider = provider
+	itelemetry.ChatMeter = provider.Meter(semconvmetrics.MeterNameChat)
+	requestCnt, err := itelemetry.ChatMeter.Int64Counter("trpc_agent_go.client.request.cnt")
+	require.NoError(t, err)
+	itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = requestCnt
+	itelemetry.ChatMetricGenAIClientTokenUsage = nil
+	itelemetry.ChatMetricGenAIClientOperationDuration = nil
+	itelemetry.ChatMetricGenAIServerTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = nil
+	requestModel := &mockModel{name: "config-fallback-model"}
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-sparse-config-fallback"),
+	)
+	invocation.AgentName = "agent-sparse-config-fallback"
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), invocation),
+		modelExecutionConfig{
+			Invocation:   invocation,
+			LLMModel:     requestModel,
+			Request:      &model.Request{},
+			InvocationID: invocation.InvocationID,
+			SessionID:    "sess-config-fallback",
+			UserID:       "user-config-fallback",
+			AppName:      "app-config-fallback",
+			Span:         noop.Span{},
+			NodeID:       "llm",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, invocation.AgentName))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIRequestModel, requestModel.Info().Name))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, "sess-config-fallback"))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoUserID, "user-config-fallback"))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoAppName, "app-config-fallback"))
+}
+
 func TestExecuteModelAndProcessResponses_UsesUpdatedInvocationForMetricsMetadataAfterCallbackOnSingleChunk(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -1681,6 +1745,34 @@ func TestExecuteModelAndProcessResponses_UsesStableInvocationForTraceMetadata(t 
 	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyInvocationID, baseInvocation.InvocationID))
 	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyGenAIConversationID, baseInvocation.Session.ID))
 	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyRunnerUserID, baseInvocation.Session.UserID))
+	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyGenAIRequestModel, modelImpl.Info().Name))
+}
+
+func TestExecuteModelAndProcessResponses_UsesConfigFallbackForSparseStableTraceMetadata(t *testing.T) {
+	modelImpl := &captureModel{}
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-trace-sparse-fallback"),
+	)
+	span := newGraphRecordingSpan()
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), invocation),
+		modelExecutionConfig{
+			Invocation:   invocation,
+			LLMModel:     modelImpl,
+			Request:      &model.Request{},
+			InvocationID: invocation.InvocationID,
+			SessionID:    "sess-trace-fallback",
+			UserID:       "user-trace-fallback",
+			AppName:      "app-trace-fallback",
+			Span:         span,
+			NodeID:       "llm",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyInvocationID, invocation.InvocationID))
+	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyGenAIConversationID, "sess-trace-fallback"))
+	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyRunnerUserID, "user-trace-fallback"))
 	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyGenAIRequestModel, modelImpl.Info().Name))
 }
 
