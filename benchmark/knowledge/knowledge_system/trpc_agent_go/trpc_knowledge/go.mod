@@ -1,52 +1,34 @@
-module trpc.group/trpc-go/trpc-agent-go/benchmark/memory/trpc-agent-go-impl
+module trpc.group/trpc-go/trpc-agent-go/benchmark/knowledge/knowledge_system/trpc-agent-go
 
-go 1.24.1
+go 1.24.6
 
-replace (
-	trpc.group/trpc-go/trpc-agent-go => ../../../
-	trpc.group/trpc-go/trpc-agent-go/memory/mysql => ../../../memory/mysql
-	trpc.group/trpc-go/trpc-agent-go/memory/pgvector => ../../../memory/pgvector
-	trpc.group/trpc-go/trpc-agent-go/memory/sqlite => ../../../memory/sqlite
-	trpc.group/trpc-go/trpc-agent-go/memory/sqlitevec => ../../../memory/sqlitevec
+replace trpc.group/trpc-go/trpc-agent-go => ../../../../../
+
+require (
+	trpc.group/trpc-go/trpc-agent-go v1.2.1-0.20260123134909-0db8688a12ca
+	trpc.group/trpc-go/trpc-agent-go/knowledge/vectorstore/pgvector v1.2.1-0.20260123134909-0db8688a12ca
 )
 
 require (
-	github.com/mattn/go-sqlite3 v1.14.32
-	trpc.group/trpc-go/trpc-agent-go v1.6.1-0.20260311094958-7b74ee59e339
-	trpc.group/trpc-go/trpc-agent-go/memory/mysql v1.5.0
-	trpc.group/trpc-go/trpc-agent-go/memory/pgvector v1.5.0
-	trpc.group/trpc-go/trpc-agent-go/memory/sqlite v1.5.0
-	trpc.group/trpc-go/trpc-agent-go/memory/sqlitevec v1.5.0
-)
-
-require (
-	filippo.io/edwards25519 v1.1.0 // indirect
-	github.com/asg017/sqlite-vec-go-bindings v0.1.6 // indirect
 	github.com/bmatcuk/doublestar/v4 v4.9.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/creack/pty v1.1.24 // indirect
-	github.com/go-ego/gse v1.0.0 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/go-sql-driver/mysql v1.9.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.7.1 // indirect
+	github.com/jackc/pgx/v5 v5.7.2 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
-	github.com/lib/pq v1.10.9 // indirect
-	github.com/ncruces/go-sqlite3 v0.17.1 // indirect
-	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/openai/openai-go v1.12.0 // indirect
 	github.com/panjf2000/ants/v2 v2.10.0 // indirect
 	github.com/pgvector/pgvector-go v0.2.3 // indirect
-	github.com/tetratelabs/wazero v1.7.3 // indirect
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	github.com/vcaesar/cedar v0.20.2 // indirect
+	github.com/yuin/goldmark v1.4.13 // indirect
 	go.opentelemetry.io/otel v1.29.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.29.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.29.0 // indirect
@@ -67,6 +49,7 @@ require (
 	google.golang.org/grpc v1.65.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
 	trpc.group/trpc-go/trpc-a2a-go v0.2.5 // indirect
-	trpc.group/trpc-go/trpc-agent-go/storage/mysql v0.0.0-20251126064502-c8c2594d2519 // indirect
-	trpc.group/trpc-go/trpc-agent-go/storage/postgres v1.1.1 // indirect
+	trpc.group/trpc-go/trpc-agent-go/storage/postgres v1.2.1-0.20260123134909-0db8688a12ca // indirect
 )
+
+replace trpc.group/trpc-go/trpc-agent-go/knowledge/vectorstore/pgvector => ../../../../../knowledge/vectorstore/pgvector
