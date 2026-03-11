@@ -153,6 +153,26 @@ func VisibleGraphCompletionEventWithDedup(
 	return visible, true
 }
 
+// VisibleGraphCompletionEventsForForwarding returns the caller-visible event to
+// emit and the full completion snapshot to preserve for callbacks.
+func VisibleGraphCompletionEventsForForwarding(
+	evt *event.Event,
+	emittedAssistantResponseIDs map[string]struct{},
+) (*event.Event, *event.Event, bool) {
+	visible, ok := VisibleGraphCompletionEventWithDedup(
+		evt,
+		emittedAssistantResponseIDs,
+	)
+	if !ok {
+		return nil, nil, false
+	}
+	fullRespEvent := visible
+	if visibleGraphCompletionNeedsFullResponseSnapshot(evt, visible) {
+		fullRespEvent, _ = VisibleGraphCompletionEvent(evt)
+	}
+	return visible, fullRespEvent, true
+}
+
 // ShouldSuppressGraphCompletionEvent reports whether the caller-visible stream
 // should hide the terminal graph completion event for this invocation.
 func ShouldSuppressGraphCompletionEvent(
@@ -187,6 +207,19 @@ func shouldClearVisibleGraphCompletionChoices(
 	}
 	_, ok := emittedAssistantResponseIDs["sig:"+signature]
 	return ok
+}
+
+func visibleGraphCompletionNeedsFullResponseSnapshot(
+	raw *event.Event,
+	visible *event.Event,
+) bool {
+	if raw == nil || raw.Response == nil || len(raw.Response.Choices) == 0 {
+		return false
+	}
+	if visible == nil || visible.Response == nil || visible.Response.IsPartial {
+		return false
+	}
+	return len(visible.Response.Choices) == 0
 }
 
 func completionResponseIDFromStateDelta(stateDelta map[string][]byte) string {

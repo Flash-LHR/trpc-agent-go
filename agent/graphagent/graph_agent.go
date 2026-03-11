@@ -483,7 +483,7 @@ func (ga *GraphAgent) forwardWrappedEvents(
 				invocation,
 				evt,
 			) {
-			visibleEvent, ok := graph.VisibleGraphCompletionEventWithDedup(
+			visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwarding(
 				evt,
 				emittedAssistantResponseIDs,
 			)
@@ -491,8 +491,10 @@ func (ga *GraphAgent) forwardWrappedEvents(
 				continue
 			}
 			outEvt = visibleEvent
-			if visibleEvent.Response != nil && !visibleEvent.Response.IsPartial {
-				fullRespEvent = visibleEvent
+			if callbackFullRespEvent != nil &&
+				callbackFullRespEvent.Response != nil &&
+				!callbackFullRespEvent.Response.IsPartial {
+				fullRespEvent = callbackFullRespEvent
 			}
 		}
 		if err := event.EmitEvent(ctx, wrappedChan, outEvt); err != nil {

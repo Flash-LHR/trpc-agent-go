@@ -1455,10 +1455,10 @@ func hasTrailingMergedString(contents []any, target string) bool {
 	}
 	merged := tool.Merge(contents[start:])
 	mergedStr, ok := any(merged).(string)
-	if !ok || len(mergedStr) < len(target) {
+	if !ok {
 		return false
 	}
-	return mergedStr[len(mergedStr)-len(target):] == target
+	return mergedStr == target
 }
 
 // buildPartialToolResponseEvent constructs a partial tool.response event.

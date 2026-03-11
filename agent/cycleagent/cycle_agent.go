@@ -203,7 +203,7 @@ func (a *CycleAgent) runSubAgent(
 		}
 		escalationEvent := subEvent
 		if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, subEvent) {
-			if visibleEvent, ok := graph.VisibleGraphCompletionEventWithDedup(
+			if visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwarding(
 				subEvent,
 				emittedAssistantResponseIDs,
 			); ok {
@@ -211,8 +211,10 @@ func (a *CycleAgent) runSubAgent(
 				if err := event.EmitEvent(ctx, eventChan, visibleEvent); err != nil {
 					return true
 				}
-				if visibleEvent.Response != nil && !visibleEvent.Response.IsPartial {
-					*fullRespEvent = visibleEvent
+				if callbackFullRespEvent != nil &&
+					callbackFullRespEvent.Response != nil &&
+					!callbackFullRespEvent.Response.IsPartial {
+					*fullRespEvent = callbackFullRespEvent
 				}
 				emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
 					emittedAssistantResponseIDs,

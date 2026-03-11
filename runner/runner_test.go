@@ -1435,6 +1435,78 @@ func TestWrappedAgents_DisableGraphCompletionEvent_AfterCallbackSeesVisibleCompl
 	}
 }
 
+func TestWrappedAgents_DisableGraphCompletionEvent_GraphEmitFinalModelResponses_AfterCallbackSeesFinalText(
+	t *testing.T,
+) {
+	tests := []struct {
+		name  string
+		build func(child agent.Agent, callbacks *agent.Callbacks) agent.Agent
+	}{
+		{
+			name: "chain",
+			build: func(child agent.Agent, callbacks *agent.Callbacks) agent.Agent {
+				return chainagent.New(
+					"chain",
+					chainagent.WithSubAgents([]agent.Agent{child}),
+					chainagent.WithAgentCallbacks(callbacks),
+				)
+			},
+		},
+		{
+			name: "cycle",
+			build: func(child agent.Agent, callbacks *agent.Callbacks) agent.Agent {
+				return cycleagent.New(
+					"cycle",
+					cycleagent.WithSubAgents([]agent.Agent{child}),
+					cycleagent.WithMaxIterations(1),
+					cycleagent.WithAgentCallbacks(callbacks),
+				)
+			},
+		},
+		{
+			name: "parallel",
+			build: func(child agent.Agent, callbacks *agent.Callbacks) agent.Agent {
+				return parallelagent.New(
+					"parallel",
+					parallelagent.WithSubAgents([]agent.Agent{child}),
+					parallelagent.WithAgentCallbacks(callbacks),
+				)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			callbacks := agent.NewCallbacks()
+			var fullRespEvent *event.Event
+			callbacks.RegisterAfterAgent(func(
+				ctx context.Context,
+				args *agent.AfterAgentArgs,
+			) (*agent.AfterAgentResult, error) {
+				fullRespEvent = args.FullResponseEvent
+				return nil, nil
+			})
+			child := newWrappedGraphLLMChildAgent(t)
+			ag := tt.build(child, callbacks)
+			inv := agent.NewInvocation(
+				agent.WithInvocationMessage(model.NewUserMessage("hi")),
+				agent.WithInvocationRunOptions(agent.RunOptions{
+					DisableGraphCompletionEvent:  true,
+					GraphEmitFinalModelResponses: true,
+				}),
+			)
+			ch, err := ag.Run(context.Background(), inv)
+			require.NoError(t, err)
+			for range ch {
+			}
+
+			require.NotNil(t, fullRespEvent)
+			require.True(t, graph.IsVisibleGraphCompletionEvent(fullRespEvent))
+			require.Len(t, fullRespEvent.Response.Choices, 1)
+			require.Equal(t, "wrapped-final", fullRespEvent.Response.Choices[0].Message.Content)
+		})
+	}
+}
+
 func TestRunner_DisableGraphCompletionEvent_StreamModeUpdates_KeepsFinalTextInRunnerCompletion(t *testing.T) {
 	child := newWrappedGraphChildAgent(t)
 	svc := sessioninmemory.NewSessionService()

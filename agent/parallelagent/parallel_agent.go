@@ -318,16 +318,18 @@ func (a *ParallelAgent) mergeEventStreams(
 					mu.Unlock()
 				}
 				if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, evt) {
-					if visibleEvent, ok := graph.VisibleGraphCompletionEventWithDedup(
+					if visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwarding(
 						evt,
 						emittedAssistantResponseIDs,
 					); ok {
 						if err := event.EmitEvent(ctx, outputChan, visibleEvent); err != nil {
 							return
 						}
-						if visibleEvent.Response != nil && !visibleEvent.Response.IsPartial {
+						if callbackFullRespEvent != nil &&
+							callbackFullRespEvent.Response != nil &&
+							!callbackFullRespEvent.Response.IsPartial {
 							mu.Lock()
-							*fullRespEvent = visibleEvent
+							*fullRespEvent = callbackFullRespEvent
 							mu.Unlock()
 						}
 						emittedAssistantResponseIDs = graph.RecordAssistantResponseID(

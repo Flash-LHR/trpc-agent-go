@@ -1805,6 +1805,50 @@ func TestGraphAgent_DisableGraphCompletionEvent_GraphEmitFinalModelResponses_Ded
 	require.Equal(t, []byte(`"answer"`), visibleEvent.StateDelta[graph.StateKeyLastResponse])
 }
 
+func TestGraphAgent_DisableGraphCompletionEvent_GraphEmitFinalModelResponses_AfterCallbackSeesFullVisibleCompletion(
+	t *testing.T,
+) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddLLMNode(
+			"n1",
+			&staticGraphAgentModel{name: "m1", content: "answer"},
+			"i1",
+			nil,
+		).
+		SetEntryPoint("n1").
+		SetFinishPoint("n1").
+		Compile()
+	require.NoError(t, err)
+	callbacks := agent.NewCallbacks()
+	var fullRespEvent *event.Event
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		fullRespEvent = args.FullResponseEvent
+		return nil, nil
+	})
+	ga, err := New(
+		"test-hidden-completion-dedup-after-callback",
+		g,
+		WithAgentCallbacks(callbacks),
+	)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent:  true,
+			GraphEmitFinalModelResponses: true,
+		}),
+	)
+	events, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+	for range events {
+	}
+
+	require.NotNil(t, fullRespEvent)
+	require.True(t, graph.IsVisibleGraphCompletionEvent(fullRespEvent))
+	require.Len(t, fullRespEvent.Response.Choices, 1)
+	require.Equal(t, "answer", fullRespEvent.Response.Choices[0].Message.Content)
+}
+
 func TestGraphAgent_DisableGraphCompletionEvent_WithAfterCallbackCustomResponse(t *testing.T) {
 	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
 		AddNode("done", func(ctx context.Context, state graph.State) (any, error) {

@@ -99,3 +99,34 @@ func TestVisibleGraphCompletionEventWithDedup_DoesNotFallbackToSignatureWhenResp
 	require.Equal(t, "answer", visible.Response.Choices[0].Message.Content)
 	require.Equal(t, []byte(`"resp-2"`), visible.StateDelta[StateKeyLastResponseID])
 }
+
+func TestVisibleGraphCompletionEventsForForwarding_PreservesFullResponseForCallbacks(
+	t *testing.T,
+) {
+	emitted := RecordAssistantResponseID(nil, &event.Event{
+		Response: &model.Response{
+			ID:     "resp-1",
+			Object: model.ObjectTypeChatCompletion,
+			Done:   true,
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("answer"),
+			}},
+		},
+	})
+	raw := NewGraphCompletionEvent(
+		WithCompletionEventFinalState(State{
+			StateKeyLastResponse:   "answer",
+			StateKeyLastResponseID: "resp-1",
+		}),
+	)
+
+	visible, fullRespEvent, ok := VisibleGraphCompletionEventsForForwarding(
+		raw,
+		emitted,
+	)
+	require.True(t, ok)
+	require.Empty(t, visible.Response.Choices)
+	require.NotNil(t, fullRespEvent)
+	require.Len(t, fullRespEvent.Response.Choices, 1)
+	require.Equal(t, "answer", fullRespEvent.Response.Choices[0].Message.Content)
+}
