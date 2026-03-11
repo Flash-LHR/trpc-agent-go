@@ -32,6 +32,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/plugin"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	semconvmetrics "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/metrics"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -632,7 +633,7 @@ func TestModelResponseProcessorConsume_FastPathDoneResponse_TracesEventID(t *tes
 	require.NoError(t, err)
 	require.NotNil(t, processor.lastEvent)
 	require.NotEmpty(t, processor.lastEvent.ID)
-	require.True(t, graphHasNonEmptyStringAttr(span.attrs, itelemetry.KeyEventID))
+	require.True(t, graphHasNonEmptyStringAttr(span.attrs, semconvtrace.KeyEventID))
 	select {
 	case emitted := <-ch:
 		require.FailNowf(t, "unexpected emitted event", "got %+v", emitted)
@@ -1027,13 +1028,13 @@ func TestExecuteModelAndProcessResponses_UsesStableInvocationForMetricsMetadata(
 	require.NotNil(t, resp)
 	var rm metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(context.Background(), &rm))
-	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIAgentName, baseInvocation.AgentName))
-	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIRequestModel, baseModel.Info().Name))
-	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIConversationID, baseInvocation.Session.ID))
-	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoUserID, baseInvocation.Session.UserID))
-	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoAppName, baseInvocation.Session.AppName))
-	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIAgentName, updatedInvocation.AgentName))
-	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIConversationID, updatedInvocation.Session.ID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, baseInvocation.AgentName))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIRequestModel, baseModel.Info().Name))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, baseInvocation.Session.ID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoUserID, baseInvocation.Session.UserID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoAppName, baseInvocation.Session.AppName))
+	require.False(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, updatedInvocation.AgentName))
+	require.False(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, updatedInvocation.Session.ID))
 }
 
 func TestExecuteModelAndProcessResponses_UsesUpdatedInvocationForResponseUsageTiming(t *testing.T) {
@@ -1398,10 +1399,10 @@ func TestExecuteModelAndProcessResponses_UsesStableInvocationForTraceMetadata(t 
 	)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
-	require.True(t, graphHasAttr(span.attrs, itelemetry.KeyInvocationID, baseInvocation.InvocationID))
-	require.True(t, graphHasAttr(span.attrs, itelemetry.KeyGenAIConversationID, baseInvocation.Session.ID))
-	require.True(t, graphHasAttr(span.attrs, itelemetry.KeyRunnerUserID, baseInvocation.Session.UserID))
-	require.True(t, graphHasAttr(span.attrs, itelemetry.KeyGenAIRequestModel, modelImpl.Info().Name))
+	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyInvocationID, baseInvocation.InvocationID))
+	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyGenAIConversationID, baseInvocation.Session.ID))
+	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyRunnerUserID, baseInvocation.Session.UserID))
+	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyGenAIRequestModel, modelImpl.Info().Name))
 }
 
 func TestAddLLMNode_SkipsModelExecutionEventsWhenCallbackDisablesModelExecutionEvents(t *testing.T) {
@@ -2160,7 +2161,7 @@ func TestExecuteModelAndProcessResponses_TracksFinalizeErrors(t *testing.T) {
 	require.ErrorContains(t, err, errMsgNoModelResponse)
 	var rm metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(context.Background(), &rm))
-	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyErrorType, itelemetry.ValueDefaultErrorType))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyErrorType, semconvtrace.ValueDefaultErrorType))
 }
 
 func TestExecuteModelAndProcessResponses_TracksFinalizeErrorsForNilIterSequence(t *testing.T) {
@@ -2199,7 +2200,7 @@ func TestExecuteModelAndProcessResponses_TracksFinalizeErrorsForNilIterSequence(
 	require.ErrorContains(t, err, errMsgNoModelResponse)
 	var rm metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(context.Background(), &rm))
-	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyErrorType, itelemetry.ValueDefaultErrorType))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyErrorType, semconvtrace.ValueDefaultErrorType))
 }
 
 func resourceMetricsContainAttribute(rm metricdata.ResourceMetrics, key, value string) bool {

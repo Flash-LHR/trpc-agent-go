@@ -33,6 +33,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 	semconvmetrics "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/metrics"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
@@ -378,13 +379,13 @@ func TestProcessStreamingResponses_UsesStableInvocationForMetricsMetadata(t *tes
 	require.NotNil(t, lastEvent)
 	var rm metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(context.Background(), &rm))
-	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIAgentName, baseInvocation.AgentName))
-	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIRequestModel, baseInvocation.Model.Info().Name))
-	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIConversationID, baseInvocation.Session.ID))
-	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoUserID, baseInvocation.Session.UserID))
-	require.True(t, resourceMetricsContainAttribute(rm, itelemetry.KeyTRPCAgentGoAppName, baseInvocation.Session.AppName))
-	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIAgentName, updatedInvocation.AgentName))
-	require.False(t, resourceMetricsContainAttribute(rm, itelemetry.KeyGenAIConversationID, updatedInvocation.Session.ID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, baseInvocation.AgentName))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIRequestModel, baseInvocation.Model.Info().Name))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, baseInvocation.Session.ID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoUserID, baseInvocation.Session.UserID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoAppName, baseInvocation.Session.AppName))
+	require.False(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, updatedInvocation.AgentName))
+	require.False(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, updatedInvocation.Session.ID))
 }
 
 func TestProcessStreamingResponses_UsesUpdatedInvocationForResponseUsageTiming(t *testing.T) {
@@ -894,10 +895,10 @@ func TestProcessStreamingResponses_UsesStableInvocationForTraceMetadata(t *testi
 	)
 	require.NoError(t, err)
 	require.NotNil(t, lastEvent)
-	require.True(t, flowHasAttr(span.attrs, itelemetry.KeyInvocationID, baseInvocation.InvocationID))
-	require.True(t, flowHasAttr(span.attrs, itelemetry.KeyGenAIConversationID, baseInvocation.Session.ID))
-	require.True(t, flowHasAttr(span.attrs, itelemetry.KeyRunnerUserID, baseInvocation.Session.UserID))
-	require.True(t, flowHasAttr(span.attrs, itelemetry.KeyGenAIRequestModel, modelImpl.Info().Name))
+	require.True(t, flowHasAttr(span.attrs, semconvtrace.KeyInvocationID, baseInvocation.InvocationID))
+	require.True(t, flowHasAttr(span.attrs, semconvtrace.KeyGenAIConversationID, baseInvocation.Session.ID))
+	require.True(t, flowHasAttr(span.attrs, semconvtrace.KeyRunnerUserID, baseInvocation.Session.UserID))
+	require.True(t, flowHasAttr(span.attrs, semconvtrace.KeyGenAIRequestModel, modelImpl.Info().Name))
 }
 
 // mockAgent implements agent.Agent for testing
