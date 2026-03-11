@@ -20,7 +20,6 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1746,14 +1745,7 @@ func getConfigKeys(config map[string]any) []string {
 
 // initializeState initializes the execution state with schema defaults.
 func (e *Executor) initializeState(initialState State) State {
-	defaultsHint := 0
-	if e.graph.Schema() != nil {
-		defaultsHint = len(e.graph.Schema().Fields)
-	}
-	execState := make(State, len(initialState)+defaultsHint)
-	for k, v := range initialState {
-		execState[k] = v
-	}
+	execState := initialState.Clone()
 	// Add schema defaults for missing fields.
 	if e.graph.Schema() != nil {
 		for key, field := range e.graph.Schema().Fields {
@@ -1779,7 +1771,7 @@ func (e *Executor) initializeChannels(execCtx *ExecutionContext, state State, up
 		return
 	}
 	for key, val := range state {
-		channelName := ChannelInputPrefix + key
+		channelName := fmt.Sprintf("%s%s", ChannelInputPrefix, key)
 		execCtx.channels.AddChannel(channelName, channel.BehaviorLastValue)
 		if updateChannels {
 			if ch, ok := execCtx.channels.GetChannel(channelName); ok && ch != nil {
@@ -2026,7 +2018,7 @@ func (e *Executor) createTask(nodeID string, state State, step int) *Task {
 		Input:    input,
 		Writes:   node.writers,
 		Triggers: node.triggers,
-		TaskID:   nodeID + "-" + strconv.Itoa(step),
+		TaskID:   fmt.Sprintf("%s-%d", nodeID, step),
 		TaskPath: []string{nodeID},
 	}
 }
@@ -2471,16 +2463,14 @@ func (e *Executor) initializeNodeContext(
 	e.emitNodeStartEvent(ctx, invocation, execCtx, t.NodeID, nodeType, step,
 		nodeStart, WithNodeEventAttempt(1), WithNodeEventMaxAttempts(maxAttempts))
 
+	// Create callback context.
+	callbackCtx := e.newNodeCallbackContext(execCtx, t.NodeID, nodeType, step, nodeStart)
+
 	// Build per-task state copy.
 	stateCopy := e.buildTaskStateCopy(execCtx, t)
 
 	// Merge callbacks: global callbacks run first, then per-node callbacks.
 	mergedCallbacks := e.getMergedCallbacks(stateCopy, t.NodeID)
-
-	var callbackCtx *NodeCallbackContext
-	if mergedCallbacks != nil {
-		callbackCtx = e.newNodeCallbackContext(execCtx, t.NodeID, nodeType, step, nodeStart)
-	}
 
 	return &nodeExecutionContext{
 		nodeType:        nodeType,
@@ -3591,7 +3581,7 @@ func (e *Executor) enqueueCommands(execCtx *ExecutionContext, t *Task, cmds []*C
 			Input:    mergedState,
 			Writes:   targetWriters,
 			Triggers: targetTriggers,
-			TaskID:   target + "-" + strconv.Itoa(nextStep),
+			TaskID:   fmt.Sprintf("%s-%d", target, nextStep),
 			TaskPath: append([]string{}, t.TaskPath...),
 			Overlay:  nil,
 		}
@@ -3738,7 +3728,6 @@ func (e *Executor) processChannelWrites(ctx context.Context, invocation *agent.I
 	if execCtx == nil || execCtx.channels == nil {
 		return
 	}
-	checkpointingEnabled := e.checkpointSaver != nil
 	for _, write := range writes {
 		ch, ok := execCtx.channels.GetChannel(write.Channel)
 		if !ok || ch == nil {
@@ -3748,17 +3737,15 @@ func (e *Executor) processChannelWrites(ctx context.Context, invocation *agent.I
 
 		// Emit channel update event.
 		e.emitChannelUpdateEvent(ctx, invocation, execCtx, write.Channel, ch.Behavior, e.getTriggeredNodes(write.Channel))
-		if checkpointingEnabled {
-			// Accumulate into pendingWrites to be saved with the next checkpoint.
-			execCtx.pendingMu.Lock()
-			execCtx.pendingWrites = append(execCtx.pendingWrites, PendingWrite{
-				Channel:  write.Channel,
-				Value:    write.Value,
-				TaskID:   taskID,
-				Sequence: execCtx.seq.Add(1), // Use atomic increment for deterministic replay.
-			})
-			execCtx.pendingMu.Unlock()
-		}
+		// Accumulate into pendingWrites to be saved with the next checkpoint.
+		execCtx.pendingMu.Lock()
+		execCtx.pendingWrites = append(execCtx.pendingWrites, PendingWrite{
+			Channel:  write.Channel,
+			Value:    write.Value,
+			TaskID:   taskID,
+			Sequence: execCtx.seq.Add(1), // Use atomic increment for deterministic replay
+		})
+		execCtx.pendingMu.Unlock()
 	}
 }
 

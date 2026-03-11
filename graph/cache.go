@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -136,5 +137,5 @@ func (c *InMemoryCache) Clear(ns string) {
 // buildCacheNamespace builds a per-node namespace for cache entries.
 // We scope by node ID only to align with the executor's node semantics.
 func buildCacheNamespace(nodeID string) string {
-	return CacheNamespacePrefix + ":" + nodeID
+	return fmt.Sprintf("%s:%s", CacheNamespacePrefix, nodeID)
 }
