@@ -3812,6 +3812,49 @@ func observabilityInvocationView(
 	}
 }
 
+func refreshObservabilityInvocationView(
+	currentView *agent.Invocation,
+	invocation *agent.Invocation,
+	config modelExecutionConfig,
+) *agent.Invocation {
+	if currentView == nil {
+		return observabilityInvocationView(invocation, config)
+	}
+	if currentView.InvocationID == "" {
+		if config.InvocationID != "" || (invocation != nil && invocation.InvocationID != "") {
+			return observabilityInvocationView(invocation, config)
+		}
+	}
+	if currentView.AgentName == "" && invocation != nil && invocation.AgentName != "" {
+		return observabilityInvocationView(invocation, config)
+	}
+	if currentView.Model == nil {
+		if config.LLMModel != nil || (invocation != nil && invocation.Model != nil) {
+			return observabilityInvocationView(invocation, config)
+		}
+	}
+	currentSession := currentView.Session
+	hasSessionID := currentSession != nil && currentSession.ID != ""
+	hasUserID := currentSession != nil && currentSession.UserID != ""
+	hasAppName := currentSession != nil && currentSession.AppName != ""
+	if !hasSessionID {
+		if config.SessionID != "" || (invocation != nil && invocation.Session != nil && invocation.Session.ID != "") {
+			return observabilityInvocationView(invocation, config)
+		}
+	}
+	if !hasUserID {
+		if config.UserID != "" || (invocation != nil && invocation.Session != nil && invocation.Session.UserID != "") {
+			return observabilityInvocationView(invocation, config)
+		}
+	}
+	if !hasAppName {
+		if config.AppName != "" || (invocation != nil && invocation.Session != nil && invocation.Session.AppName != "") {
+			return observabilityInvocationView(invocation, config)
+		}
+	}
+	return currentView
+}
+
 func (p *modelResponseProcessor) close() {
 	if p == nil || p.tracker == nil {
 		return
@@ -3903,7 +3946,11 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 		}
 	}
 	p.invocation = invocationFromContextOrDefault(p.ctx, p.invocation)
-	p.observabilityInvocation = observabilityInvocationView(p.stableInvocation, p.config)
+	p.observabilityInvocation = refreshObservabilityInvocationView(
+		p.observabilityInvocation,
+		p.stableInvocation,
+		p.config,
+	)
 	traceProcessedModelResponse(
 		p.config.Span,
 		p.tracker,

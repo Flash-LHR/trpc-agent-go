@@ -1811,6 +1811,34 @@ func TestExecuteModelAndProcessResponses_RefreshesStableTraceMetadataAfterInPlac
 	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyGenAIRequestModel, modelImpl.Info().Name))
 }
 
+func TestRefreshObservabilityInvocationView_ReusesViewWithoutNewStableMetadata(t *testing.T) {
+	modelImpl := &captureModel{}
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-observability-refresh"),
+	)
+	view := observabilityInvocationView(invocation, modelExecutionConfig{
+		InvocationID: invocation.InvocationID,
+		LLMModel:     modelImpl,
+	})
+	require.NotNil(t, view)
+	refreshed := refreshObservabilityInvocationView(view, invocation, modelExecutionConfig{
+		InvocationID: invocation.InvocationID,
+		LLMModel:     modelImpl,
+	})
+	require.Same(t, view, refreshed)
+	invocation.Session = &session.Session{
+		ID:     "sess-observability-refresh",
+		UserID: "user-observability-refresh",
+	}
+	refreshed = refreshObservabilityInvocationView(view, invocation, modelExecutionConfig{
+		InvocationID: invocation.InvocationID,
+		LLMModel:     modelImpl,
+	})
+	require.NotSame(t, view, refreshed)
+	require.Equal(t, invocation.Session.ID, refreshed.Session.ID)
+	require.Equal(t, invocation.Session.UserID, refreshed.Session.UserID)
+}
+
 func TestAddLLMNode_SkipsModelExecutionEventsWhenCallbackDisablesModelExecutionEvents(t *testing.T) {
 	sg := NewStateGraph(MessagesStateSchema())
 	sg.AddLLMNode("llm", &captureModel{}, "inst", nil)
