@@ -1802,86 +1802,120 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 	finalResult *streamFinalResult,
 	innerEventState *streamInnerEventState,
 ) error {
-	switch v := chunk.Content.(type) {
-	case tool.FinalResultChunk:
-		if err := flushPendingGraphToolError(innerEventState, nil); err != nil {
-			return err
-		}
-		if finalResult != nil {
-			finalResult.seen = true
-			finalResult.value = v.Result
-		}
-		if len(v.StateDelta) > 0 && eventChan != nil {
-			deltaEvent := f.buildStateDeltaToolResponseEvent(
-				invocation,
-				toolCall,
-				v.StateDelta,
-			)
-			if err := agent.EmitEvent(ctx, invocation, eventChan, deltaEvent); err != nil {
-				return err
-			}
-		}
-		return nil
-	case *tool.FinalResultChunk:
-		if err := flushPendingGraphToolError(innerEventState, nil); err != nil {
-			return err
-		}
-		if v != nil && finalResult != nil {
-			finalResult.seen = true
-			finalResult.value = v.Result
-		}
-		if v != nil && len(v.StateDelta) > 0 && eventChan != nil {
-			deltaEvent := f.buildStateDeltaToolResponseEvent(
-				invocation,
-				toolCall,
-				v.StateDelta,
-			)
-			if err := agent.EmitEvent(ctx, invocation, eventChan, deltaEvent); err != nil {
-				return err
-			}
-		}
-		return nil
+	if finalChunk, ok := normalizeFinalResultChunk(chunk.Content); ok {
+		return f.handleFinalResultChunk(
+			ctx,
+			invocation,
+			toolCall,
+			eventChan,
+			finalResult,
+			innerEventState,
+			finalChunk,
+		)
 	}
-
-	// Case 1: Raw sub-agent event passthrough.
 	if ev, ok := chunk.Content.(*event.Event); ok {
-		if err := flushPendingGraphToolError(innerEventState, ev); err != nil {
-			return err
-		}
-		// With random FilterKey isolation, we can safely forward all inner events
-		// since they are properly isolated and won't pollute the parent session.
-		if err := event.EmitEvent(ctx, eventChan, ev); err != nil {
-			return err
-		}
-		f.appendInnerEventContent(ev, contents, innerEventState)
-		if isGraphToolExecutionErrorEvent(ev) {
-			if innerEventState != nil {
-				innerEventState.pendingGraphToolErrorEvent = ev
-			}
-			return nil
-		}
-		if err := streamToolEventError(ev); err != nil {
-			return err
-		}
-		return nil
+		return f.handleStreamInnerEvent(
+			ctx,
+			eventChan,
+			contents,
+			innerEventState,
+			ev,
+		)
 	}
+	return f.handlePlainStreamChunk(
+		ctx,
+		invocation,
+		toolCall,
+		eventChan,
+		contents,
+		innerEventState,
+		chunk.Content,
+	)
+}
 
-	// Case 2: Plain text-like chunk. Emit partial tool.response event.
+func normalizeFinalResultChunk(content any) (*tool.FinalResultChunk, bool) {
+	switch v := content.(type) {
+	case tool.FinalResultChunk:
+		chunk := v
+		return &chunk, true
+	case *tool.FinalResultChunk:
+		if v == nil {
+			return nil, true
+		}
+		return v, true
+	default:
+		return nil, false
+	}
+}
+
+func (f *FunctionCallResponseProcessor) handleFinalResultChunk(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	toolCall model.ToolCall,
+	eventChan chan<- *event.Event,
+	finalResult *streamFinalResult,
+	innerEventState *streamInnerEventState,
+	finalChunk *tool.FinalResultChunk,
+) error {
 	if err := flushPendingGraphToolError(innerEventState, nil); err != nil {
 		return err
 	}
-	text := marshalChunkToText(chunk.Content)
+	if finalChunk != nil && finalResult != nil {
+		finalResult.seen = true
+		finalResult.value = finalChunk.Result
+	}
+	if finalChunk == nil || len(finalChunk.StateDelta) == 0 || eventChan == nil {
+		return nil
+	}
+	deltaEvent := f.buildStateDeltaToolResponseEvent(invocation, toolCall, finalChunk.StateDelta)
+	return agent.EmitEvent(ctx, invocation, eventChan, deltaEvent)
+}
+
+func (f *FunctionCallResponseProcessor) handleStreamInnerEvent(
+	ctx context.Context,
+	eventChan chan<- *event.Event,
+	contents *[]any,
+	innerEventState *streamInnerEventState,
+	ev *event.Event,
+) error {
+	if err := flushPendingGraphToolError(innerEventState, ev); err != nil {
+		return err
+	}
+	if err := event.EmitEvent(ctx, eventChan, ev); err != nil {
+		return err
+	}
+	f.appendInnerEventContent(ev, contents, innerEventState)
+	if isGraphToolExecutionErrorEvent(ev) {
+		if innerEventState != nil {
+			innerEventState.pendingGraphToolErrorEvent = ev
+		}
+		return nil
+	}
+	return streamToolEventError(ev)
+}
+
+func (f *FunctionCallResponseProcessor) handlePlainStreamChunk(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	toolCall model.ToolCall,
+	eventChan chan<- *event.Event,
+	contents *[]any,
+	innerEventState *streamInnerEventState,
+	content any,
+) error {
+	if err := flushPendingGraphToolError(innerEventState, nil); err != nil {
+		return err
+	}
+	text := marshalChunkToText(content)
 	if text == "" {
 		return nil
 	}
 	*contents = append(*contents, text)
-	if eventChan != nil {
-		partial := f.buildPartialToolResponseEvent(invocation, toolCall, text)
-		if err := agent.EmitEvent(ctx, invocation, eventChan, partial); err != nil {
-			return err
-		}
+	if eventChan == nil {
+		return nil
 	}
-	return nil
+	partial := f.buildPartialToolResponseEvent(invocation, toolCall, text)
+	return agent.EmitEvent(ctx, invocation, eventChan, partial)
 }
 
 func flushPendingGraphToolError(
