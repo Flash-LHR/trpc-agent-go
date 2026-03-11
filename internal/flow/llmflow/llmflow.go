@@ -734,7 +734,7 @@ func (f *Flow) runBeforeModelCallbacks(
 		return ctx, nil, nil
 	}
 	callbackCtx := withInvocationContextIfMissing(ctx, invocation)
-	ctx, resp, err := runBeforeModelCallbacksWith(callbackCtx, llmRequest, pluginCallbacks)
+	ctx, resp, err := runBeforeModelCallbacksWith(callbackCtx, invocation, llmRequest, pluginCallbacks)
 	if err != nil {
 		log.ErrorfContext(ctx, "Before model plugin failed for agent %s: %v", invocation.AgentName, err)
 		return ctx, nil, err
@@ -743,7 +743,7 @@ func (f *Flow) runBeforeModelCallbacks(
 		return withInvocationContextIfMissing(ctx, invocation), resp, nil
 	}
 	ctx = withInvocationContextIfMissing(ctx, invocation)
-	newCtx, resp, err := runBeforeModelCallbacksWith(ctx, llmRequest, f.modelCallbacks)
+	newCtx, resp, err := runBeforeModelCallbacksWith(ctx, invocation, llmRequest, f.modelCallbacks)
 	if err != nil {
 		log.ErrorfContext(newCtx, "Before model callback failed for agent %s: %v", invocation.AgentName, err)
 	}
@@ -763,13 +763,15 @@ func withInvocationContextIfMissing(ctx context.Context, invocation *agent.Invoc
 
 func runBeforeModelCallbacksWith(
 	ctx context.Context,
+	invocation *agent.Invocation,
 	llmRequest *model.Request,
 	callbacks *model.Callbacks,
 ) (context.Context, *model.Response, error) {
 	if callbacks == nil {
 		return ctx, nil, nil
 	}
-	result, err := callbacks.RunBeforeModel(ctx, &model.BeforeModelArgs{Request: llmRequest})
+	result, err := wrapBeforeModelCallbacksWithInvocation(callbacks, invocation).
+		RunBeforeModel(ctx, &model.BeforeModelArgs{Request: llmRequest})
 	if err != nil {
 		return ctx, nil, err
 	}
@@ -780,6 +782,32 @@ func runBeforeModelCallbacksWith(
 		return ctx, result.CustomResponse, nil
 	}
 	return ctx, nil, nil
+}
+
+func wrapBeforeModelCallbacksWithInvocation(
+	callbacks *model.Callbacks,
+	invocation *agent.Invocation,
+) *model.Callbacks {
+	if callbacks == nil || invocation == nil || len(callbacks.BeforeModel) == 0 {
+		return callbacks
+	}
+	wrapped := *callbacks
+	wrapped.BeforeModel = make([]model.BeforeModelCallbackStructured, len(callbacks.BeforeModel))
+	for i, cb := range callbacks.BeforeModel {
+		callback := cb
+		wrapped.BeforeModel[i] = func(
+			ctx context.Context,
+			args *model.BeforeModelArgs,
+		) (*model.BeforeModelResult, error) {
+			ctx = withInvocationContextIfMissing(ctx, invocation)
+			result, err := callback(ctx, args)
+			if result != nil && result.Context != nil {
+				result.Context = withInvocationContextIfMissing(result.Context, invocation)
+			}
+			return result, err
+		}
+	}
+	return &wrapped
 }
 
 func (f *Flow) generateContentSeq(
