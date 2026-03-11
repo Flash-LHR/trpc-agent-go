@@ -1378,6 +1378,11 @@ type streamFinalResult struct {
 	value any
 }
 
+type streamInnerEventState struct {
+	sawAssistantDeltaSinceMessage bool
+	pendingGraphToolErrorEvent    *event.Event
+}
+
 // consumeStream reads all chunks from the reader and processes them.
 func (f *FunctionCallResponseProcessor) consumeStream(
 	ctx context.Context,
@@ -1388,6 +1393,7 @@ func (f *FunctionCallResponseProcessor) consumeStream(
 ) ([]any, streamFinalResult, error) {
 	var contents []any
 	var finalResult streamFinalResult
+	var innerEventState streamInnerEventState
 	for {
 		chunk, err := reader.Recv()
 		if err == io.EOF {
@@ -1413,23 +1419,43 @@ func (f *FunctionCallResponseProcessor) consumeStream(
 			eventChan,
 			&contents,
 			&finalResult,
+			&innerEventState,
 		); err != nil {
 			return contents, finalResult, err
 		}
+	}
+	if innerEventState.pendingGraphToolErrorEvent != nil {
+		return contents, finalResult, streamToolEventError(
+			innerEventState.pendingGraphToolErrorEvent,
+		)
 	}
 	return contents, finalResult, nil
 }
 
 // appendInnerEventContent extracts textual content from an inner event and appends it.
-func (f *FunctionCallResponseProcessor) appendInnerEventContent(ev *event.Event, contents *[]any) {
+func (f *FunctionCallResponseProcessor) appendInnerEventContent(
+	ev *event.Event,
+	contents *[]any,
+	state *streamInnerEventState,
+) {
 	if ev.Response != nil && len(ev.Response.Choices) > 0 {
 		ch := ev.Response.Choices[0]
 		if ch.Delta.Content != "" {
 			*contents = append(*contents, ch.Delta.Content)
+			if state != nil {
+				state.sawAssistantDeltaSinceMessage = true
+			}
 		} else if ch.Message.Role == model.RoleAssistant &&
 			ch.Message.Content != "" &&
-			!hasTrailingMergedString(*contents, ch.Message.Content) {
+			(!hasTrailingMergedString(*contents, ch.Message.Content) ||
+				state == nil ||
+				!state.sawAssistantDeltaSinceMessage) {
 			*contents = append(*contents, ch.Message.Content)
+			if state != nil {
+				state.sawAssistantDeltaSinceMessage = false
+			}
+		} else if state != nil {
+			state.sawAssistantDeltaSinceMessage = false
 		}
 	}
 }
@@ -1522,9 +1548,6 @@ func streamToolEventError(ev *event.Event) error {
 	}
 	if ev.Error != nil && ev.Error.Type == agent.ErrorTypeStopAgentError {
 		return agent.NewStopError(ev.Error.Message)
-	}
-	if isGraphToolExecutionErrorEvent(ev) {
-		return nil
 	}
 	if isRetryingGraphNodeErrorEvent(ev) {
 		return nil
@@ -1777,9 +1800,13 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 	eventChan chan<- *event.Event,
 	contents *[]any,
 	finalResult *streamFinalResult,
+	innerEventState *streamInnerEventState,
 ) error {
 	switch v := chunk.Content.(type) {
 	case tool.FinalResultChunk:
+		if err := flushPendingGraphToolError(innerEventState, nil); err != nil {
+			return err
+		}
 		if finalResult != nil {
 			finalResult.seen = true
 			finalResult.value = v.Result
@@ -1796,6 +1823,9 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 		}
 		return nil
 	case *tool.FinalResultChunk:
+		if err := flushPendingGraphToolError(innerEventState, nil); err != nil {
+			return err
+		}
 		if v != nil && finalResult != nil {
 			finalResult.seen = true
 			finalResult.value = v.Result
@@ -1815,12 +1845,21 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 
 	// Case 1: Raw sub-agent event passthrough.
 	if ev, ok := chunk.Content.(*event.Event); ok {
+		if err := flushPendingGraphToolError(innerEventState, ev); err != nil {
+			return err
+		}
 		// With random FilterKey isolation, we can safely forward all inner events
 		// since they are properly isolated and won't pollute the parent session.
 		if err := event.EmitEvent(ctx, eventChan, ev); err != nil {
 			return err
 		}
-		f.appendInnerEventContent(ev, contents)
+		f.appendInnerEventContent(ev, contents, innerEventState)
+		if isGraphToolExecutionErrorEvent(ev) {
+			if innerEventState != nil {
+				innerEventState.pendingGraphToolErrorEvent = ev
+			}
+			return nil
+		}
 		if err := streamToolEventError(ev); err != nil {
 			return err
 		}
@@ -1828,6 +1867,9 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 	}
 
 	// Case 2: Plain text-like chunk. Emit partial tool.response event.
+	if err := flushPendingGraphToolError(innerEventState, nil); err != nil {
+		return err
+	}
 	text := marshalChunkToText(chunk.Content)
 	if text == "" {
 		return nil
@@ -1840,4 +1882,26 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 		}
 	}
 	return nil
+}
+
+func flushPendingGraphToolError(
+	state *streamInnerEventState,
+	nextEvent *event.Event,
+) error {
+	if state == nil || state.pendingGraphToolErrorEvent == nil {
+		return nil
+	}
+	if nextEvent != nil {
+		if isRetryingGraphNodeErrorEvent(nextEvent) {
+			state.pendingGraphToolErrorEvent = nil
+			return nil
+		}
+		if nextEvent.IsError() {
+			state.pendingGraphToolErrorEvent = nil
+			return nil
+		}
+	}
+	err := streamToolEventError(state.pendingGraphToolErrorEvent)
+	state.pendingGraphToolErrorEvent = nil
+	return err
 }

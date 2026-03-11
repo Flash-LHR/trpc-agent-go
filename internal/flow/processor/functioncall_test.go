@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -2410,9 +2411,10 @@ func TestProcessStreamChunk_ForwardsEvent(t *testing.T) {
 	ch := make(chan *event.Event, 1)
 	var contents []any
 	var finalResult streamFinalResult
+	var innerEventState streamInnerEventState
 	err := f.processStreamChunk(ctx, inv,
 		model.ToolCall{ID: "x"},
-		tool.StreamChunk{Content: ev}, ch, &contents, &finalResult,
+		tool.StreamChunk{Content: ev}, ch, &contents, &finalResult, &innerEventState,
 	)
 	require.NoError(t, err)
 	select {
@@ -3273,6 +3275,61 @@ func TestExecuteStreamableTool_RetryingToolResponseErrorDoesNotStopStream(t *tes
 	require.Equal(t, []byte(`"ok"`), third.StateDelta["final"])
 }
 
+type terminalToolResponseErrorStreamTool struct{ name string }
+
+func (s *terminalToolResponseErrorStreamTool) Declaration() *tool.Declaration {
+	return &tool.Declaration{Name: s.name}
+}
+
+func (s *terminalToolResponseErrorStreamTool) StreamableCall(
+	ctx context.Context,
+	_ []byte,
+) (*tool.StreamReader, error) {
+	st := tool.NewStream(2)
+	go func() {
+		defer st.Writer.Close()
+		st.Writer.Send(tool.StreamChunk{
+			Content: graph.NewToolExecutionEvent(
+				graph.WithToolEventInvocationID("inner-inv"),
+				graph.WithToolEventToolName("terminal-tool"),
+				graph.WithToolEventToolID("tool-1"),
+				graph.WithToolEventNodeID("terminal"),
+				graph.WithToolEventPhase(graph.ToolExecutionPhaseComplete),
+				graph.WithToolEventError(errors.New("boom")),
+				graph.WithToolEventIncludeResponse(true),
+			),
+		}, nil)
+	}()
+	return st.Reader, nil
+}
+
+func TestExecuteStreamableTool_TerminalToolResponseErrorStopsStream(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{
+		InvocationID: "inv-terminal-tool-error",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID:       "c1",
+		Function: model.FunctionDefinitionParam{Name: "final"},
+	}
+	st := &terminalToolResponseErrorStreamTool{name: "final"}
+	ch := make(chan *event.Event, 4)
+	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.Error(t, err)
+	require.Nil(t, res)
+
+	evt := <-ch
+	require.NotNil(t, evt)
+	require.Equal(t, model.ObjectTypeToolResponse, evt.Object)
+	require.NotNil(t, evt.Response)
+	require.NotNil(t, evt.Response.Error)
+	require.Contains(t, evt.StateDelta, graph.MetadataKeyTool)
+}
+
 func TestProcessStreamChunk_PointerFinalResultChunkMarksSeen(t *testing.T) {
 	f := NewFunctionCallResponseProcessor(false, nil)
 	ctx := context.Background()
@@ -3288,6 +3345,7 @@ func TestProcessStreamChunk_PointerFinalResultChunkMarksSeen(t *testing.T) {
 	}
 	var contents []any
 	finalResult := streamFinalResult{}
+	var innerEventState streamInnerEventState
 	ch := make(chan *event.Event, 1)
 	err := f.processStreamChunk(
 		ctx,
@@ -3301,6 +3359,7 @@ func TestProcessStreamChunk_PointerFinalResultChunkMarksSeen(t *testing.T) {
 		ch,
 		&contents,
 		&finalResult,
+		&innerEventState,
 	)
 	require.NoError(t, err)
 	require.True(t, finalResult.seen)
@@ -3399,6 +3458,37 @@ func (s *duplicateInnerEventStreamTool) StreamableCall(ctx context.Context, _ []
 	return st.Reader, nil
 }
 
+type duplicateFullInnerEventStreamTool struct{ name string }
+
+func (s *duplicateFullInnerEventStreamTool) Declaration() *tool.Declaration {
+	return &tool.Declaration{Name: s.name}
+}
+
+func (s *duplicateFullInnerEventStreamTool) StreamableCall(ctx context.Context, _ []byte) (*tool.StreamReader, error) {
+	st := tool.NewStream(4)
+	go func() {
+		defer st.Writer.Close()
+		for i := 0; i < 2; i++ {
+			ev := event.New(
+				"inv-fwd",
+				"child",
+				event.WithResponse(&model.Response{
+					ID: uuid.New().String(),
+					Choices: []model.Choice{{
+						Message: model.Message{
+							Role:    model.RoleAssistant,
+							Content: "abc",
+						},
+					}},
+				}),
+			)
+			ev.Branch = "b"
+			st.Writer.Send(tool.StreamChunk{Content: ev}, nil)
+		}
+	}()
+	return st.Reader, nil
+}
+
 func TestExecuteStreamableTool_DedupsRepeatedInnerFinalMessage(t *testing.T) {
 	f := NewFunctionCallResponseProcessor(false, nil)
 	ctx := context.Background()
@@ -3417,6 +3507,26 @@ func TestExecuteStreamableTool_DedupsRepeatedInnerFinalMessage(t *testing.T) {
 	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
 	require.Equal(t, "abc", res.(string))
+}
+
+func TestExecuteStreamableTool_DoesNotDedupDistinctInnerFinalMessagesWithSameContent(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{
+		InvocationID: "inv-fwd",
+		AgentName:    "parent",
+		Branch:       "b",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID:       "c1",
+		Function: model.FunctionDefinitionParam{Name: "inner"},
+	}
+	st := &duplicateFullInnerEventStreamTool{name: "inner"}
+	ch := make(chan *event.Event, 4)
+	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.NoError(t, err)
+	require.Equal(t, "abcabc", res.(string))
 }
 
 type suffixMatchedInnerEventStreamTool struct{ name string }
@@ -3718,6 +3828,7 @@ func TestProcessStreamChunk_EmptyText_NoEvent(t *testing.T) {
 	tc := model.ToolCall{ID: "x", Function: model.FunctionDefinitionParam{Name: "t"}}
 	out := make([]any, 0)
 	var finalResult streamFinalResult
+	var innerEventState streamInnerEventState
 	ch := make(chan *event.Event, 1)
 	// Empty string chunk should be ignored.
 	err := f.processStreamChunk(
@@ -3728,6 +3839,7 @@ func TestProcessStreamChunk_EmptyText_NoEvent(t *testing.T) {
 		ch,
 		&out,
 		&finalResult,
+		&innerEventState,
 	)
 	require.NoError(t, err)
 	require.Empty(t, out)
