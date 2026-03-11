@@ -727,11 +727,260 @@ func TestDeepCopyFastPathHelperCoverage(t *testing.T) {
 	})
 
 	t.Run("unsupported message ops return false", func(t *testing.T) {
-		_, ok := deepCopyFastPath(testMessageOp{out: []model.Message{model.NewAssistantMessage("x")}})
+		copied, ok := deepCopyFastPath("hello")
+		require.True(t, ok)
+		require.Equal(t, "hello", copied)
+
+		require.True(t, canDeepCopyMessageOpFastPath(RemoveAllMessages{}))
+
+		_, ok = deepCopyFastPath(testMessageOp{out: []model.Message{model.NewAssistantMessage("x")}})
 		require.False(t, ok)
 
 		_, ok = deepCopyFastPath([]MessageOp{testMessageOp{out: []model.Message{model.NewAssistantMessage("x")}}})
 		require.False(t, ok)
+	})
+}
+
+func TestDeepCopyWrapperHelperCoverage(t *testing.T) {
+	t.Run("message op wrappers", func(t *testing.T) {
+		msgs := []model.Message{
+			{
+				Role: model.RoleAssistant,
+				ContentParts: []model.ContentPart{
+					{
+						Type:  model.ContentTypeText,
+						Image: &model.Image{Data: []byte("img")},
+					},
+				},
+			},
+		}
+
+		copiedOp, ok := deepCopyMessageOp(AppendMessages{Items: msgs})
+		require.True(t, ok)
+		copiedAppend, ok := copiedOp.(AppendMessages)
+		require.True(t, ok)
+		require.Len(t, copiedAppend.Items, 1)
+		require.NotSame(t, msgs[0].ContentParts[0].Image, copiedAppend.Items[0].ContentParts[0].Image)
+
+		msgs[0].ContentParts[0].Image.Data[0] = 'X'
+		assert.Equal(t, "img", string(copiedAppend.Items[0].ContentParts[0].Image.Data))
+
+		copiedOp, ok = deepCopyMessageOp(ReplaceLastUser{Content: "user"})
+		require.True(t, ok)
+		_, ok = copiedOp.(ReplaceLastUser)
+		require.True(t, ok)
+
+		copiedOp, ok = deepCopyMessageOp(RemoveAllMessages{})
+		require.True(t, ok)
+		_, ok = copiedOp.(RemoveAllMessages)
+		require.True(t, ok)
+
+		copiedOp, ok = deepCopyMessageOp(testMessageOp{out: []model.Message{model.NewAssistantMessage("custom")}})
+		require.False(t, ok)
+		assert.Nil(t, copiedOp)
+
+		copiedOps, ok := deepCopyMessageOps(nil)
+		require.True(t, ok)
+		assert.Nil(t, copiedOps)
+
+		copiedOps, ok = deepCopyMessageOps([]MessageOp{})
+		require.True(t, ok)
+		require.NotNil(t, copiedOps)
+		assert.Len(t, copiedOps, 0)
+
+		copiedOps, ok = deepCopyMessageOps([]MessageOp{
+			AppendMessages{Items: msgs},
+			nil,
+			RemoveAllMessages{},
+		})
+		require.True(t, ok)
+		require.Len(t, copiedOps, 3)
+		assert.Nil(t, copiedOps[1])
+		_, ok = copiedOps[2].(RemoveAllMessages)
+		require.True(t, ok)
+	})
+
+	t.Run("model wrappers", func(t *testing.T) {
+		text := "hello"
+		index := 7
+		args := []byte("args")
+		image := &model.Image{Data: []byte("img")}
+		audio := &model.Audio{Data: []byte("aud"), Format: "wav"}
+		file := &model.File{Name: "f.txt", Data: []byte("file")}
+		parts := []model.ContentPart{
+			{
+				Type:  model.ContentTypeText,
+				Text:  &text,
+				Image: image,
+				Audio: audio,
+				File:  file,
+			},
+		}
+		calls := []model.ToolCall{
+			{
+				Type:  "function",
+				ID:    "call-1",
+				Index: &index,
+				Function: model.FunctionDefinitionParam{
+					Arguments: args,
+				},
+				ExtraFields: map[string]any{
+					"k": []byte("value"),
+				},
+			},
+		}
+		msgs := []model.Message{
+			{
+				Role:         model.RoleAssistant,
+				ContentParts: parts,
+				ToolCalls:    calls,
+			},
+		}
+
+		copiedMsgs := deepCopyModelMessages(msgs)
+		require.Len(t, copiedMsgs, 1)
+		copiedParts := deepCopyModelContentParts(parts)
+		require.Len(t, copiedParts, 1)
+		copiedCalls := deepCopyModelToolCalls(calls)
+		require.Len(t, copiedCalls, 1)
+
+		copiedImage := deepCopyModelImage(image)
+		require.NotNil(t, copiedImage)
+		require.NotSame(t, image, copiedImage)
+		copiedAudio := deepCopyModelAudio(audio)
+		require.NotNil(t, copiedAudio)
+		require.NotSame(t, audio, copiedAudio)
+		copiedFile := deepCopyModelFile(file)
+		require.NotNil(t, copiedFile)
+		require.NotSame(t, file, copiedFile)
+
+		assert.Nil(t, deepCopyModelImage(nil))
+		assert.Nil(t, deepCopyModelAudio(nil))
+		assert.Nil(t, deepCopyModelFile(nil))
+
+		image.Data[0] = 'X'
+		audio.Data[0] = 'Y'
+		file.Data[0] = 'Z'
+		args[0] = 'Q'
+		extraBytes, ok := calls[0].ExtraFields["k"].([]byte)
+		require.True(t, ok)
+		extraBytes[0] = 'W'
+
+		assert.Equal(t, "img", string(copiedMsgs[0].ContentParts[0].Image.Data))
+		assert.Equal(t, "img", string(copiedParts[0].Image.Data))
+		assert.Equal(t, "aud", string(copiedAudio.Data))
+		assert.Equal(t, "file", string(copiedFile.Data))
+		assert.Equal(t, "args", string(copiedCalls[0].Function.Arguments))
+		copiedExtra, ok := copiedCalls[0].ExtraFields["k"].([]byte)
+		require.True(t, ok)
+		assert.Equal(t, "value", string(copiedExtra))
+	})
+
+	t.Run("fast path positive cases", func(t *testing.T) {
+		copied, ok := deepCopyFastPath([]byte("ab"))
+		require.True(t, ok)
+		assert.Equal(t, []byte("ab"), copied)
+
+		copied, ok = deepCopyFastPath(map[string][]byte{"k": []byte("value")})
+		require.True(t, ok)
+		outMap, ok := copied.(map[string][]byte)
+		require.True(t, ok)
+		assert.Equal(t, "value", string(outMap["k"]))
+
+		copied, ok = deepCopyFastPath(AppendMessages{Items: []model.Message{model.NewAssistantMessage("x")}})
+		require.True(t, ok)
+		_, ok = copied.(AppendMessages)
+		require.True(t, ok)
+
+		copied, ok = deepCopyFastPath([]MessageOp{AppendMessages{Items: []model.Message{model.NewAssistantMessage("x")}}})
+		require.True(t, ok)
+		ops, ok := copied.([]MessageOp)
+		require.True(t, ok)
+		require.Len(t, ops, 1)
+
+		copied, ok = deepCopyFastPath([]model.Message{model.NewAssistantMessage("x")})
+		require.True(t, ok)
+		msgs, ok := copied.([]model.Message)
+		require.True(t, ok)
+		require.Len(t, msgs, 1)
+	})
+}
+
+func TestDeepCopyVisitedHelperBranchCoverage(t *testing.T) {
+	t.Run("cache hits", func(t *testing.T) {
+		sliceAny := []any{"value"}
+		cachedAny := []any{"cached"}
+		visited := newVisitedMap()
+		visited[sliceVisitKey(reflect.ValueOf(sliceAny).Pointer(), len(sliceAny), sliceAnyType)] = cachedAny
+		assert.Equal(t, reflect.ValueOf(cachedAny).Pointer(), reflect.ValueOf(deepCopySliceAnyWithVisited(sliceAny, visited)).Pointer())
+
+		msgs := []model.Message{model.NewAssistantMessage("x")}
+		cachedMsgs := []model.Message{model.NewAssistantMessage("cached")}
+		visited = newVisitedMap()
+		visited[sliceVisitKey(reflect.ValueOf(msgs).Pointer(), len(msgs), modelMessagesType)] = cachedMsgs
+		assert.Equal(t, reflect.ValueOf(cachedMsgs).Pointer(), reflect.ValueOf(deepCopyModelMessagesWithVisited(msgs, visited)).Pointer())
+
+		parts := []model.ContentPart{{Type: model.ContentTypeText}}
+		cachedParts := []model.ContentPart{{Type: model.ContentTypeImage}}
+		visited = newVisitedMap()
+		visited[sliceVisitKey(reflect.ValueOf(parts).Pointer(), len(parts), modelContentPartsType)] = cachedParts
+		assert.Equal(t, reflect.ValueOf(cachedParts).Pointer(), reflect.ValueOf(deepCopyModelContentPartsWithVisited(parts, visited)).Pointer())
+
+		calls := []model.ToolCall{{Type: "function", ID: "call-1"}}
+		cachedCalls := []model.ToolCall{{Type: "function", ID: "cached"}}
+		visited = newVisitedMap()
+		visited[sliceVisitKey(reflect.ValueOf(calls).Pointer(), len(calls), modelToolCallsType)] = cachedCalls
+		assert.Equal(t, reflect.ValueOf(cachedCalls).Pointer(), reflect.ValueOf(deepCopyModelToolCallsWithVisited(calls, visited)).Pointer())
+
+		bytesIn := []byte("ab")
+		cachedBytes := []byte("cd")
+		visited = newVisitedMap()
+		visited[sliceVisitKey(reflect.ValueOf(bytesIn).Pointer(), len(bytesIn), sliceBytesType)] = cachedBytes
+		assert.Equal(t, reflect.ValueOf(cachedBytes).Pointer(), reflect.ValueOf(deepCopyBytesWithVisited(bytesIn, visited)).Pointer())
+
+		text := "text"
+		cachedText := "cached"
+		visited = newVisitedMap()
+		visited[pointerVisitKey(reflect.ValueOf(&text).Pointer(), reflect.TypeOf(&text))] = &cachedText
+		assert.Same(t, &cachedText, deepCopyStringPointerWithVisited(&text, visited))
+
+		index := 3
+		cachedIndex := 5
+		visited = newVisitedMap()
+		visited[pointerVisitKey(reflect.ValueOf(&index).Pointer(), reflect.TypeOf(&index))] = &cachedIndex
+		assert.Same(t, &cachedIndex, deepCopyIntPointerWithVisited(&index, visited))
+
+		ops := []MessageOp{AppendMessages{Items: []model.Message{model.NewAssistantMessage("x")}}}
+		cachedOps := []MessageOp{RemoveAllMessages{}}
+		visited = newVisitedMap()
+		visited[sliceVisitKey(reflect.ValueOf(ops).Pointer(), len(ops), sliceMessageOpsType)] = cachedOps
+		copiedOps, ok := deepCopyMessageOpsWithVisited(ops, visited)
+		require.True(t, ok)
+		require.Len(t, copiedOps, 1)
+		_, ok = copiedOps[0].(RemoveAllMessages)
+		require.True(t, ok)
+	})
+
+	t.Run("nil branches", func(t *testing.T) {
+		assert.Nil(t, deepCopySliceAnyWithVisited(nil, newVisitedMap()))
+		assert.Nil(t, deepCopyModelMessagesWithVisited(nil, newVisitedMap()))
+		assert.Nil(t, deepCopyModelContentPartsWithVisited(nil, newVisitedMap()))
+		assert.Nil(t, deepCopyModelToolCallsWithVisited(nil, newVisitedMap()))
+		assert.Nil(t, deepCopyBytesWithVisited(nil, newVisitedMap()))
+		assert.Nil(t, deepCopyStringPointerWithVisited(nil, newVisitedMap()))
+		assert.Nil(t, deepCopyIntPointerWithVisited(nil, newVisitedMap()))
+	})
+
+	t.Run("message op failure removes cache entry", func(t *testing.T) {
+		ops := []MessageOp{testMessageOp{out: []model.Message{model.NewAssistantMessage("custom")}}}
+		visited := newVisitedMap()
+		key := sliceVisitKey(reflect.ValueOf(ops).Pointer(), len(ops), sliceMessageOpsType)
+
+		copied, ok := deepCopyMessageOpsWithVisited(ops, visited)
+		require.False(t, ok)
+		assert.Nil(t, copied)
+		_, exists := visited[key]
+		assert.False(t, exists)
 	})
 }
 
