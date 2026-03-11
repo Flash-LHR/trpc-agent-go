@@ -788,6 +788,13 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 	if shouldSuppressGraphCompletionEvent(loop, agentEvent) {
 		return nil
 	}
+	if shouldSuppressGraphExecutorBarrierEvent(loop, agentEvent) {
+		if agentEvent.RequiresCompletion {
+			completionID := agent.GetAppendEventNoticeKey(agentEvent.ID)
+			loop.invocation.NotifyCompletion(ctx, completionID)
+		}
+		return nil
+	}
 	shouldForwardEvent := loop.streamFilter.Allows(agentEvent)
 
 	// Append qualifying events to session and trigger summarization.
@@ -1102,6 +1109,19 @@ func shouldSuppressGraphCompletionEvent(
 		return false
 	}
 	return isGraphCompletionEvent(agentEvent)
+}
+
+func shouldSuppressGraphExecutorBarrierEvent(
+	loop *eventLoopContext,
+	agentEvent *event.Event,
+) bool {
+	if loop == nil || loop.invocation == nil || agentEvent == nil {
+		return false
+	}
+	if !loop.invocation.RunOptions.DisableGraphExecutorEvents {
+		return false
+	}
+	return agentEvent.Object == graph.ObjectTypeGraphNodeBarrier
 }
 
 // captureGraphCompletion captures the final state delta and choices from a

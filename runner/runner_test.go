@@ -2811,6 +2811,39 @@ func TestRunner_GraphAgent_LegacyRunnerCompletionIncludesFinalResponse(t *testin
 		sess.Events[1].Choices[0].Message.Content)
 }
 
+func TestRunner_DisableGraphExecutorEvents_HidesNodeBarrierEvents(t *testing.T) {
+	schema := graph.MessagesStateSchema()
+	sg := graph.NewStateGraph(schema)
+	sg.AddLLMNode(
+		"n1",
+		&staticModel{name: "m1", content: "hidden barrier"},
+		"i1",
+		nil,
+	)
+	compiled := sg.SetEntryPoint("n1").SetFinishPoint("n1").MustCompile()
+	ga, err := graphagent.New("ga", compiled)
+	require.NoError(t, err)
+	svc := sessioninmemory.NewSessionService()
+	r := NewRunner("app", ga, WithSessionService(svc))
+	ch, err := r.Run(
+		context.Background(),
+		"u",
+		"s",
+		model.NewUserMessage("hi"),
+		agent.WithDisableGraphExecutorEvents(true),
+	)
+	require.NoError(t, err)
+	var last *event.Event
+	for evt := range ch {
+		require.NotEqual(t, graph.ObjectTypeGraphNodeBarrier, evt.Object)
+		last = evt
+	}
+	require.NotNil(t, last)
+	require.True(t, last.IsRunnerCompletion())
+	require.Len(t, last.Response.Choices, 1)
+	require.Equal(t, "hidden barrier", last.Response.Choices[0].Message.Content)
+}
+
 func TestRunner_GraphAgentPersistsLLMDoneResponses(t *testing.T) {
 	schema := graph.MessagesStateSchema()
 	sg := graph.NewStateGraph(schema)
