@@ -476,6 +476,97 @@ func TestProcessStreamingResponses_UsesUpdatedInvocationForMetricsMetadataWhenBa
 	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoAppName, updatedInvocation.Session.AppName))
 }
 
+func TestProcessStreamingResponses_UsesUpdatedInvocationForMetricsMetadataAfterCallbackOnSingleChunk(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	originalProvider := itelemetry.MeterProvider
+	originalMeter := itelemetry.ChatMeter
+	originalRequestCnt := itelemetry.ChatMetricTRPCAgentGoClientRequestCnt
+	originalTokenUsage := itelemetry.ChatMetricGenAIClientTokenUsage
+	originalOperationDuration := itelemetry.ChatMetricGenAIClientOperationDuration
+	originalServerTimeToFirstToken := itelemetry.ChatMetricGenAIServerTimeToFirstToken
+	originalClientTimeToFirstToken := itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken
+	originalTimePerOutputToken := itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken
+	originalOutputTokenPerTime := itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime
+	defer func() {
+		itelemetry.MeterProvider = originalProvider
+		itelemetry.ChatMeter = originalMeter
+		itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = originalRequestCnt
+		itelemetry.ChatMetricGenAIClientTokenUsage = originalTokenUsage
+		itelemetry.ChatMetricGenAIClientOperationDuration = originalOperationDuration
+		itelemetry.ChatMetricGenAIServerTimeToFirstToken = originalServerTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = originalClientTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = originalTimePerOutputToken
+		itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = originalOutputTokenPerTime
+	}()
+	itelemetry.MeterProvider = provider
+	itelemetry.ChatMeter = provider.Meter(semconvmetrics.MeterNameChat)
+	requestCnt, err := itelemetry.ChatMeter.Int64Counter("trpc_agent_go.client.request.cnt")
+	require.NoError(t, err)
+	itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = requestCnt
+	itelemetry.ChatMetricGenAIClientTokenUsage = nil
+	itelemetry.ChatMetricGenAIClientOperationDuration = nil
+	itelemetry.ChatMetricGenAIServerTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = nil
+	updatedModel := &mockModel{}
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated-after-metrics"),
+		agent.WithInvocationModel(updatedModel),
+		agent.WithInvocationSession(&session.Session{
+			ID:      "sess-updated-after-metrics",
+			UserID:  "user-updated-after-metrics",
+			AppName: "app-updated-after-metrics",
+		}),
+	)
+	updatedInvocation.AgentName = "agent-updated-after-metrics"
+	f := New(nil, nil, Options{
+		ModelCallbacks: model.NewCallbacks().RegisterAfterModel(
+			func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+				return &model.AfterModelResult{
+					Context: agent.NewInvocationContext(ctx, updatedInvocation),
+				}, nil
+			},
+		),
+	})
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base-after-metrics"),
+	)
+	req := &model.Request{}
+	responseSeq := func(yield func(*model.Response) bool) {
+		yield(&model.Response{
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("done")},
+			},
+		})
+	}
+	eventChan := make(chan *event.Event, 10)
+	tracer := oteltrace.NewNoopTracerProvider().Tracer("t")
+	ctx, span := tracer.Start(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		"s",
+	)
+	defer span.End()
+	lastEvent, err := f.processStreamingResponses(
+		ctx,
+		baseInvocation,
+		req,
+		responseSeq,
+		eventChan,
+		span,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, lastEvent)
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, updatedInvocation.AgentName))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIRequestModel, updatedModel.Info().Name))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, updatedInvocation.Session.ID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoUserID, updatedInvocation.Session.UserID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoAppName, updatedInvocation.Session.AppName))
+}
+
 func TestProcessStreamingResponses_UsesUpdatedInvocationForResponseUsageTiming(t *testing.T) {
 	updatedInvocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-updated-usage"),
@@ -488,7 +579,7 @@ func TestProcessStreamingResponses_UsesUpdatedInvocationForResponseUsageTiming(t
 		ModelCallbacks: model.NewCallbacks().RegisterAfterModel(
 			func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
 				callbackCount++
-				if callbackCount == 1 {
+				if callbackCount == 2 {
 					return &model.AfterModelResult{
 						Context: agent.NewInvocationContext(ctx, updatedInvocation),
 					}, nil
@@ -537,6 +628,54 @@ func TestProcessStreamingResponses_UsesUpdatedInvocationForResponseUsageTiming(t
 	require.Nil(t, response2.Usage)
 }
 
+func TestProcessStreamingResponses_UsesUpdatedInvocationForResponseUsageTimingOnSingleChunk(t *testing.T) {
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated-single-usage"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableResponseUsageTracking: true,
+		}),
+	)
+	f := New(nil, nil, Options{
+		ModelCallbacks: model.NewCallbacks().RegisterAfterModel(
+			func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+				return &model.AfterModelResult{
+					Context: agent.NewInvocationContext(ctx, updatedInvocation),
+				}, nil
+			},
+		),
+	})
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base-single-usage"),
+	)
+	req := &model.Request{}
+	response := &model.Response{
+		Choices: []model.Choice{
+			{Message: model.NewAssistantMessage("done")},
+		},
+	}
+	responseSeq := func(yield func(*model.Response) bool) {
+		yield(response)
+	}
+	eventChan := make(chan *event.Event, 10)
+	tracer := oteltrace.NewNoopTracerProvider().Tracer("t")
+	ctx, span := tracer.Start(
+		agent.NewInvocationContext(context.Background(), baseInvocation),
+		"s",
+	)
+	defer span.End()
+	lastEvent, err := f.processStreamingResponses(
+		ctx,
+		baseInvocation,
+		req,
+		responseSeq,
+		eventChan,
+		span,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, lastEvent)
+	require.Nil(t, response.Usage)
+}
+
 func TestProcessStreamingResponses_PreservesTimingInfoWhenInvocationChanges(t *testing.T) {
 	updatedInvocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-updated-usage"),
@@ -546,7 +685,7 @@ func TestProcessStreamingResponses_PreservesTimingInfoWhenInvocationChanges(t *t
 		ModelCallbacks: model.NewCallbacks().RegisterAfterModel(
 			func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
 				callbackCount++
-				if callbackCount == 1 {
+				if callbackCount == 2 {
 					return &model.AfterModelResult{
 						Context: agent.NewInvocationContext(ctx, updatedInvocation),
 					}, nil

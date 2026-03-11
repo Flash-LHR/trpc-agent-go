@@ -402,7 +402,6 @@ func (f *Flow) processStreamingResponses(
 			response,
 			tracker,
 		)
-		attachResponseUsageTiming(response, timingInfo, &partialUsageState)
 		eventInvocation := invocation
 		if eventInvocation == nil {
 			eventInvocation = currentInvocation
@@ -428,6 +427,11 @@ func (f *Flow) processStreamingResponses(
 			ctx,
 			currentInvocation,
 		)
+		timingInfo = responseUsageTimingInfo(currentInvocation)
+		if tracker != nil {
+			tracker.SetInvocationState(currentInvocation, timingInfo)
+		}
+		attachResponseUsageTiming(response, timingInfo, &partialUsageState)
 		// Repair tool call arguments in place when needed.
 		if currentInvocation != nil &&
 			jsonrepair.IsToolCallArgumentsJSONRepairEnabled(currentInvocation) {

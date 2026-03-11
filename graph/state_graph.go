@@ -3703,12 +3703,12 @@ func newModelResponseProcessor(
 	p := &modelResponseProcessor{
 		ctx:              ctx,
 		config:           config,
-		stableInvocation: config.Invocation,
+		stableInvocation: metricsStableInvocation(config.Invocation, config.LLMModel),
 		invocation:       invocation,
 		tap:              newModelDeltaStreamTap(config.DeltaStream),
 	}
 	if p.stableInvocation == nil {
-		p.stableInvocation = invocation
+		p.stableInvocation = metricsStableInvocation(invocation, config.LLMModel)
 	}
 	if p.stableInvocation != nil {
 		p.timingInfo = responseUsageTimingInfo(invocation)
@@ -3741,6 +3741,18 @@ func newModelResponseProcessor(
 		!emitFinalModelResponses
 
 	return p
+}
+
+func metricsStableInvocation(
+	invocation *agent.Invocation,
+	llmModel model.Model,
+) *agent.Invocation {
+	if invocation == nil || invocation.Model != nil || llmModel == nil {
+		return invocation
+	}
+	cloned := *invocation
+	cloned.Model = llmModel
+	return &cloned
 }
 
 func (p *modelResponseProcessor) close() {
