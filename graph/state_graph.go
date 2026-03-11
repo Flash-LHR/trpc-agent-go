@@ -2742,9 +2742,8 @@ func runBeforeToolPluginCallbacks(
 		ResumeMap:   resumeMap,
 	}
 	result, err := callbacks.RunBeforeTool(ctx, args)
-
 	if result != nil && result.Context != nil {
-		ctx = result.Context
+		ctx = restoreToolCallbackContext(ctx, result.Context)
 	}
 	if result != nil && result.ModifiedArguments != nil {
 		toolCall.Function.Arguments = result.ModifiedArguments
@@ -2786,7 +2785,7 @@ func runBeforeToolCallbacks(
 	}
 	result, err := toolCallbacks.RunBeforeTool(ctx, args)
 	if result != nil && result.Context != nil {
-		ctx = result.Context
+		ctx = restoreToolCallbackContext(ctx, result.Context)
 	}
 	if result != nil && result.ModifiedArguments != nil {
 		toolCall.Function.Arguments = result.ModifiedArguments
@@ -2844,7 +2843,7 @@ func runAfterToolPluginCallbacks(
 	}
 	afterResult, err := callbacks.RunAfterTool(ctx, args)
 	if afterResult != nil && afterResult.Context != nil {
-		ctx = afterResult.Context
+		ctx = restoreToolCallbackContext(ctx, afterResult.Context)
 	}
 	if afterResult != nil && afterResult.CustomResult != nil {
 		if err != nil {
@@ -2881,7 +2880,7 @@ func runAfterToolCallbacks(
 	}
 	afterResult, err := toolCallbacks.RunAfterTool(ctx, args)
 	if afterResult != nil && afterResult.Context != nil {
-		ctx = afterResult.Context
+		ctx = restoreToolCallbackContext(ctx, afterResult.Context)
 	}
 	if afterResult != nil && afterResult.CustomResult != nil {
 		if err != nil {
@@ -2915,7 +2914,7 @@ func runTool(
 	t tool.Tool,
 	state State,
 ) (context.Context, any, []byte, error) {
-	_, finalCtx, result, modifiedArgs, err := runToolWithEventContexts(ctx, toolCall, toolCallbacks, t, state)
+	_, _, finalCtx, _, result, modifiedArgs, err := runToolWithEventContexts(ctx, toolCall, toolCallbacks, t, state)
 	return finalCtx, result, modifiedArgs, err
 }
 
@@ -2925,12 +2924,13 @@ func runToolWithEventContexts(
 	toolCallbacks *tool.Callbacks,
 	t tool.Tool,
 	state State,
-) (context.Context, context.Context, any, []byte, error) {
+) (context.Context, *agent.Invocation, context.Context, *agent.Invocation, any, []byte, error) {
 	ctx = context.WithValue(ctx, tool.ContextKeyToolCallID{}, toolCall.ID)
 	if invocation, ok := agent.InvocationFromContext(ctx); ok && jsonrepair.IsToolCallArgumentsJSONRepairEnabled(invocation) {
 		jsonrepair.RepairToolCallArgumentsInPlace(ctx, &toolCall)
 	}
 	decl := t.Declaration()
+	startInvocation := invocationFromContextOrFallback(ctx, nil)
 
 	ctx, toolCall, customResult, err := runBeforeToolPluginCallbacks(
 		ctx,
@@ -2938,11 +2938,12 @@ func runToolWithEventContexts(
 		decl,
 		state,
 	)
+	startInvocation = invocationFromContextOrFallback(ctx, startInvocation)
 	if err != nil {
-		return ctx, ctx, customResult, toolCall.Function.Arguments, err
+		return ctx, startInvocation, ctx, startInvocation, customResult, toolCall.Function.Arguments, err
 	}
 	if customResult != nil {
-		return ctx, ctx, customResult, toolCall.Function.Arguments, nil
+		return ctx, startInvocation, ctx, startInvocation, customResult, toolCall.Function.Arguments, nil
 	}
 
 	ctx, toolCall, customResult, err = runBeforeToolCallbacks(
@@ -2952,20 +2953,22 @@ func runToolWithEventContexts(
 		toolCallbacks,
 		state,
 	)
+	startInvocation = invocationFromContextOrFallback(ctx, startInvocation)
 	if err != nil {
-		return ctx, ctx, customResult, toolCall.Function.Arguments, err
+		return ctx, startInvocation, ctx, startInvocation, customResult, toolCall.Function.Arguments, err
 	}
 	if customResult != nil {
-		return ctx, ctx, customResult, toolCall.Function.Arguments, nil
+		return ctx, startInvocation, ctx, startInvocation, customResult, toolCall.Function.Arguments, nil
 	}
 	startCtx := ctx
 
 	callableTool, err := ensureCallableTool(t, toolCall.Function.Name)
 	if err != nil {
-		return startCtx, ctx, nil, toolCall.Function.Arguments, err
+		return startCtx, startInvocation, ctx, startInvocation, nil, toolCall.Function.Arguments, err
 	}
 
 	result, toolErr := callableTool.Call(ctx, toolCall.Function.Arguments)
+	completeInvocation := startInvocation
 
 	ctx, customResult, err = runAfterToolPluginCallbacks(
 		ctx,
@@ -2974,18 +2977,19 @@ func runToolWithEventContexts(
 		result,
 		toolErr,
 	)
+	completeInvocation = invocationFromContextOrFallback(ctx, completeInvocation)
 	if err != nil {
 		if customResult != nil {
-			return startCtx, ctx, customResult, toolCall.Function.Arguments, err
+			return startCtx, startInvocation, ctx, completeInvocation, customResult, toolCall.Function.Arguments, err
 		}
 		var interruptErr *InterruptError
 		if errors.As(err, &interruptErr) {
-			return startCtx, ctx, result, toolCall.Function.Arguments, err
+			return startCtx, startInvocation, ctx, completeInvocation, result, toolCall.Function.Arguments, err
 		}
-		return startCtx, ctx, nil, toolCall.Function.Arguments, err
+		return startCtx, startInvocation, ctx, completeInvocation, nil, toolCall.Function.Arguments, err
 	}
 	if customResult != nil {
-		return startCtx, ctx, customResult, toolCall.Function.Arguments, nil
+		return startCtx, startInvocation, ctx, completeInvocation, customResult, toolCall.Function.Arguments, nil
 	}
 
 	ctx, customResult, err = runAfterToolCallbacks(
@@ -2996,29 +3000,30 @@ func runToolWithEventContexts(
 		toolErr,
 		toolCallbacks,
 	)
+	completeInvocation = invocationFromContextOrFallback(ctx, completeInvocation)
 	if err != nil {
 		if customResult != nil {
-			return startCtx, ctx, customResult, toolCall.Function.Arguments, err
+			return startCtx, startInvocation, ctx, completeInvocation, customResult, toolCall.Function.Arguments, err
 		}
 		var interruptErr *InterruptError
 		if errors.As(err, &interruptErr) {
-			return startCtx, ctx, result, toolCall.Function.Arguments, err
+			return startCtx, startInvocation, ctx, completeInvocation, result, toolCall.Function.Arguments, err
 		}
-		return startCtx, ctx, nil, toolCall.Function.Arguments, err
+		return startCtx, startInvocation, ctx, completeInvocation, nil, toolCall.Function.Arguments, err
 	}
 	if customResult != nil {
-		return startCtx, ctx, customResult, toolCall.Function.Arguments, nil
+		return startCtx, startInvocation, ctx, completeInvocation, customResult, toolCall.Function.Arguments, nil
 	}
 
 	if toolErr != nil {
 		var interruptErr *InterruptError
 		if errors.As(toolErr, &interruptErr) {
-			return startCtx, ctx, result, toolCall.Function.Arguments, toolErr
+			return startCtx, startInvocation, ctx, completeInvocation, result, toolCall.Function.Arguments, toolErr
 		}
-		return startCtx, ctx, nil, toolCall.Function.Arguments,
+		return startCtx, startInvocation, ctx, completeInvocation, nil, toolCall.Function.Arguments,
 			fmt.Errorf("tool %s call failed: %w", toolCall.Function.Name, toolErr)
 	}
-	return startCtx, ctx, result, toolCall.Function.Arguments, nil
+	return startCtx, startInvocation, ctx, completeInvocation, result, toolCall.Function.Arguments, nil
 }
 
 // extractModelInput extracts the model input from state and instruction.
@@ -3520,15 +3525,18 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 	// Keep the original invocation as a fallback when callbacks return a bare context.
 	originalInvocation, _ := agent.InvocationFromContext(ctx)
 	ctx, span := trace.Tracer.Start(ctx, itelemetry.NewExecuteToolSpanName(config.ToolCall.Function.Name))
-	startCtx, finalCtx, result, modifiedArgs, err := runToolWithEventContexts(
+	startCtx, startEventInvocation, finalCtx, completeEventInvocation, result, modifiedArgs, err := runToolWithEventContexts(
 		ctx,
 		config.ToolCall,
 		config.ToolCallbacks,
 		t,
 		config.State,
 	)
-	startInvocation := invocationFromContextOrFallback(startCtx, originalInvocation)
-	completeInvocation := invocationFromContextOrFallback(finalCtx, startInvocation)
+	startInvocation := invocationFromContextOrFallback(startCtx, invocationOrFallback(startEventInvocation, originalInvocation))
+	completeInvocation := invocationFromContextOrFallback(
+		finalCtx,
+		invocationOrFallback(completeEventInvocation, startInvocation),
+	)
 	ctx = finalCtx
 	// Emit tool execution start event with modified arguments.
 	emitToolStartEvent(
@@ -3598,6 +3606,26 @@ func invocationFromContextOrFallback(ctx context.Context, fallback *agent.Invoca
 		return invocation
 	}
 	return fallback
+}
+
+func invocationOrFallback(invocation *agent.Invocation, fallback *agent.Invocation) *agent.Invocation {
+	if invocation != nil {
+		return invocation
+	}
+	return fallback
+}
+
+func restoreToolCallbackContext(baseCtx context.Context, callbackCtx context.Context) context.Context {
+	if callbackCtx == nil {
+		return baseCtx
+	}
+	if invocation, ok := agent.InvocationFromContext(callbackCtx); ok && invocation != nil {
+		return callbackCtx
+	}
+	if invocation, ok := agent.InvocationFromContext(baseCtx); ok && invocation != nil {
+		return agent.NewInvocationContext(callbackCtx, invocation)
+	}
+	return callbackCtx
 }
 
 // emitToolStartEvent emits a tool execution start event.

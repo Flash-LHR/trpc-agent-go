@@ -542,6 +542,85 @@ func TestExecuteSingleToolCall_CompleteEventFallsBackToBeforeToolInvocation(t *t
 	require.Equal(t, "tool-before", completeEvent.FilterKey)
 }
 
+func TestExecuteSingleToolCall_PreservesPluginInvocationAcrossBareLocalCallbacks(t *testing.T) {
+	pluginCallbacks := tool.NewCallbacks()
+	pluginManager := &toolCallbacksPluginManager{callbacks: pluginCallbacks}
+	pluginCallbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		beforeInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-plugin-before-context"),
+			agent.WithInvocationEventFilterKey("tool-plugin-before"),
+			agent.WithInvocationPlugins(pluginManager),
+		)
+		return &tool.BeforeToolResult{
+			Context: agent.NewInvocationContext(context.Background(), beforeInvocation),
+		}, nil
+	})
+	pluginCallbacks.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		afterInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-plugin-after-context"),
+			agent.WithInvocationEventFilterKey("tool-plugin-after"),
+		)
+		return &tool.AfterToolResult{
+			Context: agent.NewInvocationContext(context.Background(), afterInvocation),
+		}, nil
+	})
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		return &tool.BeforeToolResult{
+			Context: context.Background(),
+		}, nil
+	})
+	callbacks.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		return &tool.AfterToolResult{
+			Context: context.Background(),
+		}, nil
+	})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-tool-original-context"),
+		agent.WithInvocationEventFilterKey("tool-original"),
+		agent.WithInvocationPlugins(pluginManager),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	eventCh := make(chan *event.Event, 4)
+	toolCall := model.ToolCall{
+		ID: "tool-call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "echo",
+			Arguments: []byte(`{"value":"ok"}`),
+		},
+	}
+	msg, err := executeSingleToolCall(ctx, singleToolCallConfig{
+		ToolCall:     toolCall,
+		Tools:        map[string]tool.Tool{"echo": &dummyTool{name: "echo"}},
+		InvocationID: invocation.InvocationID,
+		EventChan:    eventCh,
+		Span:         noop.Span{},
+		State: State{
+			StateKeyCurrentNodeID: "node-a",
+		},
+		ToolCallbacks: callbacks,
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.RoleTool, msg.Role)
+	require.Len(t, eventCh, 2)
+	startEvent := <-eventCh
+	completeEvent := <-eventCh
+	require.Equal(t, "tool-plugin-before", startEvent.FilterKey)
+	require.Equal(t, "tool-plugin-after", completeEvent.FilterKey)
+}
+
 func TestExecutor_CompletionEmitErrorDoesNotFailExecution(t *testing.T) {
 	stateGraph := NewStateGraph(NewStateSchema())
 	stateGraph.AddNode("noop", func(context.Context, State) (any, error) {
