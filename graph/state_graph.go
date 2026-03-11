@@ -3540,7 +3540,13 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 	ctx = finalCtx
 	// Emit tool execution start event with modified arguments.
 	emitToolStartEvent(
-		startCtx, startInvocation, config.EventChan, config.InvocationID, name, id, nodeID,
+		startCtx,
+		startInvocation,
+		config.EventChan,
+		invocationIDOrFallback(startInvocation, config.InvocationID),
+		name,
+		id,
+		nodeID,
 		startTime, modifiedArgs, responseID,
 	)
 
@@ -3559,7 +3565,7 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 	// Emit tool execution complete event.
 	event := emitToolCompleteEvent(finalCtx, completeInvocation, toolCompleteEventConfig{
 		EventChan:    config.EventChan,
-		InvocationID: config.InvocationID,
+		InvocationID: invocationIDOrFallback(completeInvocation, config.InvocationID),
 		ToolName:     name,
 		ToolID:       id,
 		NodeID:       nodeID,
@@ -3615,17 +3621,29 @@ func invocationOrFallback(invocation *agent.Invocation, fallback *agent.Invocati
 	return fallback
 }
 
+func invocationIDOrFallback(invocation *agent.Invocation, fallback string) string {
+	if invocation != nil && invocation.InvocationID != "" {
+		return invocation.InvocationID
+	}
+	return fallback
+}
+
 func restoreToolCallbackContext(baseCtx context.Context, callbackCtx context.Context) context.Context {
 	if callbackCtx == nil {
 		return baseCtx
 	}
-	if invocation, ok := agent.InvocationFromContext(callbackCtx); ok && invocation != nil {
-		return callbackCtx
+	restoredCtx := callbackCtx
+	if invocation, ok := agent.InvocationFromContext(callbackCtx); !ok || invocation == nil {
+		if invocation, ok := agent.InvocationFromContext(baseCtx); ok && invocation != nil {
+			restoredCtx = agent.NewInvocationContext(restoredCtx, invocation)
+		}
 	}
-	if invocation, ok := agent.InvocationFromContext(baseCtx); ok && invocation != nil {
-		return agent.NewInvocationContext(callbackCtx, invocation)
+	if toolCallID, ok := tool.ToolCallIDFromContext(baseCtx); ok && toolCallID != "" {
+		if _, ok := tool.ToolCallIDFromContext(restoredCtx); !ok {
+			restoredCtx = context.WithValue(restoredCtx, tool.ContextKeyToolCallID{}, toolCallID)
+		}
 	}
-	return callbackCtx
+	return restoredCtx
 }
 
 // emitToolStartEvent emits a tool execution start event.

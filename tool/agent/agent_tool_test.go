@@ -656,6 +656,9 @@ func TestTool_Call_DisableGraphCompletionEvent_SharedSessionPrefersAfterCallback
 	require.Equal(t, "after callback", resultText)
 	require.True(t, sessionHasAssistantContent(sess, "after callback"))
 	require.False(t, sessionHasAssistantContent(sess, "child-final"))
+	stateValue, ok := sess.GetState(graph.StateKeyLastResponse)
+	require.True(t, ok)
+	require.Equal(t, []byte(`"child-final"`), stateValue)
 }
 
 func TestTool_Call_DisableGraphCompletionEvent_FlushesVisibleCompletionBeforeBarrierNotification(t *testing.T) {
@@ -2264,6 +2267,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 	require.Equal(t, []byte(`"child-final"`), finalChunk.StateDelta[graph.StateKeyLastResponse])
 	require.True(t, sessionHasAssistantContent(sess, "after callback"))
 	require.False(t, sessionHasAssistantContent(sess, "child-final"))
+	stateValue, ok := sess.GetState(graph.StateKeyLastResponse)
+	require.True(t, ok)
+	require.Equal(t, []byte(`"child-final"`), stateValue)
 }
 
 func TestTool_StreamableCall_DisableGraphCompletionEvent_SuppressesVisibleCompletionBeforeError(

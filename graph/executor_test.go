@@ -43,6 +43,29 @@ func (codedTestError) Error() string { return "boom" }
 
 func (codedTestError) Code() int { return testFatalErrCodeInt }
 
+type toolCallIDCapturingTool struct {
+	name       string
+	toolCallID string
+}
+
+func (t *toolCallIDCapturingTool) Declaration() *tool.Declaration {
+	return &tool.Declaration{Name: t.name}
+}
+
+func (t *toolCallIDCapturingTool) Call(ctx context.Context, jsonArgs []byte) (any, error) {
+	t.toolCallID, _ = tool.ToolCallIDFromContext(ctx)
+	return map[string]string{"status": "ok"}, nil
+}
+
+func requireToolExecutionMetadata(t *testing.T, evt *event.Event) ToolExecutionMetadata {
+	t.Helper()
+	raw := evt.StateDelta[MetadataKeyTool]
+	require.NotEmpty(t, raw)
+	var meta ToolExecutionMetadata
+	require.NoError(t, json.Unmarshal(raw, &meta))
+	return meta
+}
+
 // TestDocumentProcessingWorkflow tests a comprehensive document processing workflow
 // that mimics real-world usage with LLM nodes, tool nodes, and conditional routing.
 func TestDocumentProcessingWorkflow(t *testing.T) {
@@ -485,6 +508,10 @@ func TestExecuteSingleToolCall_UsesAfterToolInvocationForCompleteEvent(t *testin
 	completeEvent := <-eventCh
 	require.Equal(t, "tool-before", startEvent.FilterKey)
 	require.Equal(t, "tool-after", completeEvent.FilterKey)
+	require.Equal(t, "inv-tool-before-context", startEvent.InvocationID)
+	require.Equal(t, "inv-tool-after-context", completeEvent.InvocationID)
+	require.Equal(t, startEvent.InvocationID, requireToolExecutionMetadata(t, startEvent).InvocationID)
+	require.Equal(t, completeEvent.InvocationID, requireToolExecutionMetadata(t, completeEvent).InvocationID)
 }
 
 func TestExecuteSingleToolCall_CompleteEventFallsBackToBeforeToolInvocation(t *testing.T) {
@@ -540,6 +567,8 @@ func TestExecuteSingleToolCall_CompleteEventFallsBackToBeforeToolInvocation(t *t
 	completeEvent := <-eventCh
 	require.Equal(t, "tool-before", startEvent.FilterKey)
 	require.Equal(t, "tool-before", completeEvent.FilterKey)
+	require.Equal(t, startEvent.InvocationID, requireToolExecutionMetadata(t, startEvent).InvocationID)
+	require.Equal(t, completeEvent.InvocationID, requireToolExecutionMetadata(t, completeEvent).InvocationID)
 }
 
 func TestExecuteSingleToolCall_PreservesPluginInvocationAcrossBareLocalCallbacks(t *testing.T) {
@@ -619,6 +648,62 @@ func TestExecuteSingleToolCall_PreservesPluginInvocationAcrossBareLocalCallbacks
 	completeEvent := <-eventCh
 	require.Equal(t, "tool-plugin-before", startEvent.FilterKey)
 	require.Equal(t, "tool-plugin-after", completeEvent.FilterKey)
+}
+
+func TestExecuteSingleToolCall_PreservesToolCallIDAcrossBareCallbackContexts(t *testing.T) {
+	pluginCallbacks := tool.NewCallbacks()
+	pluginManager := &toolCallbacksPluginManager{callbacks: pluginCallbacks}
+	pluginCallbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		beforeInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-plugin-before-context"),
+			agent.WithInvocationEventFilterKey("tool-plugin-before"),
+			agent.WithInvocationPlugins(pluginManager),
+		)
+		return &tool.BeforeToolResult{
+			Context: agent.NewInvocationContext(context.Background(), beforeInvocation),
+		}, nil
+	})
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		return &tool.BeforeToolResult{
+			Context: context.Background(),
+		}, nil
+	})
+	tl := &toolCallIDCapturingTool{name: "echo"}
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-tool-original-context"),
+		agent.WithInvocationEventFilterKey("tool-original"),
+		agent.WithInvocationPlugins(pluginManager),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	eventCh := make(chan *event.Event, 4)
+	toolCall := model.ToolCall{
+		ID: "tool-call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "echo",
+			Arguments: []byte(`{"value":"ok"}`),
+		},
+	}
+	msg, err := executeSingleToolCall(ctx, singleToolCallConfig{
+		ToolCall:     toolCall,
+		Tools:        map[string]tool.Tool{"echo": tl},
+		InvocationID: invocation.InvocationID,
+		EventChan:    eventCh,
+		Span:         noop.Span{},
+		State: State{
+			StateKeyCurrentNodeID: "node-a",
+		},
+		ToolCallbacks: callbacks,
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.RoleTool, msg.Role)
+	require.Equal(t, "tool-call-1", tl.toolCallID)
 }
 
 func TestExecutor_CompletionEmitErrorDoesNotFailExecution(t *testing.T) {

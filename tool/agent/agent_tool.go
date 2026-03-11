@@ -295,12 +295,26 @@ func (at *Tool) updatePendingVisibleCompletionForSession(
 		return pending
 	}
 	if evt.Error != nil {
+		at.appendPendingVisibleCompletionState(ctx, inv, pending)
 		return nil
 	}
 	if content, ok := assistantMessageContent(evt); ok && content != "" {
+		at.appendPendingVisibleCompletionState(ctx, inv, pending)
 		return nil
 	}
 	return pending
+}
+
+func (at *Tool) appendPendingVisibleCompletionState(
+	ctx context.Context,
+	inv *agent.Invocation,
+	pending *event.Event,
+) {
+	stateOnly := visibleCompletionStateOnlySessionEvent(pending)
+	if stateOnly == nil {
+		return
+	}
+	at.appendEvent(ctx, inv, stateOnly)
 }
 
 func (at *Tool) wrapWithStreamSemantics(
@@ -431,6 +445,18 @@ func shouldDelayVisibleCompletionSessionMirror(evt *event.Event) bool {
 	}
 	_, ok := assistantMessageContent(evt)
 	return ok
+}
+
+func visibleCompletionStateOnlySessionEvent(evt *event.Event) *event.Event {
+	if evt == nil || len(evt.StateDelta) == 0 {
+		return nil
+	}
+	copyEvt := *evt
+	if evt.Response != nil {
+		copyEvt.Response = evt.Response.Clone()
+		copyEvt.Response.Choices = nil
+	}
+	return &copyEvt
 }
 
 func isGraphCompletionEvent(evt *event.Event) bool {
