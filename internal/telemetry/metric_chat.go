@@ -260,10 +260,8 @@ func (t *ChatMetricsTracker) SetInvocationState(
 	if t == nil {
 		return
 	}
-	if invocation != t.sourceInvocation {
-		t.invocation = mergeInvocationForMetrics(t.invocation, invocation)
-		t.sourceInvocation = invocation
-	}
+	t.invocation = mergeInvocationForMetrics(t.invocation, invocation)
+	t.sourceInvocation = invocation
 	if timingInfo == nil {
 		return
 	}

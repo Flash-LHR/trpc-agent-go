@@ -174,6 +174,34 @@ func TestChatMetricsTracker_SetInvocationState_PreservesMetricsAttributes(t *tes
 	require.Empty(t, updatedInvocation.AgentName)
 }
 
+func TestChatMetricsTracker_SetInvocationState_MergesInPlaceInvocationUpdates(t *testing.T) {
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base"),
+	)
+	tracker := NewChatMetricsTracker(
+		context.Background(),
+		invocation,
+		&model.Request{},
+		&model.TimingInfo{},
+		nil,
+		nil,
+	)
+	invocation.AgentName = "agent-updated"
+	invocation.Model = &telemetryTestModel{}
+	invocation.Session = &session.Session{
+		ID:      "sess-updated",
+		UserID:  "user-updated",
+		AppName: "app-updated",
+	}
+	tracker.SetInvocationState(invocation, &model.TimingInfo{})
+	attrs := tracker.buildAttributes()
+	require.Equal(t, invocation.AgentName, attrs.AgentName)
+	require.Equal(t, invocation.Model.Info().Name, attrs.RequestModelName)
+	require.Equal(t, invocation.Session.ID, attrs.SessionID)
+	require.Equal(t, invocation.Session.UserID, attrs.UserID)
+	require.Equal(t, invocation.Session.AppName, attrs.AppName)
+}
+
 func TestChatMetricsTracker_SetInvocationState_MergesSparseSessionAttributes(t *testing.T) {
 	baseInvocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-base"),
