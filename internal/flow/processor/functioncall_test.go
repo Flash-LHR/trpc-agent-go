@@ -3213,6 +3213,67 @@ func TestExecuteStreamableTool_ForwardsInnerEvents(t *testing.T) {
 	}
 }
 
+type duplicateInnerEventStreamTool struct{ name string }
+
+func (s *duplicateInnerEventStreamTool) Declaration() *tool.Declaration {
+	return &tool.Declaration{Name: s.name}
+}
+
+func (s *duplicateInnerEventStreamTool) StreamableCall(ctx context.Context, _ []byte) (*tool.StreamReader, error) {
+	st := tool.NewStream(4)
+	go func() {
+		defer st.Writer.Close()
+		ev1 := event.New(
+			"inv-fwd",
+			"child",
+			event.WithResponse(&model.Response{
+				Choices: []model.Choice{{
+					Delta: model.Message{
+						Content: "abc",
+					},
+				}},
+			}),
+		)
+		ev1.Branch = "b"
+		st.Writer.Send(tool.StreamChunk{Content: ev1}, nil)
+		ev2 := event.New(
+			"inv-fwd",
+			"child",
+			event.WithResponse(&model.Response{
+				Choices: []model.Choice{{
+					Message: model.Message{
+						Role:    model.RoleAssistant,
+						Content: "abc",
+					},
+				}},
+			}),
+		)
+		ev2.Branch = "b"
+		st.Writer.Send(tool.StreamChunk{Content: ev2}, nil)
+	}()
+	return st.Reader, nil
+}
+
+func TestExecuteStreamableTool_DedupsRepeatedInnerFinalMessage(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{
+		InvocationID: "inv-fwd",
+		AgentName:    "parent",
+		Branch:       "b",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID:       "c1",
+		Function: model.FunctionDefinitionParam{Name: "inner"},
+	}
+	st := &duplicateInnerEventStreamTool{name: "inner"}
+	ch := make(chan *event.Event, 4)
+	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.NoError(t, err)
+	require.Equal(t, "abc", res.(string))
+}
+
 // Mock tool for transfer testing
 type mockTransferTool struct {
 	name        string

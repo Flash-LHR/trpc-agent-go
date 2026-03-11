@@ -1425,10 +1425,40 @@ func (f *FunctionCallResponseProcessor) appendInnerEventContent(ev *event.Event,
 		ch := ev.Response.Choices[0]
 		if ch.Delta.Content != "" {
 			*contents = append(*contents, ch.Delta.Content)
-		} else if ch.Message.Role == model.RoleAssistant && ch.Message.Content != "" {
+		} else if ch.Message.Role == model.RoleAssistant &&
+			ch.Message.Content != "" &&
+			!hasTrailingMergedString(*contents, ch.Message.Content) {
 			*contents = append(*contents, ch.Message.Content)
 		}
 	}
+}
+
+func hasTrailingMergedString(contents []any, target string) bool {
+	if target == "" || len(contents) == 0 {
+		return false
+	}
+	totalLen := 0
+	start := len(contents)
+	for start > 0 {
+		str, ok := contents[start-1].(string)
+		if !ok {
+			break
+		}
+		totalLen += len(str)
+		start--
+		if totalLen >= len(target) {
+			break
+		}
+	}
+	if totalLen < len(target) {
+		return false
+	}
+	merged := tool.Merge(contents[start:])
+	mergedStr, ok := any(merged).(string)
+	if !ok || len(mergedStr) < len(target) {
+		return false
+	}
+	return mergedStr[len(mergedStr)-len(target):] == target
 }
 
 // buildPartialToolResponseEvent constructs a partial tool.response event.
