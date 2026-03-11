@@ -833,6 +833,9 @@ func (r *runner) recordFilteredPersistedAssistantEvent(
 	if loop == nil || agentEvent == nil || shouldForwardEvent || !persisted {
 		return
 	}
+	if isGraphCompletionEvent(agentEvent) {
+		return
+	}
 	if !eventHasAssistantMessageContent(agentEvent) {
 		return
 	}

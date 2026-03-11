@@ -1810,6 +1810,56 @@ func TestRunner_GraphEmitFinalModelResponses_EmptyResponseIDDedupsRunnerCompleti
 	)
 }
 
+func TestRunner_StreamModeMessages_GraphCompletionPersistsFinalTextInSession(t *testing.T) {
+	sessionService := sessioninmemory.NewSessionService()
+	ag := &graphCompletionMockAgent{name: "graph-completion-agent"}
+	r := NewRunner("app", ag, WithSessionService(sessionService))
+	ch, err := r.Run(
+		context.Background(),
+		"u",
+		"messages-mode-graph-completion",
+		model.NewUserMessage("hi"),
+		agent.WithStreamMode(agent.StreamModeMessages),
+	)
+	require.NoError(t, err)
+
+	var completion *event.Event
+	for evt := range ch {
+		require.NotEqual(t, graph.ObjectTypeGraphExecution, evt.Object)
+		if evt.IsRunnerCompletion() {
+			completion = evt
+		}
+	}
+
+	require.NotNil(t, completion)
+	require.Len(t, completion.Response.Choices, 1)
+	require.Equal(
+		t,
+		"Graph execution completed",
+		completion.Response.Choices[0].Message.Content,
+	)
+	sess, err := sessionService.GetSession(context.Background(), session.Key{
+		AppName:   "app",
+		UserID:    "u",
+		SessionID: "messages-mode-graph-completion",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+
+	var assistantTextCount int
+	for _, evt := range sess.Events {
+		if evt.Response == nil || len(evt.Response.Choices) == 0 {
+			continue
+		}
+		for _, choice := range evt.Response.Choices {
+			if choice.Message.Content == "Graph execution completed" {
+				assistantTextCount++
+			}
+		}
+	}
+	require.Equal(t, 1, assistantTextCount)
+}
+
 func TestRunner_StreamMode_FiltersEvents(t *testing.T) {
 	const (
 		appName   = "stream-mode-app"

@@ -1523,6 +1523,9 @@ func streamToolEventError(ev *event.Event) error {
 	if ev.Error != nil && ev.Error.Type == agent.ErrorTypeStopAgentError {
 		return agent.NewStopError(ev.Error.Message)
 	}
+	if isGraphToolExecutionErrorEvent(ev) {
+		return nil
+	}
 	if isRetryingGraphNodeErrorEvent(ev) {
 		return nil
 	}
@@ -1535,6 +1538,17 @@ func streamToolEventError(ev *event.Event) error {
 		)
 	}
 	return fmt.Errorf(ErrorStreamableToolExecution)
+}
+
+func isGraphToolExecutionErrorEvent(ev *event.Event) bool {
+	if ev == nil || ev.Response == nil || ev.StateDelta == nil {
+		return false
+	}
+	if ev.Response.Object != model.ObjectTypeToolResponse {
+		return false
+	}
+	_, ok := ev.StateDelta[graph.MetadataKeyTool]
+	return ok
 }
 
 func isRetryingGraphNodeErrorEvent(ev *event.Event) bool {

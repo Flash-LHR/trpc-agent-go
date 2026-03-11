@@ -2988,6 +2988,49 @@ func (s *retryingNodeErrorThenFinalResultStreamTool) StreamableCall(
 	return st.Reader, nil
 }
 
+type retryingToolResponseErrorThenFinalResultStreamTool struct{ name string }
+
+func (s *retryingToolResponseErrorThenFinalResultStreamTool) Declaration() *tool.Declaration {
+	return &tool.Declaration{Name: s.name}
+}
+
+func (s *retryingToolResponseErrorThenFinalResultStreamTool) StreamableCall(
+	ctx context.Context,
+	_ []byte,
+) (*tool.StreamReader, error) {
+	st := tool.NewStream(5)
+	go func() {
+		defer st.Writer.Close()
+		st.Writer.Send(tool.StreamChunk{
+			Content: graph.NewToolExecutionEvent(
+				graph.WithToolEventInvocationID("inner-inv"),
+				graph.WithToolEventToolName("retrying-tool"),
+				graph.WithToolEventToolID("tool-1"),
+				graph.WithToolEventNodeID("retrying"),
+				graph.WithToolEventPhase(graph.ToolExecutionPhaseComplete),
+				graph.WithToolEventError(errors.New("retry me")),
+				graph.WithToolEventIncludeResponse(true),
+			),
+		}, nil)
+		st.Writer.Send(tool.StreamChunk{
+			Content: graph.NewNodeErrorEvent(
+				graph.WithNodeEventInvocationID("inner-inv"),
+				graph.WithNodeEventNodeID("retrying"),
+				graph.WithNodeEventNodeType(graph.NodeTypeFunction),
+				graph.WithNodeEventError("retry me"),
+				graph.WithNodeEventRetrying(true),
+			),
+		}, nil)
+		st.Writer.Send(tool.StreamChunk{
+			Content: tool.FinalResultChunk{
+				Result:     "ok",
+				StateDelta: map[string][]byte{"final": []byte(`"ok"`)},
+			},
+		}, nil)
+	}()
+	return st.Reader, nil
+}
+
 func TestExecuteStreamableTool_PreservesFinalResultChunk(t *testing.T) {
 	f := NewFunctionCallResponseProcessor(false, nil)
 	ctx := context.Background()
@@ -3190,6 +3233,44 @@ func TestExecuteStreamableTool_RetryingNodeErrorDoesNotStopStream(t *testing.T) 
 	require.NotNil(t, second)
 	require.True(t, second.IsPartial)
 	require.Equal(t, []byte(`"ok"`), second.StateDelta["final"])
+}
+
+func TestExecuteStreamableTool_RetryingToolResponseErrorDoesNotStopStream(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{
+		InvocationID: "inv-retrying-tool-error",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID:       "c1",
+		Function: model.FunctionDefinitionParam{Name: "final"},
+	}
+	st := &retryingToolResponseErrorThenFinalResultStreamTool{name: "final"}
+	ch := make(chan *event.Event, 8)
+	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.NoError(t, err)
+	require.Equal(t, "ok", res)
+
+	first := <-ch
+	require.NotNil(t, first)
+	require.Equal(t, model.ObjectTypeToolResponse, first.Object)
+	require.NotNil(t, first.Response)
+	require.NotNil(t, first.Response.Error)
+	require.Contains(t, first.StateDelta, graph.MetadataKeyTool)
+
+	second := <-ch
+	require.NotNil(t, second)
+	require.Equal(t, model.ObjectTypeError, second.Object)
+	require.NotNil(t, second.Error)
+	require.Contains(t, second.StateDelta, graph.MetadataKeyNode)
+
+	third := <-ch
+	require.NotNil(t, third)
+	require.True(t, third.IsPartial)
+	require.Equal(t, []byte(`"ok"`), third.StateDelta["final"])
 }
 
 func TestProcessStreamChunk_PointerFinalResultChunkMarksSeen(t *testing.T) {
