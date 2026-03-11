@@ -13,19 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"strings"
-
-	"github.com/yanyiwu/gojieba"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation"
-	"trpc.group/trpc-go/trpc-agent-go/evaluation/evalresult"
-	evalresultlocal "trpc.group/trpc-go/trpc-agent-go/evaluation/evalresult/local"
-	"trpc.group/trpc-go/trpc-agent-go/evaluation/evalset"
-	evalsetlocal "trpc.group/trpc-go/trpc-agent-go/evaluation/evalset/local"
-	"trpc.group/trpc-go/trpc-agent-go/evaluation/evaluator/registry"
-	"trpc.group/trpc-go/trpc-agent-go/evaluation/metric"
-	metriclocal "trpc.group/trpc-go/trpc-agent-go/evaluation/metric/local"
-	metricregistry "trpc.group/trpc-go/trpc-agent-go/evaluation/metric/registry"
-	"trpc.group/trpc-go/trpc-agent-go/runner"
 )
 
 var (
@@ -39,57 +27,12 @@ var (
 
 const appName = "jieba-eval-app"
 
-type jiebaTokenizer struct {
-	segmenter *gojieba.Jieba
-}
-
-// Tokenize implements the ROUGE tokenizer interface with Jieba segmentation.
-func (t jiebaTokenizer) Tokenize(text string) []string {
-	segments := t.segmenter.Cut(text, true)
-	tokens := make([]string, 0, len(segments))
-	for _, segment := range segments {
-		segment = strings.TrimSpace(segment)
-		if segment != "" {
-			tokens = append(tokens, segment)
-		}
-	}
-	return tokens
-}
-
 func main() {
 	flag.Parse()
 	ctx := context.Background()
-	segmenter := gojieba.NewJieba()
-	defer segmenter.Free()
-	run := runner.NewRunner(appName, newJiebaAgent(*modelName, *streaming))
-	defer run.Close()
-	evalSetManager := evalsetlocal.New(evalset.WithBaseDir(*dataDir))
-	metricManager := metriclocal.New(metric.WithBaseDir(*dataDir))
-	evalResultManager := evalresultlocal.New(evalresult.WithBaseDir(*outputDir))
-	evaluatorRegistry := registry.New()
-	metricRegistry := metricregistry.New()
-	if err := metricRegistry.RegisterRougeTokenizer("jieba", jiebaTokenizer{segmenter: segmenter}); err != nil {
-		log.Fatalf("register jieba tokenizer: %v", err)
+	if err := run(ctx); err != nil {
+		log.Fatalf("run jieba example: %v", err)
 	}
-	agentEvaluator, err := evaluation.New(
-		appName,
-		run,
-		evaluation.WithEvalSetManager(evalSetManager),
-		evaluation.WithMetricManager(metricManager),
-		evaluation.WithEvalResultManager(evalResultManager),
-		evaluation.WithRegistry(evaluatorRegistry),
-		evaluation.WithMetricRegistry(metricRegistry),
-		evaluation.WithNumRuns(*numRuns),
-	)
-	if err != nil {
-		log.Fatalf("create evaluator: %v", err)
-	}
-	defer agentEvaluator.Close()
-	result, err := agentEvaluator.Evaluate(ctx, *evalSetID)
-	if err != nil {
-		log.Fatalf("evaluate: %v", err)
-	}
-	printSummary(result, *outputDir)
 }
 
 // printSummary prints a short human-readable evaluation summary.
