@@ -952,7 +952,7 @@ func TestExecuteModelAndProcessResponses_DisableResponseUsageTrackingStillRecord
 	require.NotEmpty(t, rm.ScopeMetrics)
 }
 
-func TestExecuteModelAndProcessResponses_MergesUpdatedInvocationIntoMetricsMetadata(t *testing.T) {
+func TestExecuteModelAndProcessResponses_UsesStableInvocationForMetricsMetadata(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	originalProvider := itelemetry.MeterProvider
@@ -999,6 +999,7 @@ func TestExecuteModelAndProcessResponses_MergesUpdatedInvocationIntoMetricsMetad
 	baseInvocation.AgentName = "agent-base-metrics"
 	updatedInvocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-updated-metrics"),
+		agent.WithInvocationModel(&mockModel{name: "updated-metrics-model"}),
 		agent.WithInvocationSession(&session.Session{
 			ID: "sess-updated-metrics",
 		}),
@@ -1028,13 +1029,14 @@ func TestExecuteModelAndProcessResponses_MergesUpdatedInvocationIntoMetricsMetad
 	require.NotNil(t, resp)
 	var rm metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(context.Background(), &rm))
-	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, updatedInvocation.AgentName))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, baseInvocation.AgentName))
 	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIRequestModel, baseModel.Info().Name))
-	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, updatedInvocation.Session.ID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, baseInvocation.Session.ID))
 	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoUserID, baseInvocation.Session.UserID))
 	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoAppName, baseInvocation.Session.AppName))
-	require.False(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, baseInvocation.AgentName))
-	require.False(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, baseInvocation.Session.ID))
+	require.False(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, updatedInvocation.AgentName))
+	require.False(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIRequestModel, updatedInvocation.Model.Info().Name))
+	require.False(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, updatedInvocation.Session.ID))
 }
 
 func TestExecuteModelAndProcessResponses_UsesUpdatedInvocationForMetricsMetadataWhenBaseIsSparse(t *testing.T) {

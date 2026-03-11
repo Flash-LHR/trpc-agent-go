@@ -264,40 +264,43 @@ func mergeInvocationForMetrics(
 	previous *agent.Invocation,
 	current *agent.Invocation,
 ) *agent.Invocation {
-	if current == nil {
-		return previous
-	}
 	if previous == nil {
 		return current
 	}
-	needsAgentName := current.AgentName == ""
-	needsModel := current.Model == nil
-	needsSession := current.Session == nil ||
-		current.Session.ID == "" ||
-		current.Session.UserID == "" ||
-		current.Session.AppName == ""
-	if !needsAgentName && !needsModel && !needsSession {
-		return current
+	if current == nil {
+		return previous
 	}
-	merged := *current
+	needsAgentName := previous.AgentName == "" && current.AgentName != ""
+	needsModel := previous.Model == nil && current.Model != nil
+	needsSession := previous.Session == nil ||
+		(previous.Session.ID == "" && current.Session != nil && current.Session.ID != "") ||
+		(previous.Session.UserID == "" && current.Session != nil && current.Session.UserID != "") ||
+		(previous.Session.AppName == "" && current.Session != nil && current.Session.AppName != "")
+	if !needsAgentName && !needsModel && !needsSession {
+		return previous
+	}
+	merged := *previous
 	if needsAgentName {
-		merged.AgentName = previous.AgentName
+		merged.AgentName = current.AgentName
 	}
 	if needsModel {
-		merged.Model = previous.Model
+		merged.Model = current.Model
 	}
-	if current.Session == nil {
-		merged.Session = previous.Session
-	} else if previous.Session != nil && needsSession {
-		sessionCopy := *current.Session
+	if previous.Session == nil {
+		if current.Session != nil {
+			sessionCopy := *current.Session
+			merged.Session = &sessionCopy
+		}
+	} else if current.Session != nil && needsSession {
+		sessionCopy := *previous.Session
 		if sessionCopy.ID == "" {
-			sessionCopy.ID = previous.Session.ID
+			sessionCopy.ID = current.Session.ID
 		}
 		if sessionCopy.UserID == "" {
-			sessionCopy.UserID = previous.Session.UserID
+			sessionCopy.UserID = current.Session.UserID
 		}
 		if sessionCopy.AppName == "" {
-			sessionCopy.AppName = previous.Session.AppName
+			sessionCopy.AppName = current.Session.AppName
 		}
 		merged.Session = &sessionCopy
 	}
