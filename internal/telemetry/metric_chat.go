@@ -18,6 +18,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/metric/histogram"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/metrics"
 	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
@@ -142,12 +143,34 @@ func NewChatMetricsTracker(
 		ctx:              ctx,
 		start:            time.Now(),
 		isFirstToken:     true,
-		invocation:       invocation,
+		invocation:       metricsInvocationView(invocation),
 		sourceInvocation: invocation,
 		llmRequest:       llmRequest,
 		taskType:         taskType,
 		err:              err,
 		timingInfo:       timingInfo,
+	}
+}
+
+func metricsSessionView(sess *session.Session) *session.Session {
+	if sess == nil {
+		return nil
+	}
+	return &session.Session{
+		ID:      sess.ID,
+		UserID:  sess.UserID,
+		AppName: sess.AppName,
+	}
+}
+
+func metricsInvocationView(invocation *agent.Invocation) *agent.Invocation {
+	if invocation == nil {
+		return nil
+	}
+	return &agent.Invocation{
+		AgentName: invocation.AgentName,
+		Model:     invocation.Model,
+		Session:   metricsSessionView(invocation.Session),
 	}
 }
 
@@ -265,7 +288,7 @@ func mergeInvocationForMetrics(
 	current *agent.Invocation,
 ) *agent.Invocation {
 	if previous == nil {
-		return current
+		return metricsInvocationView(current)
 	}
 	if current == nil {
 		return previous
@@ -279,32 +302,44 @@ func mergeInvocationForMetrics(
 	if !needsAgentName && !needsModel && !needsSession {
 		return previous
 	}
-	merged := *previous
-	if needsAgentName {
-		merged.AgentName = current.AgentName
+	agentName := previous.AgentName
+	if agentName == "" {
+		agentName = current.AgentName
 	}
-	if needsModel {
-		merged.Model = current.Model
+	modelValue := previous.Model
+	if modelValue == nil {
+		modelValue = current.Model
 	}
-	if previous.Session == nil {
-		if current.Session != nil {
-			sessionCopy := *current.Session
-			merged.Session = &sessionCopy
-		}
-	} else if current.Session != nil && needsSession {
-		sessionCopy := *previous.Session
-		if sessionCopy.ID == "" {
-			sessionCopy.ID = current.Session.ID
-		}
-		if sessionCopy.UserID == "" {
-			sessionCopy.UserID = current.Session.UserID
-		}
-		if sessionCopy.AppName == "" {
-			sessionCopy.AppName = current.Session.AppName
-		}
-		merged.Session = &sessionCopy
+	var sessionID, userID, appName string
+	if previous.Session != nil {
+		sessionID = previous.Session.ID
+		userID = previous.Session.UserID
+		appName = previous.Session.AppName
 	}
-	return &merged
+	if current.Session != nil {
+		if sessionID == "" {
+			sessionID = current.Session.ID
+		}
+		if userID == "" {
+			userID = current.Session.UserID
+		}
+		if appName == "" {
+			appName = current.Session.AppName
+		}
+	}
+	var sessionView *session.Session
+	if sessionID != "" || userID != "" || appName != "" {
+		sessionView = &session.Session{
+			ID:      sessionID,
+			UserID:  userID,
+			AppName: appName,
+		}
+	}
+	return &agent.Invocation{
+		AgentName: agentName,
+		Model:     modelValue,
+		Session:   sessionView,
+	}
 }
 
 func chatMetricsEnabled() bool {

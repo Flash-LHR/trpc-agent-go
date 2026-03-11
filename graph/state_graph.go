@@ -3710,18 +3710,19 @@ func newModelResponseProcessor(
 	p := &modelResponseProcessor{
 		ctx:              ctx,
 		config:           config,
-		stableInvocation: metricsStableInvocation(config.Invocation, config.LLMModel),
+		stableInvocation: config.Invocation,
 		invocation:       invocation,
 		tap:              newModelDeltaStreamTap(config.DeltaStream),
 	}
 	if p.stableInvocation == nil {
-		p.stableInvocation = metricsStableInvocation(invocation, config.LLMModel)
+		p.stableInvocation = invocation
 	}
-	if p.stableInvocation != nil {
+	trackerInvocation := metricsTrackerInvocation(p.stableInvocation, config.LLMModel)
+	if trackerInvocation != nil {
 		p.timingInfo = responseUsageTimingInfo(invocation)
 		p.tracker = itelemetry.NewChatMetricsTracker(
 			ctx,
-			p.stableInvocation,
+			trackerInvocation,
 			config.Request,
 			p.timingInfo,
 			nil,
@@ -3750,16 +3751,34 @@ func newModelResponseProcessor(
 	return p
 }
 
-func metricsStableInvocation(
+func metricsTrackerInvocation(
 	invocation *agent.Invocation,
 	llmModel model.Model,
 ) *agent.Invocation {
-	if invocation == nil || invocation.Model != nil || llmModel == nil {
-		return invocation
+	if invocation == nil && llmModel == nil {
+		return nil
 	}
-	cloned := *invocation
-	cloned.Model = llmModel
-	return &cloned
+	var agentName string
+	var sessionView *session.Session
+	if invocation != nil {
+		agentName = invocation.AgentName
+		if invocation.Session != nil {
+			sessionView = &session.Session{
+				ID:      invocation.Session.ID,
+				UserID:  invocation.Session.UserID,
+				AppName: invocation.Session.AppName,
+			}
+		}
+	}
+	modelValue := llmModel
+	if modelValue == nil && invocation != nil {
+		modelValue = invocation.Model
+	}
+	return &agent.Invocation{
+		AgentName: agentName,
+		Model:     modelValue,
+		Session:   sessionView,
+	}
 }
 
 func (p *modelResponseProcessor) close() {
