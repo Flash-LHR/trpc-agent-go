@@ -2915,6 +2915,17 @@ func runTool(
 	t tool.Tool,
 	state State,
 ) (context.Context, any, []byte, error) {
+	_, finalCtx, result, modifiedArgs, err := runToolWithEventContexts(ctx, toolCall, toolCallbacks, t, state)
+	return finalCtx, result, modifiedArgs, err
+}
+
+func runToolWithEventContexts(
+	ctx context.Context,
+	toolCall model.ToolCall,
+	toolCallbacks *tool.Callbacks,
+	t tool.Tool,
+	state State,
+) (context.Context, context.Context, any, []byte, error) {
 	ctx = context.WithValue(ctx, tool.ContextKeyToolCallID{}, toolCall.ID)
 	if invocation, ok := agent.InvocationFromContext(ctx); ok && jsonrepair.IsToolCallArgumentsJSONRepairEnabled(invocation) {
 		jsonrepair.RepairToolCallArgumentsInPlace(ctx, &toolCall)
@@ -2928,10 +2939,10 @@ func runTool(
 		state,
 	)
 	if err != nil {
-		return ctx, customResult, toolCall.Function.Arguments, err
+		return ctx, ctx, customResult, toolCall.Function.Arguments, err
 	}
 	if customResult != nil {
-		return ctx, customResult, toolCall.Function.Arguments, nil
+		return ctx, ctx, customResult, toolCall.Function.Arguments, nil
 	}
 
 	ctx, toolCall, customResult, err = runBeforeToolCallbacks(
@@ -2942,15 +2953,16 @@ func runTool(
 		state,
 	)
 	if err != nil {
-		return ctx, customResult, toolCall.Function.Arguments, err
+		return ctx, ctx, customResult, toolCall.Function.Arguments, err
 	}
 	if customResult != nil {
-		return ctx, customResult, toolCall.Function.Arguments, nil
+		return ctx, ctx, customResult, toolCall.Function.Arguments, nil
 	}
+	startCtx := ctx
 
 	callableTool, err := ensureCallableTool(t, toolCall.Function.Name)
 	if err != nil {
-		return ctx, nil, toolCall.Function.Arguments, err
+		return startCtx, ctx, nil, toolCall.Function.Arguments, err
 	}
 
 	result, toolErr := callableTool.Call(ctx, toolCall.Function.Arguments)
@@ -2964,16 +2976,16 @@ func runTool(
 	)
 	if err != nil {
 		if customResult != nil {
-			return ctx, customResult, toolCall.Function.Arguments, err
+			return startCtx, ctx, customResult, toolCall.Function.Arguments, err
 		}
 		var interruptErr *InterruptError
 		if errors.As(err, &interruptErr) {
-			return ctx, result, toolCall.Function.Arguments, err
+			return startCtx, ctx, result, toolCall.Function.Arguments, err
 		}
-		return ctx, nil, toolCall.Function.Arguments, err
+		return startCtx, ctx, nil, toolCall.Function.Arguments, err
 	}
 	if customResult != nil {
-		return ctx, customResult, toolCall.Function.Arguments, nil
+		return startCtx, ctx, customResult, toolCall.Function.Arguments, nil
 	}
 
 	ctx, customResult, err = runAfterToolCallbacks(
@@ -2986,27 +2998,27 @@ func runTool(
 	)
 	if err != nil {
 		if customResult != nil {
-			return ctx, customResult, toolCall.Function.Arguments, err
+			return startCtx, ctx, customResult, toolCall.Function.Arguments, err
 		}
 		var interruptErr *InterruptError
 		if errors.As(err, &interruptErr) {
-			return ctx, result, toolCall.Function.Arguments, err
+			return startCtx, ctx, result, toolCall.Function.Arguments, err
 		}
-		return ctx, nil, toolCall.Function.Arguments, err
+		return startCtx, ctx, nil, toolCall.Function.Arguments, err
 	}
 	if customResult != nil {
-		return ctx, customResult, toolCall.Function.Arguments, nil
+		return startCtx, ctx, customResult, toolCall.Function.Arguments, nil
 	}
 
 	if toolErr != nil {
 		var interruptErr *InterruptError
 		if errors.As(toolErr, &interruptErr) {
-			return ctx, result, toolCall.Function.Arguments, toolErr
+			return startCtx, ctx, result, toolCall.Function.Arguments, toolErr
 		}
-		return ctx, nil, toolCall.Function.Arguments,
+		return startCtx, ctx, nil, toolCall.Function.Arguments,
 			fmt.Errorf("tool %s call failed: %w", toolCall.Function.Name, toolErr)
 	}
-	return ctx, result, toolCall.Function.Arguments, nil
+	return startCtx, ctx, result, toolCall.Function.Arguments, nil
 }
 
 // extractModelInput extracts the model input from state and instruction.
@@ -3506,16 +3518,21 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 	}
 
 	// Keep the original invocation as a fallback when callbacks return a bare context.
-	invocation, _ := agent.InvocationFromContext(ctx)
+	originalInvocation, _ := agent.InvocationFromContext(ctx)
 	ctx, span := trace.Tracer.Start(ctx, itelemetry.NewExecuteToolSpanName(config.ToolCall.Function.Name))
-	ctx, result, modifiedArgs, err := runTool(ctx, config.ToolCall, config.ToolCallbacks, t, config.State)
-	if callbackInvocation, ok := agent.InvocationFromContext(ctx); ok && callbackInvocation != nil {
-		invocation = callbackInvocation
-	}
-
+	startCtx, finalCtx, result, modifiedArgs, err := runToolWithEventContexts(
+		ctx,
+		config.ToolCall,
+		config.ToolCallbacks,
+		t,
+		config.State,
+	)
+	startInvocation := invocationFromContextOrFallback(startCtx, originalInvocation)
+	completeInvocation := invocationFromContextOrFallback(finalCtx, startInvocation)
+	ctx = finalCtx
 	// Emit tool execution start event with modified arguments.
 	emitToolStartEvent(
-		ctx, invocation, config.EventChan, config.InvocationID, name, id, nodeID,
+		startCtx, startInvocation, config.EventChan, config.InvocationID, name, id, nodeID,
 		startTime, modifiedArgs, responseID,
 	)
 
@@ -3532,7 +3549,7 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 		}
 	}
 	// Emit tool execution complete event.
-	event := emitToolCompleteEvent(ctx, invocation, toolCompleteEventConfig{
+	event := emitToolCompleteEvent(finalCtx, completeInvocation, toolCompleteEventConfig{
 		EventChan:    config.EventChan,
 		InvocationID: config.InvocationID,
 		ToolName:     name,
@@ -3574,6 +3591,13 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 	}
 
 	return model.NewToolMessage(id, name, string(content)), nil
+}
+
+func invocationFromContextOrFallback(ctx context.Context, fallback *agent.Invocation) *agent.Invocation {
+	if invocation, ok := agent.InvocationFromContext(ctx); ok && invocation != nil {
+		return invocation
+	}
+	return fallback
 }
 
 // emitToolStartEvent emits a tool execution start event.

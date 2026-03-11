@@ -428,6 +428,120 @@ func TestExecuteSingleToolCall_UsesInvocationFromCallbackContext(t *testing.T) {
 	require.Equal(t, "tool-callback", completeEvent.FilterKey)
 }
 
+func TestExecuteSingleToolCall_UsesAfterToolInvocationForCompleteEvent(t *testing.T) {
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		beforeInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-tool-before-context"),
+			agent.WithInvocationEventFilterKey("tool-before"),
+		)
+		return &tool.BeforeToolResult{
+			Context: agent.NewInvocationContext(context.Background(), beforeInvocation),
+		}, nil
+	})
+	callbacks.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		afterInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-tool-after-context"),
+			agent.WithInvocationEventFilterKey("tool-after"),
+		)
+		return &tool.AfterToolResult{
+			Context: agent.NewInvocationContext(context.Background(), afterInvocation),
+		}, nil
+	})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-tool-original-context"),
+		agent.WithInvocationEventFilterKey("tool-original"),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	eventCh := make(chan *event.Event, 4)
+	toolCall := model.ToolCall{
+		ID: "tool-call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "echo",
+			Arguments: []byte(`{"value":"ok"}`),
+		},
+	}
+	msg, err := executeSingleToolCall(ctx, singleToolCallConfig{
+		ToolCall:     toolCall,
+		Tools:        map[string]tool.Tool{"echo": &dummyTool{name: "echo"}},
+		InvocationID: invocation.InvocationID,
+		EventChan:    eventCh,
+		Span:         noop.Span{},
+		State: State{
+			StateKeyCurrentNodeID: "node-a",
+		},
+		ToolCallbacks: callbacks,
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.RoleTool, msg.Role)
+	require.Len(t, eventCh, 2)
+	startEvent := <-eventCh
+	completeEvent := <-eventCh
+	require.Equal(t, "tool-before", startEvent.FilterKey)
+	require.Equal(t, "tool-after", completeEvent.FilterKey)
+}
+
+func TestExecuteSingleToolCall_CompleteEventFallsBackToBeforeToolInvocation(t *testing.T) {
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		beforeInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-tool-before-context"),
+			agent.WithInvocationEventFilterKey("tool-before"),
+		)
+		return &tool.BeforeToolResult{
+			Context: agent.NewInvocationContext(context.Background(), beforeInvocation),
+		}, nil
+	})
+	callbacks.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		return &tool.AfterToolResult{
+			Context: context.Background(),
+		}, nil
+	})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-tool-original-context"),
+		agent.WithInvocationEventFilterKey("tool-original"),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	eventCh := make(chan *event.Event, 4)
+	toolCall := model.ToolCall{
+		ID: "tool-call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "echo",
+			Arguments: []byte(`{"value":"ok"}`),
+		},
+	}
+	msg, err := executeSingleToolCall(ctx, singleToolCallConfig{
+		ToolCall:     toolCall,
+		Tools:        map[string]tool.Tool{"echo": &dummyTool{name: "echo"}},
+		InvocationID: invocation.InvocationID,
+		EventChan:    eventCh,
+		Span:         noop.Span{},
+		State: State{
+			StateKeyCurrentNodeID: "node-a",
+		},
+		ToolCallbacks: callbacks,
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.RoleTool, msg.Role)
+	require.Len(t, eventCh, 2)
+	startEvent := <-eventCh
+	completeEvent := <-eventCh
+	require.Equal(t, "tool-before", startEvent.FilterKey)
+	require.Equal(t, "tool-before", completeEvent.FilterKey)
+}
+
 func TestExecutor_CompletionEmitErrorDoesNotFailExecution(t *testing.T) {
 	stateGraph := NewStateGraph(NewStateSchema())
 	stateGraph.AddNode("noop", func(context.Context, State) (any, error) {
