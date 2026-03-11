@@ -1375,8 +1375,9 @@ func shouldClearRunnerCompletionChoicesInSession(
 	}
 	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)
 	if finalResponseID != "" {
-		_, ok := loop.filteredPersistedAssistantResponseIDs[finalResponseID]
-		return ok
+		if _, ok := loop.filteredPersistedAssistantResponseIDs[finalResponseID]; ok {
+			return true
+		}
 	}
 	signature := assistantChoiceSignature(finalChoices)
 	if signature == "" {

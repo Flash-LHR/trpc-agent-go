@@ -1546,6 +1546,45 @@ func TestRunner_DisableGraphCompletionEvent_StreamModeUpdates_KeepsFinalTextInRu
 	)
 }
 
+func TestRunner_DisableGraphCompletionEvent_StreamModeUpdates_WrappedGraphLLM_KeepsSingleFinalAssistantEvent(
+	t *testing.T,
+) {
+	child := newWrappedGraphLLMChildAgent(t)
+	svc := sessioninmemory.NewSessionService()
+	r := NewRunner(
+		"app",
+		chainagent.New("chain", chainagent.WithSubAgents([]agent.Agent{child})),
+		WithSessionService(svc),
+	)
+	ch, err := r.Run(
+		context.Background(),
+		"u",
+		"updates-mode-wrapped-llm",
+		model.NewUserMessage("hi"),
+		agent.WithDisableGraphCompletionEvent(true),
+		agent.WithStreamMode(agent.StreamModeUpdates),
+	)
+	require.NoError(t, err)
+	var completion *event.Event
+	for evt := range ch {
+		require.NotEqual(t, model.ObjectTypeChatCompletion, evt.Object)
+		if evt.IsRunnerCompletion() {
+			completion = evt
+		}
+	}
+	require.NotNil(t, completion)
+	require.NotNil(t, completion.StateDelta)
+	require.Equal(t, `"wrapped-final"`, string(completion.StateDelta[graph.StateKeyLastResponse]))
+	require.Len(t, completion.Response.Choices, 1)
+	require.Equal(t, "wrapped-final", completion.Response.Choices[0].Message.Content)
+	assertSessionKeepsSingleFinalAssistantEvent(
+		t,
+		svc,
+		"updates-mode-wrapped-llm",
+		"wrapped-final",
+	)
+}
+
 func TestRunner_DisableGraphCompletionEvent_StreamModeUpdates_WithFinalModelResponses_KeepsFinalTextInRunnerCompletion(t *testing.T) {
 	child := newWrappedGraphLLMChildAgent(t)
 	svc := sessioninmemory.NewSessionService()
@@ -3226,6 +3265,29 @@ func TestShouldEchoFinalChoicesInCompletion_Cases(t *testing.T) {
 			loop.finalStateDelta,
 		))
 	})
+}
+
+func TestShouldClearRunnerCompletionChoicesInSession_FallsBackToChoiceSignature(t *testing.T) {
+	loop := &eventLoopContext{
+		filteredPersistedAssistantChoiceSignatures: map[string]struct{}{
+			assistantChoiceSignature([]model.Choice{{
+				Index:   0,
+				Message: model.NewAssistantMessage("wrapped-final"),
+			}}): {},
+		},
+	}
+	finalChoices := []model.Choice{{
+		Index:   0,
+		Message: model.NewAssistantMessage("wrapped-final"),
+	}}
+	finalStateDelta := map[string][]byte{
+		graph.StateKeyLastResponseID: []byte(`"response-from-state"`),
+	}
+	require.True(t, shouldClearRunnerCompletionChoicesInSession(
+		loop,
+		finalChoices,
+		finalStateDelta,
+	))
 }
 
 func TestRecordEmittedAssistantResponseID_Cases(t *testing.T) {
