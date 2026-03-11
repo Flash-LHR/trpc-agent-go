@@ -100,6 +100,7 @@ type searchToolResponse struct {
 
 func searchTools(ctx context.Context, m model.Model, req *model.Request, tools map[string]tool.Tool) (context.Context, []string, error) {
 	var err error
+	originalCtx := ctx
 	invocation := invocationFromContextOrNew(ctx)
 	ctx, span, startedSpan := itrace.StartSpan(ctx, invocation, itelemetry.NewChatSpanName(m.Info().Name))
 	if startedSpan {
@@ -111,13 +112,13 @@ func searchTools(ctx context.Context, m model.Model, req *model.Request, tools m
 
 	final, err := generateFinalResponse(ctx, m, req)
 	if err != nil {
-		return ctx, nil, err
+		return originalCtx, nil, err
 	}
 	content, err := extractFirstChoiceContent(final)
 	if err != nil {
-		return ctx, nil, err
+		return originalCtx, nil, err
 	}
-	ctx = trackAndTraceToolSearch(ctx, span, tracker, invocation, req, final, timingInfo, startedSpan)
+	ctx = trackAndTraceToolSearch(originalCtx, span, tracker, invocation, req, final, timingInfo, startedSpan)
 	parsed, err := parseSearchToolResponse(content)
 	if err != nil {
 		return ctx, nil, err

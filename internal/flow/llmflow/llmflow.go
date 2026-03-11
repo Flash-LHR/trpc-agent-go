@@ -726,22 +726,39 @@ func (f *Flow) runBeforeModelCallbacks(
 	llmRequest *model.Request,
 ) (context.Context, *model.Response, error) {
 	var pluginCallbacks *model.Callbacks
-	if invocation.Plugins != nil {
+	if invocation != nil && invocation.Plugins != nil {
 		pluginCallbacks = invocation.Plugins.ModelCallbacks()
 	}
-	ctx, resp, err := runBeforeModelCallbacksWith(ctx, llmRequest, pluginCallbacks)
+	callbacksAttached := pluginCallbacks != nil || f.modelCallbacks != nil
+	if !callbacksAttached {
+		return ctx, nil, nil
+	}
+	callbackCtx := withInvocationContextIfMissing(ctx, invocation)
+	ctx, resp, err := runBeforeModelCallbacksWith(callbackCtx, llmRequest, pluginCallbacks)
 	if err != nil {
 		log.ErrorfContext(ctx, "Before model plugin failed for agent %s: %v", invocation.AgentName, err)
 		return ctx, nil, err
 	}
 	if resp != nil {
-		return ctx, resp, nil
+		return withInvocationContextIfMissing(ctx, invocation), resp, nil
 	}
+	ctx = withInvocationContextIfMissing(ctx, invocation)
 	newCtx, resp, err := runBeforeModelCallbacksWith(ctx, llmRequest, f.modelCallbacks)
 	if err != nil {
 		log.ErrorfContext(newCtx, "Before model callback failed for agent %s: %v", invocation.AgentName, err)
 	}
-	return newCtx, resp, err
+	return withInvocationContextIfMissing(newCtx, invocation), resp, err
+}
+
+func withInvocationContextIfMissing(ctx context.Context, invocation *agent.Invocation) context.Context {
+	if invocation == nil {
+		return ctx
+	}
+	existingInvocation, ok := agent.InvocationFromContext(ctx)
+	if ok && existingInvocation != nil {
+		return ctx
+	}
+	return agent.NewInvocationContext(ctx, invocation)
 }
 
 func runBeforeModelCallbacksWith(

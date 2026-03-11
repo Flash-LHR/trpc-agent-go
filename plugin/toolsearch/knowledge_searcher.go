@@ -69,6 +69,7 @@ func (s *knowledgeSearcher) Search(ctx context.Context, candidates map[string]to
 
 func (s *knowledgeSearcher) rewriteQuery(ctx context.Context, query string) (context.Context, string, *model.Usage, error) {
 	var err error
+	originalCtx := ctx
 
 	req := &model.Request{
 		Messages: []model.Message{
@@ -90,7 +91,7 @@ func (s *knowledgeSearcher) rewriteQuery(ctx context.Context, query string) (con
 	defer tracker.RecordMetrics()()
 	respCh, err := s.model.GenerateContent(ctx, req)
 	if err != nil {
-		return ctx, "", nil, fmt.Errorf("rewriting query: selection model call failed: %w", err)
+		return originalCtx, "", nil, fmt.Errorf("rewriting query: selection model call failed: %w", err)
 	}
 
 	var final *model.Response
@@ -99,14 +100,14 @@ func (s *knowledgeSearcher) rewriteQuery(ctx context.Context, query string) (con
 			continue
 		}
 		if r.Error != nil {
-			return ctx, "", nil, fmt.Errorf("rewriting query: selection model returned error: %s", r.Error.Message)
+			return originalCtx, "", nil, fmt.Errorf("rewriting query: selection model returned error: %s", r.Error.Message)
 		}
 		if !r.IsPartial {
 			final = r
 		}
 	}
 	if final == nil || len(final.Choices) == 0 {
-		return ctx, "", nil, fmt.Errorf("rewriting query: selection model returned empty response")
+		return originalCtx, "", nil, fmt.Errorf("rewriting query: selection model returned empty response")
 	}
 
 	content := strings.TrimSpace(final.Choices[0].Message.Content)
@@ -114,7 +115,7 @@ func (s *knowledgeSearcher) rewriteQuery(ctx context.Context, query string) (con
 		content = strings.TrimSpace(final.Choices[0].Delta.Content)
 	}
 	if content == "" {
-		return ctx, "", nil, fmt.Errorf("rewriting query: selection model returned empty content")
+		return originalCtx, "", nil, fmt.Errorf("rewriting query: selection model returned empty content")
 	}
 	tracker.TrackResponse(final)
 	if final.Usage == nil {
@@ -130,5 +131,5 @@ func (s *knowledgeSearcher) rewriteQuery(ctx context.Context, query string) (con
 			TimeToFirstToken: tracker.FirstTokenTimeDuration(),
 		})
 	}
-	return ctx, content, final.Usage, nil
+	return SetToolSearchUsage(originalCtx, final.Usage), content, final.Usage, nil
 }

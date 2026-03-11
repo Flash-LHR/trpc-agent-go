@@ -719,6 +719,48 @@ func TestFlow_RunBeforeModelCallbacks_NoModelCallbacks(t *testing.T) {
 	require.Nil(t, resp)
 }
 
+func TestFlow_RunBeforeModelCallbacks_PreservesInvocationContext(t *testing.T) {
+	inv := agent.NewInvocation(agent.WithInvocationID("invocation-id"))
+	local := model.NewCallbacks().RegisterBeforeModel(func(
+		ctx context.Context,
+		args *model.BeforeModelArgs,
+	) (*model.BeforeModelResult, error) {
+		callbackInvocation, ok := agent.InvocationFromContext(ctx)
+		require.True(t, ok)
+		require.Same(t, inv, callbackInvocation)
+		return &model.BeforeModelResult{Context: context.WithValue(ctx, testCtxKey{}, "v")}, nil
+	})
+	f := New(nil, nil, Options{ModelCallbacks: local})
+	gotCtx, resp, err := f.runBeforeModelCallbacks(context.Background(), inv, &model.Request{})
+	require.NoError(t, err)
+	require.Nil(t, resp)
+	require.Equal(t, "v", gotCtx.Value(testCtxKey{}))
+	callbackInvocation, ok := agent.InvocationFromContext(gotCtx)
+	require.True(t, ok)
+	require.Same(t, inv, callbackInvocation)
+}
+
+func TestFlow_RunBeforeModelCallbacks_PreservesReplacedInvocationContext(t *testing.T) {
+	inv := agent.NewInvocation(agent.WithInvocationID("original-invocation-id"))
+	replacementInvocation := agent.NewInvocation(agent.WithInvocationID("replacement-invocation-id"))
+	local := model.NewCallbacks().RegisterBeforeModel(func(
+		ctx context.Context,
+		args *model.BeforeModelArgs,
+	) (*model.BeforeModelResult, error) {
+		return &model.BeforeModelResult{
+			Context: agent.NewInvocationContext(context.WithValue(ctx, testCtxKey{}, "v"), replacementInvocation),
+		}, nil
+	})
+	f := New(nil, nil, Options{ModelCallbacks: local})
+	gotCtx, resp, err := f.runBeforeModelCallbacks(context.Background(), inv, &model.Request{})
+	require.NoError(t, err)
+	require.Nil(t, resp)
+	require.Equal(t, "v", gotCtx.Value(testCtxKey{}))
+	callbackInvocation, ok := agent.InvocationFromContext(gotCtx)
+	require.True(t, ok)
+	require.Same(t, replacementInvocation, callbackInvocation)
+}
+
 func TestFlow_GenerateContentSeq_UsesIterModel(t *testing.T) {
 	f := New(nil, nil, Options{})
 	iterModel := &mockIterModel{
