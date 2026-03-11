@@ -320,6 +320,32 @@ func TestLocalEvaluateResolvesMetricRegistryCompareName(t *testing.T) {
 	}
 }
 
+func TestLocalResolveMetricExtensionsValidation(t *testing.T) {
+	svc := &local{}
+	assert.ErrorContains(t, svc.resolveMetricExtensions(nil, metricregistry.New()), "evaluate config is nil")
+	assert.ErrorContains(t, svc.resolveMetricExtensions(&service.EvaluateConfig{}, nil), "metric registry is nil")
+}
+
+func TestLocalResolveMetricExtensionsReturnsResolveError(t *testing.T) {
+	svc := &local{}
+	err := svc.resolveMetricExtensions(
+		&service.EvaluateConfig{
+			EvalMetrics: []*metric.EvalMetric{
+				{
+					Criterion: &criterion.Criterion{
+						FinalResponse: &finalresponse.FinalResponseCriterion{
+							Text: &criteriontext.TextCriterion{CompareName: "missing"},
+						},
+					},
+				},
+			},
+		},
+		metricregistry.New(),
+	)
+	assert.ErrorContains(t, err, "resolve metric at index 0")
+	assert.ErrorContains(t, err, "text compare missing not found")
+}
+
 func makeInferenceResult(appName, evalSetID, caseID, sessionID string, inferences []*evalset.Invocation) *service.InferenceResult {
 	return &service.InferenceResult{
 		AppName:    appName,

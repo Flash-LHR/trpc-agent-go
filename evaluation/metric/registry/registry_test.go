@@ -191,6 +191,16 @@ func TestRegistryValidation(t *testing.T) {
 	assert.ErrorContains(t, reg.Resolve(nil), "eval metric is nil")
 }
 
+func TestRegistryValidation_NilImplementations(t *testing.T) {
+	reg := New()
+	var tokenizer criterionrouge.Tokenizer
+	assert.ErrorContains(t, reg.RegisterTextCompare("text", nil), "text compare is nil")
+	assert.ErrorContains(t, reg.RegisterJSONCompare("json", nil), "json compare is nil")
+	assert.ErrorContains(t, reg.RegisterToolTrajectoryCompare("tool", nil), "tool trajectory compare is nil")
+	assert.ErrorContains(t, reg.RegisterFinalResponseCompare("final", nil), "final response compare is nil")
+	assert.ErrorContains(t, reg.RegisterRougeTokenizer("rouge", tokenizer), "rouge tokenizer is nil")
+}
+
 func TestRegistryResolve_NilCriterion(t *testing.T) {
 	reg := New()
 	err := reg.Resolve(&metric.EvalMetric{MetricName: "metric"})
@@ -241,4 +251,104 @@ func TestRegistryResolve_RegisteredRougeTokenizerCanBeUsed(t *testing.T) {
 	result, err := evalMetric.Criterion.FinalResponse.Rouge.Match(context.Background(), "a-b", "a")
 	require.NoError(t, err)
 	assert.InDelta(t, 0.0, result.Value, 1e-12)
+}
+
+func TestRegistryResolve_ToolSpecificStrategyAndResultCompareNames(t *testing.T) {
+	reg := New()
+	err := reg.RegisterTextCompare("trim_equal", func(actual, expected string) (bool, error) {
+		return strings.TrimSpace(actual) == strings.TrimSpace(expected), nil
+	})
+	require.NoError(t, err)
+	err = reg.RegisterJSONCompare("match_result", func(actual, expected any) (bool, error) {
+		actualMap, actualOK := actual.(map[string]any)
+		expectedMap, expectedOK := expected.(map[string]any)
+		if !actualOK || !expectedOK {
+			return false, nil
+		}
+		return actualMap["status"] == expectedMap["status"], nil
+	})
+	require.NoError(t, err)
+	evalMetric := &metric.EvalMetric{
+		Criterion: &criterion.Criterion{
+			ToolTrajectory: &tooltrajectory.ToolTrajectoryCriterion{
+				ToolStrategy: map[string]*tooltrajectory.ToolTrajectoryStrategy{
+					"search": {
+						Name:   &criteriontext.TextCriterion{CompareName: "trim_equal"},
+						Result: &criterionjson.JSONCriterion{CompareName: "match_result"},
+					},
+				},
+			},
+		},
+	}
+
+	err = reg.Resolve(evalMetric)
+	require.NoError(t, err)
+	strategy := evalMetric.Criterion.ToolTrajectory.ToolStrategy["search"]
+	require.NotNil(t, strategy.Name.Compare)
+	require.NotNil(t, strategy.Result.Compare)
+	ok, err := strategy.Name.Match(" search ", "search")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	ok, err = strategy.Result.Match(map[string]any{"status": "ok"}, map[string]any{"status": "ok"})
+	require.NoError(t, err)
+	assert.True(t, ok)
+}
+
+func TestRegistryResolve_MissingNamedImplementations(t *testing.T) {
+	reg := New()
+	tests := []struct {
+		name    string
+		metric  *metric.EvalMetric
+		wantErr string
+	}{
+		{
+			name: "missing_json_compare",
+			metric: &metric.EvalMetric{
+				Criterion: &criterion.Criterion{
+					FinalResponse: &finalresponse.FinalResponseCriterion{
+						JSON: &criterionjson.JSONCriterion{CompareName: "missing_json"},
+					},
+				},
+			},
+			wantErr: "json compare missing_json not found",
+		},
+		{
+			name: "missing_tool_compare",
+			metric: &metric.EvalMetric{
+				Criterion: &criterion.Criterion{
+					ToolTrajectory: &tooltrajectory.ToolTrajectoryCriterion{CompareName: "missing_tool"},
+				},
+			},
+			wantErr: "tool trajectory compare missing_tool not found",
+		},
+		{
+			name: "missing_final_response_compare",
+			metric: &metric.EvalMetric{
+				Criterion: &criterion.Criterion{
+					FinalResponse: &finalresponse.FinalResponseCriterion{CompareName: "missing_final"},
+				},
+			},
+			wantErr: "final response compare missing_final not found",
+		},
+		{
+			name: "missing_rouge_tokenizer",
+			metric: &metric.EvalMetric{
+				Criterion: &criterion.Criterion{
+					FinalResponse: &finalresponse.FinalResponseCriterion{
+						Rouge: &criterionrouge.RougeCriterion{TokenizerName: "missing_tokenizer"},
+					},
+				},
+			},
+			wantErr: "rouge tokenizer missing_tokenizer not found",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := reg.Resolve(tc.metric)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, os.ErrNotExist))
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
 }
