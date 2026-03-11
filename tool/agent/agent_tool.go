@@ -239,12 +239,22 @@ func (at *Tool) wrapWithCallSemantics(
 	runCtx := agent.CloneContext(ctx)
 	go func(ctx context.Context) {
 		defer close(out)
+		var pendingVisibleCompletion *event.Event
 		for evt := range src {
 			if evt != nil {
+				pendingVisibleCompletion = at.updatePendingVisibleCompletionForSession(
+					ctx,
+					inv,
+					pendingVisibleCompletion,
+					evt,
+				)
 				if shouldMirrorEventToSession(evt) {
-					at.appendEvent(
-						ctx, inv, persistableSessionEvent(evt),
-					)
+					persistedEvent := persistableSessionEvent(evt)
+					if shouldDelayVisibleCompletionSessionMirror(persistedEvent) {
+						pendingVisibleCompletion = persistedEvent
+					} else {
+						at.appendEvent(ctx, inv, persistedEvent)
+					}
 				}
 				if evt.RequiresCompletion {
 					completionID :=
@@ -261,8 +271,32 @@ func (at *Tool) wrapWithCallSemantics(
 			}
 			out <- evt
 		}
+		if pendingVisibleCompletion != nil {
+			at.appendEvent(ctx, inv, pendingVisibleCompletion)
+		}
 	}(runCtx)
 	return out
+}
+
+func (at *Tool) updatePendingVisibleCompletionForSession(
+	ctx context.Context,
+	inv *agent.Invocation,
+	pending *event.Event,
+	evt *event.Event,
+) *event.Event {
+	if pending == nil || evt == nil {
+		return pending
+	}
+	if shouldDelayVisibleCompletionSessionMirror(evt) {
+		return pending
+	}
+	if evt.Error != nil {
+		return nil
+	}
+	if content, ok := assistantMessageContent(evt); ok && content != "" {
+		return nil
+	}
+	return pending
 }
 
 func (at *Tool) wrapWithStreamSemantics(
@@ -382,6 +416,17 @@ func persistableSessionEvent(evt *event.Event) *event.Event {
 		copyEvt.Response.Choices = nil
 	}
 	return &copyEvt
+}
+
+func shouldDelayVisibleCompletionSessionMirror(evt *event.Event) bool {
+	if evt == nil {
+		return false
+	}
+	if !graph.IsVisibleGraphCompletionEvent(evt) {
+		return false
+	}
+	_, ok := assistantMessageContent(evt)
+	return ok
 }
 
 func isGraphCompletionEvent(evt *event.Event) bool {

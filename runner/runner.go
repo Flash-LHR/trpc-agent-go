@@ -1121,7 +1121,8 @@ func shouldSuppressGraphExecutorBarrierEvent(
 	if !loop.invocation.RunOptions.DisableGraphExecutorEvents {
 		return false
 	}
-	return agentEvent.Object == graph.ObjectTypeGraphNodeBarrier
+	return agentEvent.Object == graph.ObjectTypeGraphNodeBarrier ||
+		agentEvent.Object == graph.ObjectTypeGraphBarrier
 }
 
 // captureGraphCompletion captures the final state delta and choices from a

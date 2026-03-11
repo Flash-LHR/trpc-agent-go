@@ -2850,7 +2850,7 @@ func TestRunner_GraphAgent_LegacyRunnerCompletionIncludesFinalResponse(t *testin
 		sess.Events[1].Choices[0].Message.Content)
 }
 
-func TestRunner_DisableGraphExecutorEvents_HidesNodeBarrierEvents(t *testing.T) {
+func TestRunner_DisableGraphExecutorEvents_HidesBarrierEvents(t *testing.T) {
 	schema := graph.MessagesStateSchema()
 	sg := graph.NewStateGraph(schema)
 	sg.AddLLMNode(
@@ -2875,6 +2875,7 @@ func TestRunner_DisableGraphExecutorEvents_HidesNodeBarrierEvents(t *testing.T) 
 	var last *event.Event
 	for evt := range ch {
 		require.NotEqual(t, graph.ObjectTypeGraphNodeBarrier, evt.Object)
+		require.NotEqual(t, graph.ObjectTypeGraphBarrier, evt.Object)
 		last = evt
 	}
 	require.NotNil(t, last)

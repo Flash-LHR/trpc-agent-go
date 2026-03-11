@@ -627,6 +627,37 @@ func TestTool_Call_DisableGraphCompletionEvent_PreservesFinalTextInSharedSession
 	require.True(t, sessionHasAssistantContent(sess, "child-final"))
 }
 
+func TestTool_Call_DisableGraphCompletionEvent_SharedSessionPrefersAfterCallbackCustomResponse(t *testing.T) {
+	ga := newGraphAgentWithAfterCallback(
+		t,
+		graph.State{
+			graph.StateKeyLastResponse: "child-final",
+		},
+		&model.Response{
+			Done: true,
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("after callback"),
+			}},
+		},
+	)
+	at := NewTool(ga, WithHistoryScope(HistoryScopeParentBranch))
+	sess := session.NewSession("app", "user", "session")
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	resultText, ok := result.(string)
+	require.True(t, ok)
+	require.Equal(t, "after callback", resultText)
+	require.True(t, sessionHasAssistantContent(sess, "after callback"))
+	require.False(t, sessionHasAssistantContent(sess, "child-final"))
+}
+
 func TestTool_Call_VisibleCompletionSnapshotReplacesPriorAssistantText(t *testing.T) {
 	at := NewTool(&assistantThenVisibleCompletionAgent{name: "visible-agent"})
 	result, err := at.Call(context.Background(), []byte(`{"request":"ignored"}`))
@@ -2116,8 +2147,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 		WithStreamInner(true),
 		WithHistoryScope(HistoryScopeParentBranch),
 	)
+	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
-		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
+		agent.WithInvocationSession(sess),
 		agent.WithInvocationRunOptions(agent.RunOptions{
 			DisableGraphCompletionEvent: true,
 		}),
@@ -2153,6 +2185,8 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 	require.True(t, sawFinalChunk)
 	require.Equal(t, "after callback", finalChunk.Result)
 	require.Equal(t, []byte(`"child-final"`), finalChunk.StateDelta[graph.StateKeyLastResponse])
+	require.True(t, sessionHasAssistantContent(sess, "after callback"))
+	require.False(t, sessionHasAssistantContent(sess, "child-final"))
 }
 
 func TestTool_StreamableCall_DisableGraphCompletionEvent_SuppressesVisibleCompletionBeforeError(
@@ -2204,8 +2238,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_DropsPendingFinalResult
 		errors.New("after callback failed"),
 	)
 	at := NewTool(ga, WithStreamInner(true), WithHistoryScope(HistoryScopeParentBranch))
+	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
-		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
+		agent.WithInvocationSession(sess),
 		agent.WithInvocationRunOptions(agent.RunOptions{
 			DisableGraphCompletionEvent: true,
 		}),
@@ -2232,6 +2267,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_DropsPendingFinalResult
 		t.Fatalf("unexpected final result chunk after callback error: %#v", chunk.Content)
 	}
 	require.True(t, sawError)
+	require.False(t, sessionHasAssistantContent(sess, "child-final"))
 }
 
 func TestTool_StreamInner_FlagFalse(t *testing.T) {
