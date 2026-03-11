@@ -821,6 +821,70 @@ func TestFlow_RunBeforeModelCallbacks_PreservesReplacedInvocationWithinCallbackG
 	require.Same(t, replacementInvocation, callbackInvocation)
 }
 
+func TestFlow_RunBeforeModelCallbacks_PreservesReplacementInvocationForFreshResultContext(t *testing.T) {
+	inv := agent.NewInvocation(agent.WithInvocationID("original-invocation-id"))
+	replacementInvocation := agent.NewInvocation(agent.WithInvocationID("replacement-invocation-id"))
+	local := model.NewCallbacks().
+		RegisterBeforeModel(func(
+			ctx context.Context,
+			args *model.BeforeModelArgs,
+		) (*model.BeforeModelResult, error) {
+			return &model.BeforeModelResult{
+				Context: agent.NewInvocationContext(context.Background(), replacementInvocation),
+			}, nil
+		}).
+		RegisterBeforeModel(func(
+			ctx context.Context,
+			args *model.BeforeModelArgs,
+		) (*model.BeforeModelResult, error) {
+			callbackInvocation, ok := agent.InvocationFromContext(ctx)
+			require.True(t, ok)
+			require.Same(t, replacementInvocation, callbackInvocation)
+			return &model.BeforeModelResult{
+				Context: context.WithValue(context.Background(), testCtxKey{}, "v"),
+			}, nil
+		})
+	f := New(nil, nil, Options{ModelCallbacks: local})
+	gotCtx, resp, err := f.runBeforeModelCallbacks(context.Background(), inv, &model.Request{})
+	require.NoError(t, err)
+	require.Nil(t, resp)
+	require.Equal(t, "v", gotCtx.Value(testCtxKey{}))
+	callbackInvocation, ok := agent.InvocationFromContext(gotCtx)
+	require.True(t, ok)
+	require.Same(t, replacementInvocation, callbackInvocation)
+}
+
+func TestFlow_RunBeforeModelCallbacks_DoesNotMutateSharedBeforeModelResult(t *testing.T) {
+	sharedResult := &model.BeforeModelResult{
+		Context: context.WithValue(context.Background(), testCtxKey{}, "v"),
+	}
+	local := model.NewCallbacks().RegisterBeforeModel(func(
+		ctx context.Context,
+		args *model.BeforeModelArgs,
+	) (*model.BeforeModelResult, error) {
+		return sharedResult, nil
+	})
+	f := New(nil, nil, Options{ModelCallbacks: local})
+	firstInvocation := agent.NewInvocation(agent.WithInvocationID("first-invocation-id"))
+	firstCtx, resp, err := f.runBeforeModelCallbacks(context.Background(), firstInvocation, &model.Request{})
+	require.NoError(t, err)
+	require.Nil(t, resp)
+	require.Equal(t, "v", firstCtx.Value(testCtxKey{}))
+	firstCallbackInvocation, ok := agent.InvocationFromContext(firstCtx)
+	require.True(t, ok)
+	require.Same(t, firstInvocation, firstCallbackInvocation)
+	secondInvocation := agent.NewInvocation(agent.WithInvocationID("second-invocation-id"))
+	secondCtx, resp, err := f.runBeforeModelCallbacks(context.Background(), secondInvocation, &model.Request{})
+	require.NoError(t, err)
+	require.Nil(t, resp)
+	require.Equal(t, "v", secondCtx.Value(testCtxKey{}))
+	secondCallbackInvocation, ok := agent.InvocationFromContext(secondCtx)
+	require.True(t, ok)
+	require.Same(t, secondInvocation, secondCallbackInvocation)
+	_, ok = agent.InvocationFromContext(sharedResult.Context)
+	require.False(t, ok)
+}
+
 func TestFlow_GenerateContentSeq_UsesIterModel(t *testing.T) {
 	f := New(nil, nil, Options{})
 	iterModel := &mockIterModel{

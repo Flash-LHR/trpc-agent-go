@@ -761,6 +761,14 @@ func withInvocationContextIfMissing(ctx context.Context, invocation *agent.Invoc
 	return agent.NewInvocationContext(ctx, invocation)
 }
 
+func invocationFromContextOrFallback(ctx context.Context, fallback *agent.Invocation) *agent.Invocation {
+	existingInvocation, ok := agent.InvocationFromContext(ctx)
+	if ok && existingInvocation != nil {
+		return existingInvocation
+	}
+	return fallback
+}
+
 func runBeforeModelCallbacksWith(
 	ctx context.Context,
 	invocation *agent.Invocation,
@@ -802,7 +810,12 @@ func wrapBeforeModelCallbacksWithInvocation(
 			ctx = withInvocationContextIfMissing(ctx, invocation)
 			result, err := callback(ctx, args)
 			if result != nil && result.Context != nil {
-				result.Context = withInvocationContextIfMissing(result.Context, invocation)
+				clonedResult := *result
+				clonedResult.Context = withInvocationContextIfMissing(
+					result.Context,
+					invocationFromContextOrFallback(ctx, invocation),
+				)
+				return &clonedResult, err
 			}
 			return result, err
 		}
