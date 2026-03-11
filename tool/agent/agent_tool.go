@@ -190,9 +190,7 @@ func (at *Tool) callWithParentInvocation(
 	)
 
 	// Run the agent and collect response.
-	subCtx := graph.WithGraphCompletionCapture(
-		agent.NewInvocationContext(ctx, subInv),
-	)
+	subCtx := agent.NewInvocationContext(ctx, subInv)
 	evCh, err := agent.RunWithPlugins(subCtx, subInv, at.agent)
 	if err != nil {
 		return "", fmt.Errorf("failed to run agent: %w", err)
@@ -603,9 +601,7 @@ func (at *Tool) streamFromParentInvocation(
 		// not the parent agent. Use unique FilterKey to prevent cross-invocation event pollution.
 		agent.WithInvocationEventFilterKey(childKey),
 	)
-	subCtx := graph.WithGraphCompletionCapture(
-		agent.NewInvocationContext(ctx, subInv),
-	)
+	subCtx := agent.NewInvocationContext(ctx, subInv)
 	evCh, err := agent.RunWithPlugins(subCtx, subInv, at.agent)
 	if err != nil {
 		sendStreamableCallError(writer, "agent tool run error: %w", err)

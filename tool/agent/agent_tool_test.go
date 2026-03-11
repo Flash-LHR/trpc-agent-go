@@ -602,6 +602,31 @@ func TestTool_Call_DisableGraphCompletionEvent_PrefersAfterCallbackCustomRespons
 	require.Equal(t, "after callback", resultText)
 }
 
+func TestTool_Call_DisableGraphCompletionEvent_PreservesFinalTextInSharedSession(t *testing.T) {
+	sg := graph.NewStateGraph(graph.MessagesStateSchema())
+	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "child-final"}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	ga, err := graphagent.New("graph-child", compiled)
+	require.NoError(t, err)
+	at := NewTool(ga, WithHistoryScope(HistoryScopeParentBranch))
+	sess := session.NewSession("app", "user", "session")
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	resultText, ok := result.(string)
+	require.True(t, ok)
+	require.Equal(t, "child-final", resultText)
+	require.True(t, sessionHasAssistantContent(sess, "child-final"))
+}
+
 func TestTool_Call_VisibleCompletionSnapshotReplacesPriorAssistantText(t *testing.T) {
 	at := NewTool(&assistantThenVisibleCompletionAgent{name: "visible-agent"})
 	result, err := at.Call(context.Background(), []byte(`{"request":"ignored"}`))
@@ -852,6 +877,28 @@ func sessionHasToolResult(
 		}
 		for _, id := range evt.Response.GetToolResultIDs() {
 			if id == toolID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sessionHasAssistantContent(sess *session.Session, content string) bool {
+	if sess == nil {
+		return false
+	}
+	sess.EventMu.RLock()
+	defer sess.EventMu.RUnlock()
+
+	for i := range sess.Events {
+		evt := sess.Events[i]
+		if evt.Response == nil || evt.IsPartial || !evt.IsValidContent() {
+			continue
+		}
+		for _, choice := range evt.Response.Choices {
+			if choice.Message.Role == model.RoleAssistant &&
+				choice.Message.Content == content {
 				return true
 			}
 		}
@@ -1803,6 +1850,36 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_KeepsFinalResult(t *tes
 		require.Equal(t, []byte(`"child-final"`), resultChunk.StateDelta[graph.StateKeyLastResponse])
 	}
 	require.Equal(t, "child-final", finalResult)
+}
+
+func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesFinalTextInSharedSession(t *testing.T) {
+	sg := graph.NewStateGraph(graph.MessagesStateSchema())
+	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "child-final"}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	ga, err := graphagent.New("graph-child-stream", compiled)
+	require.NoError(t, err)
+	at := NewTool(ga, WithStreamInner(true), WithHistoryScope(HistoryScopeParentBranch))
+	sess := session.NewSession("app", "user", "session")
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	defer reader.Close()
+	for {
+		_, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+	}
+	require.True(t, sessionHasAssistantContent(sess, "child-final"))
 }
 
 func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistantResultForVisibleStateOnlyCompletion(
