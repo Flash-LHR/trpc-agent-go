@@ -257,6 +257,10 @@ func (at *Tool) wrapWithCallSemantics(
 					}
 				}
 				if evt.RequiresCompletion {
+					if pendingVisibleCompletion != nil {
+						at.appendEvent(ctx, inv, pendingVisibleCompletion)
+						pendingVisibleCompletion = nil
+					}
 					completionID :=
 						agent.GetAppendEventNoticeKey(evt.ID)
 					if err := inv.NotifyCompletion(

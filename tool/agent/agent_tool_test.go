@@ -658,6 +658,27 @@ func TestTool_Call_DisableGraphCompletionEvent_SharedSessionPrefersAfterCallback
 	require.False(t, sessionHasAssistantContent(sess, "child-final"))
 }
 
+func TestTool_Call_DisableGraphCompletionEvent_FlushesVisibleCompletionBeforeBarrierNotification(t *testing.T) {
+	at := NewTool(
+		&visibleCompletionBarrierAgent{name: "visible-barrier-agent"},
+		WithHistoryScope(HistoryScopeParentBranch),
+	)
+	sess := session.NewSession("app", "user", "session")
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	resultText, ok := result.(string)
+	require.True(t, ok)
+	require.Equal(t, "child-final", resultText)
+	require.True(t, sessionHasAssistantContent(sess, "child-final"))
+}
+
 func TestTool_Call_VisibleCompletionSnapshotReplacesPriorAssistantText(t *testing.T) {
 	at := NewTool(&assistantThenVisibleCompletionAgent{name: "visible-agent"})
 	result, err := at.Call(context.Background(), []byte(`{"request":"ignored"}`))
@@ -777,6 +798,10 @@ type graphCompletionMockAgent struct {
 	stateOnly bool
 }
 
+type visibleCompletionBarrierAgent struct {
+	name string
+}
+
 func (m *graphCompletionMockAgent) Run(
 	ctx context.Context,
 	inv *agent.Invocation,
@@ -816,6 +841,58 @@ func (m *graphCompletionMockAgent) SubAgents() []agent.Agent {
 	return nil
 }
 func (m *graphCompletionMockAgent) FindSubAgent(string) agent.Agent {
+	return nil
+}
+
+func (m *visibleCompletionBarrierAgent) Run(
+	ctx context.Context,
+	inv *agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event, 3)
+	go func() {
+		defer close(ch)
+		rawCompletion := graph.NewGraphCompletionEvent(
+			graph.WithCompletionEventInvocationID(inv.InvocationID),
+			graph.WithCompletionEventFinalState(graph.State{
+				graph.StateKeyLastResponse: "child-final",
+			}),
+		)
+		visibleCompletion, ok := graph.VisibleGraphCompletionEvent(rawCompletion)
+		if !ok {
+			return
+		}
+		_ = agent.EmitEvent(ctx, inv, ch, visibleCompletion)
+		barrier := event.New(inv.InvocationID, m.name)
+		barrier.RequiresCompletion = true
+		completionID := agent.GetAppendEventNoticeKey(barrier.ID)
+		_ = inv.AddNoticeChannel(ctx, completionID)
+		_ = agent.EmitEvent(ctx, inv, ch, barrier)
+		if err := inv.AddNoticeChannelAndWait(ctx, completionID, 500*time.Millisecond); err != nil {
+			errEvt := event.NewErrorEvent(inv.InvocationID, m.name, model.ErrorTypeFlowError, err.Error())
+			_ = agent.EmitEvent(ctx, inv, ch, errEvt)
+			return
+		}
+		if !sessionHasAssistantContent(inv.Session, "child-final") {
+			errEvt := event.NewErrorEvent(
+				inv.InvocationID,
+				m.name,
+				model.ErrorTypeFlowError,
+				"visible completion not mirrored before barrier completion",
+			)
+			_ = agent.EmitEvent(ctx, inv, ch, errEvt)
+		}
+	}()
+	return ch, nil
+}
+
+func (m *visibleCompletionBarrierAgent) Tools() []tool.Tool { return nil }
+func (m *visibleCompletionBarrierAgent) Info() agent.Info {
+	return agent.Info{Name: m.name, Description: "visible completion barrier"}
+}
+func (m *visibleCompletionBarrierAgent) SubAgents() []agent.Agent {
+	return nil
+}
+func (m *visibleCompletionBarrierAgent) FindSubAgent(string) agent.Agent {
 	return nil
 }
 

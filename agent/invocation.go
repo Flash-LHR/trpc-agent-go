@@ -332,9 +332,10 @@ func WithDisableGraphExecutorEvents(disable bool) RunOption {
 	}
 }
 
-// WithEventChannelBufferSize overrides the event channel buffer size for this run.
+// WithEventChannelBufferSize overrides the event channel buffer size for this run
+// on supported flow and agent implementations.
 //
-// When size <= 0, the flow default is used.
+// When size <= 0, supported implementations use their configured default.
 func WithEventChannelBufferSize(size int) RunOption {
 	return func(opts *RunOptions) {
 		opts.EventChannelBufferSize = size
@@ -649,9 +650,10 @@ type RunOptions struct {
 	// DisableGraphExecutorEvents disables emitting graph executor lifecycle events.
 	DisableGraphExecutorEvents bool
 
-	// EventChannelBufferSize overrides the flow's default event channel buffer size for this run.
+	// EventChannelBufferSize overrides the default event channel buffer size for
+	// this run on supported flow and agent implementations.
 	//
-	// When <= 0, the flow uses its configured ChannelBufferSize.
+	// When <= 0, supported implementations use their configured default size.
 	EventChannelBufferSize int
 
 	// RequestID is the request id of the request.
