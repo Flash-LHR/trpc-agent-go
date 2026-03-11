@@ -3372,6 +3372,32 @@ func TestProcessStreamChunk_PointerFinalResultChunkMarksSeen(t *testing.T) {
 	require.Equal(t, []byte(`"ok"`), evt.StateDelta["final"])
 }
 
+func TestProcessStreamChunk_NilPointerFinalResultChunkDoesNotMarkSeen(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{Model: &mockModel{}}
+	tc := model.ToolCall{ID: "c1", Function: model.FunctionDefinitionParam{Name: "final"}}
+	var contents []any
+	finalResult := streamFinalResult{}
+	var innerEventState streamInnerEventState
+	ch := make(chan *event.Event, 1)
+	err := f.processStreamChunk(
+		ctx,
+		inv,
+		tc,
+		tool.StreamChunk{Content: (*tool.FinalResultChunk)(nil)},
+		ch,
+		&contents,
+		&finalResult,
+		&innerEventState,
+	)
+	require.NoError(t, err)
+	require.False(t, finalResult.seen)
+	require.Nil(t, finalResult.value)
+	require.Empty(t, contents)
+	require.Len(t, ch, 0)
+}
+
 // stream tool forwarding inner *event.Event
 type innerEventStreamTool struct{ name string }
 
@@ -3844,6 +3870,30 @@ func TestProcessStreamChunk_EmptyText_NoEvent(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, out)
 	require.Len(t, ch, 0)
+	require.False(t, finalResult.seen)
+	require.Nil(t, finalResult.value)
+}
+
+func TestProcessStreamChunk_TextWithoutEventChannel_AppendsContent(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{Model: &mockModel{}}
+	tc := model.ToolCall{ID: "x", Function: model.FunctionDefinitionParam{Name: "t"}}
+	out := make([]any, 0)
+	var finalResult streamFinalResult
+	var innerEventState streamInnerEventState
+	err := f.processStreamChunk(
+		ctx,
+		inv,
+		tc,
+		tool.StreamChunk{Content: "partial"},
+		nil,
+		&out,
+		&finalResult,
+		&innerEventState,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []any{"partial"}, out)
 	require.False(t, finalResult.seen)
 	require.Nil(t, finalResult.value)
 }

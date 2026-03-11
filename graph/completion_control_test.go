@@ -10,12 +10,50 @@
 package graph
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
+
+func TestGraphCompletionCaptureContextHelpers(t *testing.T) {
+	require.False(t, ShouldCaptureGraphCompletion(nil))
+	require.True(t, ShouldCaptureGraphCompletion(WithGraphCompletionCapture(nil)))
+	ctx := WithGraphCompletionCapture(context.Background())
+	require.False(t, ShouldCaptureGraphCompletion(WithoutGraphCompletionCapture(ctx)))
+	require.False(t, ShouldCaptureGraphCompletion(WithoutGraphCompletionCapture(nil)))
+}
+
+func TestIsGraphCompletionEventAndVisibleCompletionEvent(t *testing.T) {
+	require.False(t, IsGraphCompletionEvent(nil))
+	require.False(t, IsGraphCompletionEvent(&event.Event{}))
+	raw := &event.Event{
+		Response: &model.Response{
+			Object: ObjectTypeGraphExecution,
+			Done:   true,
+		},
+	}
+	require.True(t, IsGraphCompletionEvent(raw))
+	require.False(t, IsVisibleGraphCompletionEvent(nil))
+	require.False(t, IsVisibleGraphCompletionEvent(raw))
+	visible, ok := VisibleGraphCompletionEvent(raw)
+	require.True(t, ok)
+	require.True(t, IsVisibleGraphCompletionEvent(visible))
+}
+
+func TestVisibleGraphCompletionEvent_ReturnsFalseForNonCompletion(t *testing.T) {
+	visible, ok := VisibleGraphCompletionEvent(&event.Event{
+		Response: &model.Response{
+			Object: model.ObjectTypeChatCompletion,
+			Done:   true,
+		},
+	})
+	require.False(t, ok)
+	require.Nil(t, visible)
+}
 
 func TestVisibleGraphCompletionEvent_AddsCompletionMetadataWhenMissing(t *testing.T) {
 	raw := &event.Event{
@@ -71,6 +109,29 @@ func TestVisibleGraphCompletionEventWithDedup_DedupsByAssistantChoicesWhenRespon
 	require.True(t, IsVisibleGraphCompletionEvent(visible))
 	require.Empty(t, visible.Response.Choices)
 	require.Equal(t, []byte(`"answer"`), visible.StateDelta[StateKeyLastResponse])
+}
+
+func TestVisibleGraphCompletionEventWithDedup_DedupsByResponseID(t *testing.T) {
+	emitted := RecordAssistantResponseID(nil, &event.Event{
+		Response: &model.Response{
+			ID:     "resp-1",
+			Object: model.ObjectTypeChatCompletion,
+			Done:   true,
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("answer"),
+			}},
+		},
+	})
+	raw := NewGraphCompletionEvent(
+		WithCompletionEventFinalState(State{
+			StateKeyLastResponse:   "answer",
+			StateKeyLastResponseID: "resp-1",
+		}),
+	)
+
+	visible, ok := VisibleGraphCompletionEventWithDedup(raw, emitted)
+	require.True(t, ok)
+	require.Empty(t, visible.Response.Choices)
 }
 
 func TestVisibleGraphCompletionEventWithDedup_DoesNotFallbackToSignatureWhenResponseIDDiffers(
@@ -129,4 +190,54 @@ func TestVisibleGraphCompletionEventsForForwarding_PreservesFullResponseForCallb
 	require.NotNil(t, fullRespEvent)
 	require.Len(t, fullRespEvent.Response.Choices, 1)
 	require.Equal(t, "answer", fullRespEvent.Response.Choices[0].Message.Content)
+}
+
+func TestVisibleGraphCompletionEventsForForwarding_UsesVisibleEventWhenChoicesRemain(
+	t *testing.T,
+) {
+	raw := NewGraphCompletionEvent(
+		WithCompletionEventFinalState(State{
+			StateKeyLastResponse: "answer",
+		}),
+	)
+
+	visible, fullRespEvent, ok := VisibleGraphCompletionEventsForForwarding(raw, nil)
+	require.True(t, ok)
+	require.NotNil(t, visible)
+	require.Same(t, visible, fullRespEvent)
+}
+
+func TestShouldSuppressGraphCompletionEvent(t *testing.T) {
+	raw := NewGraphCompletionEvent()
+	require.False(t, ShouldSuppressGraphCompletionEvent(context.Background(), nil, raw))
+	invocation := &agent.Invocation{}
+	require.False(t, ShouldSuppressGraphCompletionEvent(context.Background(), invocation, raw))
+	invocation.RunOptions.DisableGraphCompletionEvent = true
+	require.True(t, ShouldSuppressGraphCompletionEvent(context.Background(), invocation, raw))
+	require.False(t, ShouldSuppressGraphCompletionEvent(WithGraphCompletionCapture(context.Background()), invocation, raw))
+	require.False(t, ShouldSuppressGraphCompletionEvent(context.Background(), invocation, &event.Event{}))
+}
+
+func TestCompletionResponseIDFromStateDelta(t *testing.T) {
+	require.Empty(t, completionResponseIDFromStateDelta(nil))
+	require.Empty(t, completionResponseIDFromStateDelta(map[string][]byte{
+		StateKeyLastResponseID: []byte("{"),
+	}))
+	require.Equal(t, "resp-1", completionResponseIDFromStateDelta(map[string][]byte{
+		StateKeyLastResponseID: []byte(`"resp-1"`),
+	}))
+}
+
+func TestAssistantChoiceSignature(t *testing.T) {
+	require.Empty(t, assistantChoiceSignature(nil))
+	require.Empty(t, assistantChoiceSignature([]model.Choice{{
+		Message: model.NewUserMessage("user"),
+	}}))
+	require.Equal(
+		t,
+		`{"role":"assistant","content":"answer"}`,
+		assistantChoiceSignature([]model.Choice{{
+			Message: model.NewAssistantMessage("answer"),
+		}}),
+	)
 }
