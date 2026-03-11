@@ -1776,6 +1776,41 @@ func TestExecuteModelAndProcessResponses_UsesConfigFallbackForSparseStableTraceM
 	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyGenAIRequestModel, modelImpl.Info().Name))
 }
 
+func TestExecuteModelAndProcessResponses_RefreshesStableTraceMetadataAfterInPlaceInvocationUpdate(t *testing.T) {
+	modelImpl := &captureModel{}
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-trace-in-place"),
+	)
+	callbacks := model.NewCallbacks().RegisterAfterModel(
+		func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+			invocation.Session = &session.Session{
+				ID:     "sess-trace-in-place",
+				UserID: "user-trace-in-place",
+			}
+			return nil, nil
+		},
+	)
+	span := newGraphRecordingSpan()
+	resp, err := executeModelAndProcessResponses(
+		agent.NewInvocationContext(context.Background(), invocation),
+		modelExecutionConfig{
+			Invocation:     invocation,
+			ModelCallbacks: callbacks,
+			LLMModel:       modelImpl,
+			Request:        &model.Request{},
+			InvocationID:   invocation.InvocationID,
+			Span:           span,
+			NodeID:         "llm",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyInvocationID, invocation.InvocationID))
+	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyGenAIConversationID, invocation.Session.ID))
+	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyRunnerUserID, invocation.Session.UserID))
+	require.True(t, graphHasAttr(span.attrs, semconvtrace.KeyGenAIRequestModel, modelImpl.Info().Name))
+}
+
 func TestAddLLMNode_SkipsModelExecutionEventsWhenCallbackDisablesModelExecutionEvents(t *testing.T) {
 	sg := NewStateGraph(MessagesStateSchema())
 	sg.AddLLMNode("llm", &captureModel{}, "inst", nil)

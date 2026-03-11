@@ -3903,6 +3903,7 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 		}
 	}
 	p.invocation = invocationFromContextOrDefault(p.ctx, p.invocation)
+	p.observabilityInvocation = observabilityInvocationView(p.stableInvocation, p.config)
 	traceProcessedModelResponse(
 		p.config.Span,
 		p.tracker,
