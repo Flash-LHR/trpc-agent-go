@@ -334,7 +334,7 @@ func TestExecutor_DisableGraphExecutorEvents_SuppressesEventHelpers(t *testing.T
 	require.Len(t, eventCh, 0)
 }
 
-func TestExecuteSingleToolCall_DisableGraphExecutorEvents_IgnoresCallbackContextReplacement(t *testing.T) {
+func TestExecuteSingleToolCall_DisableGraphExecutorEvents_FallsBackToOriginalInvocation(t *testing.T) {
 	callbacks := tool.NewCallbacks()
 	callbacks.RegisterBeforeTool(func(
 		ctx context.Context,
@@ -373,6 +373,59 @@ func TestExecuteSingleToolCall_DisableGraphExecutorEvents_IgnoresCallbackContext
 	require.NoError(t, err)
 	require.Equal(t, model.RoleTool, msg.Role)
 	require.Len(t, eventCh, 0)
+}
+
+func TestExecuteSingleToolCall_UsesInvocationFromCallbackContext(t *testing.T) {
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		callbackInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-tool-callback-context"),
+			agent.WithInvocationEventFilterKey("tool-callback"),
+			agent.WithInvocationRunOptions(agent.RunOptions{
+				DisableGraphExecutorEvents: false,
+			}),
+		)
+		return &tool.BeforeToolResult{
+			Context: agent.NewInvocationContext(context.Background(), callbackInvocation),
+		}, nil
+	})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-tool-disable-events"),
+		agent.WithInvocationEventFilterKey("tool-original"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphExecutorEvents: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	eventCh := make(chan *event.Event, 4)
+	toolCall := model.ToolCall{
+		ID: "tool-call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "echo",
+			Arguments: []byte(`{"value":"ok"}`),
+		},
+	}
+	msg, err := executeSingleToolCall(ctx, singleToolCallConfig{
+		ToolCall:     toolCall,
+		Tools:        map[string]tool.Tool{"echo": &dummyTool{name: "echo"}},
+		InvocationID: invocation.InvocationID,
+		EventChan:    eventCh,
+		Span:         noop.Span{},
+		State: State{
+			StateKeyCurrentNodeID: "node-a",
+		},
+		ToolCallbacks: callbacks,
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.RoleTool, msg.Role)
+	require.Len(t, eventCh, 2)
+	startEvent := <-eventCh
+	completeEvent := <-eventCh
+	require.Equal(t, "tool-callback", startEvent.FilterKey)
+	require.Equal(t, "tool-callback", completeEvent.FilterKey)
 }
 
 func TestExecutor_CompletionEmitErrorDoesNotFailExecution(t *testing.T) {

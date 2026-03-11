@@ -3505,10 +3505,13 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 		}
 	}
 
-	// Execute the tool with callbacks and get modified arguments.
+	// Keep the original invocation as a fallback when callbacks return a bare context.
 	invocation, _ := agent.InvocationFromContext(ctx)
 	ctx, span := trace.Tracer.Start(ctx, itelemetry.NewExecuteToolSpanName(config.ToolCall.Function.Name))
 	ctx, result, modifiedArgs, err := runTool(ctx, config.ToolCall, config.ToolCallbacks, t, config.State)
+	if callbackInvocation, ok := agent.InvocationFromContext(ctx); ok && callbackInvocation != nil {
+		invocation = callbackInvocation
+	}
 
 	// Emit tool execution start event with modified arguments.
 	emitToolStartEvent(
