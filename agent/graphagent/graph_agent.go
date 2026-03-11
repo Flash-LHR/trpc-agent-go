@@ -21,12 +21,14 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
+	iagent "trpc.group/trpc-go/trpc-agent-go/internal/agent"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/llmflow"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/barrier"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -131,7 +133,8 @@ func (ga *GraphAgent) singleEventChannelBufferSize(invocation *agent.Invocation)
 // pipeline and forwards all events to the provided output channel.
 func (ga *GraphAgent) runWithBarrier(ctx context.Context, invocation *agent.Invocation, out chan<- *event.Event) {
 	ctx, span := trace.Tracer.Start(ctx, fmt.Sprintf("%s %s", itelemetry.OperationInvokeAgent, invocation.AgentName))
-	itelemetry.TraceBeforeInvokeAgent(span, invocation, ga.description, "", nil)
+	stream := iagent.ResolveInvokeAgentStream(invocation, nil)
+	itelemetry.TraceBeforeInvokeAgent(span, invocation, ga.description, "", &model.GenerationConfig{Stream: stream})
 	defer span.End()
 	defer close(out)
 	// Emit a barrier event and wait for completion in a dedicated goroutine so that the runner can append all prior
@@ -140,7 +143,7 @@ func (ga *GraphAgent) runWithBarrier(ctx context.Context, invocation *agent.Invo
 		evt := event.NewErrorEvent(invocation.InvocationID, invocation.AgentName,
 			model.ErrorTypeFlowError, err.Error())
 		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(attribute.String(itelemetry.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeFlowError)))
+		span.SetAttributes(attribute.String(semconvtrace.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeFlowError)))
 		if emitErr := agent.EmitEvent(ctx, invocation, out, evt); emitErr != nil {
 			log.Errorf("graphagent: emit error event failed: %v", emitErr)
 		}
@@ -151,7 +154,7 @@ func (ga *GraphAgent) runWithBarrier(ctx context.Context, invocation *agent.Invo
 		evt := event.NewErrorEvent(invocation.InvocationID, invocation.AgentName,
 			model.ErrorTypeFlowError, err.Error())
 		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(attribute.String(itelemetry.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeFlowError)))
+		span.SetAttributes(attribute.String(semconvtrace.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeFlowError)))
 		if emitErr := agent.EmitEvent(ctx, invocation, out, evt); emitErr != nil {
 			log.Errorf("graphagent: emit error event failed: %v.", emitErr)
 		}
@@ -160,7 +163,7 @@ func (ga *GraphAgent) runWithBarrier(ctx context.Context, invocation *agent.Invo
 	for evt := range innerChan {
 		if err := event.EmitEvent(ctx, out, evt); err != nil {
 			span.SetStatus(codes.Error, err.Error())
-			span.SetAttributes(attribute.String(itelemetry.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeFlowError)))
+			span.SetAttributes(attribute.String(semconvtrace.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeFlowError)))
 			log.Errorf("graphagent: emit event failed: %v.", err)
 			return
 		}

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -33,6 +34,8 @@ import (
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
+	teletrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -428,10 +431,10 @@ func TestWrapEventChannelWithTelemetry_AccumulatesTokenUsage(t *testing.T) {
 	}
 
 	attrs := spans[0].Attributes()
-	if !hasAttr(attrs, attribute.Int(itelemetry.KeyGenAIUsageInputTokens, finalEvent.Response.Usage.PromptTokens)) {
+	if !hasAttr(attrs, attribute.Int(semconvtrace.KeyGenAIUsageInputTokens, finalEvent.Response.Usage.PromptTokens)) {
 		t.Fatalf("expected input token usage to be recorded, attrs=%v", attrs)
 	}
-	if !hasAttr(attrs, attribute.Int(itelemetry.KeyGenAIUsageOutputTokens, finalEvent.Response.Usage.CompletionTokens)) {
+	if !hasAttr(attrs, attribute.Int(semconvtrace.KeyGenAIUsageOutputTokens, finalEvent.Response.Usage.CompletionTokens)) {
 		t.Fatalf("expected output token usage to be recorded, attrs=%v", attrs)
 	}
 }
@@ -1109,6 +1112,49 @@ func TestUserIDHeaderInRequest(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestA2AAgent_Run_RecordsStreamTraceAttribute(t *testing.T) {
+	originalTracer := teletrace.Tracer
+	defer func() {
+		teletrace.Tracer = originalTracer
+	}()
+
+	spanRecorder := tracetest.NewSpanRecorder()
+	tp := tracesdk.NewTracerProvider(tracesdk.WithSpanProcessor(spanRecorder))
+	defer func() {
+		_ = tp.Shutdown(context.Background())
+	}()
+	teletrace.Tracer = tp.Tracer("test")
+
+	a := &A2AAgent{
+		name:            "remote-agent",
+		description:     "remote test agent",
+		enableStreaming: boolPtr(true),
+	}
+
+	stream := false
+	_, err := a.Run(context.Background(), &agent.Invocation{
+		InvocationID: "test-invocation",
+		Message:      model.Message{Role: model.RoleUser, Content: "hello"},
+		RunOptions: agent.RunOptions{
+			Stream: &stream,
+		},
+	})
+	require.Error(t, err)
+
+	spans := spanRecorder.Ended()
+	require.Len(t, spans, 1)
+
+	found := false
+	for _, attr := range spans[0].Attributes() {
+		if string(attr.Key) == semconvtrace.KeyGenAIRequestIsStream {
+			found = true
+			require.False(t, attr.Value.AsBool())
+			break
+		}
+	}
+	require.True(t, found, "expected stream trace attribute to be recorded")
 }
 
 // Helper function to create bool pointer

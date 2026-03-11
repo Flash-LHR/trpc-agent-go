@@ -120,13 +120,13 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 }
 
 // AddMemory adds or updates a memory for a user (idempotent).
-func (s *Service) AddMemory(ctx context.Context, userKey memory.UserKey, memoryStr string, topics []string) error {
+func (s *Service) AddMemory(ctx context.Context, userKey memory.UserKey, memoryStr string,
+	topics []string, opts ...memory.AddOption) error {
 	if err := userKey.CheckUserKey(); err != nil {
 		return err
 	}
 	key := s.getUserMemKey(userKey)
 
-	// Enforce memory limit by HLen.
 	if s.opts.memoryLimit > 0 {
 		count, err := s.redisClient.HLen(ctx, key).Result()
 		if err != nil && err != redis.Nil {
@@ -144,6 +144,8 @@ func (s *Service) AddMemory(ctx context.Context, userKey memory.UserKey, memoryS
 		Topics:      topics,
 		LastUpdated: &now,
 	}
+	ep := memory.ResolveAddOptions(opts)
+	imemory.ApplyMetadata(mem, ep)
 	entry := &memory.Entry{
 		ID:        imemory.GenerateMemoryID(mem, userKey.AppName, userKey.UserID),
 		AppName:   userKey.AppName,
@@ -163,11 +165,15 @@ func (s *Service) AddMemory(ctx context.Context, userKey memory.UserKey, memoryS
 }
 
 // UpdateMemory updates an existing memory for a user.
-func (s *Service) UpdateMemory(ctx context.Context, memoryKey memory.Key, memoryStr string, topics []string) error {
+func (s *Service) UpdateMemory(ctx context.Context, memoryKey memory.Key, memoryStr string,
+	topics []string, opts ...memory.UpdateOption) error {
 	if err := memoryKey.CheckMemoryKey(); err != nil {
 		return err
 	}
-	key := s.getUserMemKey(memory.UserKey{AppName: memoryKey.AppName, UserID: memoryKey.UserID})
+	key := s.getUserMemKey(memory.UserKey{
+		AppName: memoryKey.AppName,
+		UserID:  memoryKey.UserID,
+	})
 
 	bytes, err := s.redisClient.HGet(ctx, key, memoryKey.MemoryID).Bytes()
 	if err != nil {
@@ -178,18 +184,46 @@ func (s *Service) UpdateMemory(ctx context.Context, memoryKey memory.Key, memory
 	if err := json.Unmarshal(bytes, entry); err != nil {
 		return fmt.Errorf("unmarshal memory entry failed: %w", err)
 	}
+	imemory.NormalizeEntry(entry)
 	now := time.Now()
-	entry.Memory.Memory = memoryStr
-	entry.Memory.Topics = topics
-	entry.Memory.LastUpdated = &now
-	entry.UpdatedAt = now
+	ep := memory.ResolveUpdateOptions(opts)
+	newID := imemory.ApplyMemoryUpdate(
+		entry,
+		memoryKey.AppName,
+		memoryKey.UserID,
+		memoryStr,
+		topics,
+		ep,
+		now,
+	)
+	if newID != memoryKey.MemoryID {
+		exists, err := s.redisClient.HExists(ctx, key, newID).Result()
+		if err != nil {
+			return fmt.Errorf("check rotated memory id failed: %w", err)
+		}
+		if exists {
+			return fmt.Errorf("memory with id %s already exists", newID)
+		}
+	}
 
 	updated, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("marshal updated memory entry failed: %w", err)
 	}
-	if err := s.redisClient.HSet(ctx, key, entry.ID, updated).Err(); err != nil {
-		return fmt.Errorf("update memory entry failed: %w", err)
+	if newID == memoryKey.MemoryID {
+		if err := s.redisClient.HSet(ctx, key, newID, updated).Err(); err != nil {
+			return fmt.Errorf("update memory entry failed: %w", err)
+		}
+	} else {
+		pipe := s.redisClient.TxPipeline()
+		pipe.HSet(ctx, key, newID, updated)
+		pipe.HDel(ctx, key, memoryKey.MemoryID)
+		if _, err := pipe.Exec(ctx); err != nil {
+			return fmt.Errorf("update memory entry failed: %w", err)
+		}
+	}
+	if result := memory.ResolveUpdateResult(opts); result != nil {
+		result.MemoryID = newID
 	}
 	return nil
 }
@@ -238,6 +272,7 @@ func (s *Service) ReadMemories(ctx context.Context, userKey memory.UserKey, limi
 		if err := json.Unmarshal([]byte(v), e); err != nil {
 			return nil, fmt.Errorf("unmarshal memory entry failed: %w", err)
 		}
+		imemory.NormalizeEntry(e)
 		entries = append(entries, e)
 	}
 	// Sort by updated time (newest first), tie-breaker by created time.
@@ -254,7 +289,8 @@ func (s *Service) ReadMemories(ctx context.Context, userKey memory.UserKey, limi
 }
 
 // SearchMemories searches memories for a user.
-func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey, query string) ([]*memory.Entry, error) {
+func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey,
+	query string, opts ...memory.SearchOption) ([]*memory.Entry, error) {
 	if err := userKey.CheckUserKey(); err != nil {
 		return nil, err
 	}
@@ -267,24 +303,21 @@ func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey, qu
 		return nil, fmt.Errorf("search memories failed: %w", err)
 	}
 
-	results := make([]*memory.Entry, 0)
+	entries := make([]*memory.Entry, 0, len(all))
 	for _, v := range all {
 		e := &memory.Entry{}
 		if err := json.Unmarshal([]byte(v), e); err != nil {
 			return nil, fmt.Errorf("unmarshal memory entry failed: %w", err)
 		}
-		if imemory.MatchMemoryEntry(e, query) {
-			results = append(results, e)
-		}
+		imemory.NormalizeEntry(e)
+		entries = append(entries, e)
 	}
-	// Stable sort by updated time desc.
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].UpdatedAt.Equal(results[j].UpdatedAt) {
-			return results[i].CreatedAt.After(results[j].CreatedAt)
-		}
-		return results[i].UpdatedAt.After(results[j].UpdatedAt)
-	})
-	return results, nil
+	return imemory.SearchEntries(
+		entries,
+		memory.ResolveSearchOptions(query, opts),
+		s.opts.searchMinScore,
+		s.opts.maxSearchResults,
+	), nil
 }
 
 // Tools returns the list of available memory tools.

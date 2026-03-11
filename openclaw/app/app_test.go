@@ -13,6 +13,7 @@ package app
 import (
 	"context"
 	"errors"
+	"flag"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -40,6 +41,7 @@ import (
 
 	occhannel "trpc.group/trpc-go/trpc-agent-go/openclaw/channel"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwclient"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/cron"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/gateway"
@@ -650,13 +652,27 @@ func TestNewRuntime_ErrorPathsExitCode(t *testing.T) {
 func TestMain_HelpReturnsUsageCode(t *testing.T) {
 	t.Parallel()
 
-	require.Equal(t, 2, Main([]string{"-h"}))
+	require.Equal(t, 0, Main([]string{"-h"}))
+}
+
+func TestMain_HelpSkipsErrorLog(t *testing.T) {
+	t.Parallel()
+
+	require.False(t, shouldLogExitError(flag.ErrHelp))
+	require.True(t, shouldLogExitError(errors.New("boom")))
+	require.False(t, shouldLogExitError(nil))
 }
 
 func TestMain_InspectDispatches(t *testing.T) {
 	t.Parallel()
 
 	require.Equal(t, 0, Main([]string{subcmdInspect}))
+}
+
+func TestMain_BootstrapDispatches(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, 2, Main([]string{subcmdBootstrap}))
 }
 
 func TestRun_TelegramProxyErrorExitCode(t *testing.T) {
@@ -1718,6 +1734,59 @@ func TestRuntimeAdminHelpers(t *testing.T) {
 	require.NotEmpty(t, instanceID)
 }
 
+func TestGatewayStartupLines(t *testing.T) {
+	t.Parallel()
+
+	gwSrv, err := gateway.New(&stubRunner{})
+	require.NoError(t, err)
+
+	require.Equal(t,
+		[]startupLogLine{
+			{text: "Gateway listening on 127.0.0.1:18080"},
+			{text: "Health:   GET  /healthz"},
+			{text: "Messages: POST /v1/gateway/messages"},
+			{text: "Stream:   POST /v1/gateway/messages:stream"},
+			{text: "Status:   GET  /v1/gateway/status?request_id=..."},
+			{text: "Cancel:   POST /v1/gateway/cancel"},
+		},
+		gatewayStartupLines("127.0.0.1:18080", gwSrv),
+	)
+}
+
+func TestAdminStartupLines(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t,
+		[]startupLogLine{
+			{text: "Admin UI listening on 127.0.0.1:19789"},
+			{text: "Admin UI: http://127.0.0.1:19789"},
+		},
+		adminStartupLines("127.0.0.1:19789", &adminBinding{
+			addr: "127.0.0.1:19789",
+			url:  "http://127.0.0.1:19789",
+		}),
+	)
+
+	require.Equal(t,
+		[]startupLogLine{
+			{
+				warn: true,
+				text: "Admin UI preferred address 127.0.0.1:19789 " +
+					"was busy; using 127.0.0.1:19790 instead",
+			},
+			{text: "Admin UI listening on 127.0.0.1:19790"},
+			{text: "Admin UI: http://127.0.0.1:19790"},
+		},
+		adminStartupLines("127.0.0.1:19789", &adminBinding{
+			addr:      "127.0.0.1:19790",
+			url:       "http://127.0.0.1:19790",
+			relocated: true,
+		}),
+	)
+
+	require.Nil(t, adminStartupLines("127.0.0.1:19789", nil))
+}
+
 type toolProviderCfg struct {
 	ToolName string `yaml:"tool_name"`
 }
@@ -1946,6 +2015,52 @@ func TestInProcGatewayClient_SendMessage_StatusError(t *testing.T) {
 	require.Equal(t, wantErr, err.Error())
 }
 
+func TestInProcGatewayClient_StreamMessage_OK(t *testing.T) {
+	t.Parallel()
+
+	srv, err := gateway.New(&inProcGWTestRunner{
+		reply:     "ok",
+		requestID: "req-1",
+	})
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(srv, appName, nil, nil, "")
+	stream, err := c.StreamMessage(context.Background(), gwclient.MessageRequest{
+		From: "u1",
+		Text: "hi",
+	})
+	require.NoError(t, err)
+
+	var events []gwclient.StreamEvent
+	for evt := range stream {
+		events = append(events, evt)
+	}
+	require.Len(t, events, 5)
+	require.Equal(t, gwproto.StreamEventTypeRunStarted, events[0].Type)
+	require.Equal(t, gwproto.StreamEventTypeRunProgress, events[1].Type)
+	require.Equal(t, gwproto.StreamEventTypeMessageDelta, events[2].Type)
+	require.Equal(t, gwproto.StreamEventTypeMessageCompleted, events[3].Type)
+	require.Equal(t, gwproto.StreamEventTypeRunCompleted, events[4].Type)
+}
+
+func TestInProcGatewayClient_StreamMessage_StatusError(t *testing.T) {
+	t.Parallel()
+
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(srv, appName, nil, nil, "")
+	_, err = c.StreamMessage(context.Background(), gwclient.MessageRequest{
+		Text: "hi",
+	})
+	require.Error(t, err)
+	require.Equal(
+		t,
+		"gwclient: status 400: invalid_request: missing user_id or from",
+		err.Error(),
+	)
+}
+
 func TestInProcGatewayClient_NilServerFails(t *testing.T) {
 	t.Parallel()
 
@@ -1959,6 +2074,13 @@ func TestInProcGatewayClient_NilServerFails(t *testing.T) {
 	require.Equal(t, errNilGatewayServer, err.Error())
 
 	_, err = c.Cancel(context.Background(), "req-1")
+	require.Error(t, err)
+	require.Equal(t, errNilGatewayServer, err.Error())
+
+	_, err = c.StreamMessage(context.Background(), gwclient.MessageRequest{
+		From: "u1",
+		Text: "hi",
+	})
 	require.Error(t, err)
 	require.Equal(t, errNilGatewayServer, err.Error())
 }

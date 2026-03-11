@@ -22,6 +22,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	tracesdk "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
@@ -34,6 +36,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/session/summary"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -2236,7 +2239,7 @@ func TestGraphAgent_RunWithBarrier_EmitEventError(t *testing.T) {
 	}
 
 	// Create output channel with buffer size 0 to make EmitEvent block
-	out := make(chan *event.Event, 0)
+	out := make(chan *event.Event)
 
 	// Create a context that will be canceled to cause EmitEvent to fail
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2289,7 +2292,7 @@ func TestGraphAgent_RunWithBarrier_EmitEventError(t *testing.T) {
 	attrs := agentSpan.getAttributes()
 	var errorTypeAttr *attribute.KeyValue
 	for i := range attrs {
-		if string(attrs[i].Key) == string(itelemetry.KeyErrorType) {
+		if string(attrs[i].Key) == string(semconvtrace.KeyErrorType) {
 			errorTypeAttr = &attrs[i]
 			break
 		}
@@ -2297,4 +2300,70 @@ func TestGraphAgent_RunWithBarrier_EmitEventError(t *testing.T) {
 	require.NotNil(t, errorTypeAttr, "expected error type attribute to be set")
 	errorTypeValue := errorTypeAttr.Value.AsString()
 	require.Equal(t, model.ErrorTypeFlowError, errorTypeValue, "expected error type to be FlowError")
+}
+
+func TestGraphAgent_Run_RecordsStreamTraceAttribute(t *testing.T) {
+	originalTracer := trace.Tracer
+	defer func() {
+		trace.Tracer = originalTracer
+	}()
+
+	spanRecorder := tracetest.NewSpanRecorder()
+	tp := tracesdk.NewTracerProvider(tracesdk.WithSpanProcessor(spanRecorder))
+	defer func() {
+		_ = tp.Shutdown(context.Background())
+	}()
+	trace.Tracer = tp.Tracer("test")
+
+	schema := graph.NewStateSchema().
+		AddField("output", graph.StateField{
+			Type:    reflect.TypeOf(""),
+			Reducer: graph.DefaultReducer,
+		})
+	g, err := graph.NewStateGraph(schema).
+		AddNode("process", func(ctx context.Context, state graph.State) (any, error) {
+			return graph.State{"output": "result"}, nil
+		}).
+		SetEntryPoint("process").
+		SetFinishPoint("process").
+		Compile()
+	require.NoError(t, err)
+
+	ga, err := New("stream-trace-test", g)
+	require.NoError(t, err)
+
+	stream := true
+	invocation := &agent.Invocation{
+		InvocationID: "test-invocation",
+		AgentName:    "stream-trace-test",
+		Message:      model.Message{Role: model.RoleUser, Content: "hello"},
+		RunOptions: agent.RunOptions{
+			Stream: &stream,
+		},
+	}
+
+	events, err := ga.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	for range events {
+	}
+
+	var agentSpan tracesdk.ReadOnlySpan
+	expectedSpanName := fmt.Sprintf("%s %s", itelemetry.OperationInvokeAgent, invocation.AgentName)
+	for _, span := range spanRecorder.Ended() {
+		if span.Name() == expectedSpanName {
+			agentSpan = span
+			break
+		}
+	}
+	require.NotNil(t, agentSpan, "expected invoke_agent span to be created")
+
+	found := false
+	for _, attr := range agentSpan.Attributes() {
+		if string(attr.Key) == semconvtrace.KeyGenAIRequestIsStream {
+			found = true
+			require.True(t, attr.Value.AsBool())
+			break
+		}
+	}
+	require.True(t, found, "expected stream trace attribute to be recorded")
 }

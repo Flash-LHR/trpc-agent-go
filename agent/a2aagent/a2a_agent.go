@@ -31,6 +31,7 @@ import (
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -160,14 +161,14 @@ func (r *A2AAgent) validateA2ARequestOptions(invocation *agent.Invocation) error
 func (r *A2AAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
 	var err error
 	ctx, span := trace.Tracer.Start(ctx, fmt.Sprintf("%s %s", itelemetry.OperationInvokeAgent, r.name))
-	itelemetry.TraceBeforeInvokeAgent(span, invocation, r.description, "", nil)
 	useStreaming := r.shouldUseStreaming(invocation)
+	itelemetry.TraceBeforeInvokeAgent(span, invocation, r.description, "", &model.GenerationConfig{Stream: useStreaming})
 	tracker := itelemetry.NewInvokeAgentTracker(ctx, invocation, useStreaming, &err)
 
 	if r.a2aClient == nil {
 		span.SetStatus(codes.Error, "A2A client is nil")
 
-		span.SetAttributes(attribute.String(itelemetry.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
+		span.SetAttributes(attribute.String(semconvtrace.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
 		span.End()
 		return nil, fmt.Errorf("A2A client is nil")
 	}
@@ -175,7 +176,7 @@ func (r *A2AAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-cha
 	// Validate A2A request options early
 	if err := r.validateA2ARequestOptions(invocation); err != nil {
 		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(attribute.String(itelemetry.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
+		span.SetAttributes(attribute.String(semconvtrace.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
 		span.End()
 		return nil, err
 	}
@@ -190,7 +191,7 @@ func (r *A2AAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-cha
 	}
 	if err != nil {
 		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(attribute.String(itelemetry.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
+		span.SetAttributes(attribute.String(semconvtrace.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
 		span.End()
 		return nil, err
 	}

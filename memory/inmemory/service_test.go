@@ -56,6 +56,45 @@ func TestMemoryService_AddMemory(t *testing.T) {
 	assert.Len(t, memories[0].Memory.Topics, 2, "Expected 2 topics")
 }
 
+func TestMemoryService_AddMemory_DifferentEpisodeMetadataGetsDifferentIDs(t *testing.T) {
+	service := NewMemoryService()
+	ctx := context.Background()
+	userKey := memory.UserKey{
+		AppName: "test-app",
+		UserID:  "test-user",
+	}
+	day1 := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+	day2 := time.Date(2024, 5, 2, 0, 0, 0, 0, time.UTC)
+
+	require.NoError(t, service.AddMemory(
+		ctx,
+		userKey,
+		"User met Alice",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind:         memory.KindEpisode,
+			EventTime:    &day1,
+			Participants: []string{"Alice"},
+		}),
+	))
+	require.NoError(t, service.AddMemory(
+		ctx,
+		userKey,
+		"User met Alice",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind:         memory.KindEpisode,
+			EventTime:    &day2,
+			Participants: []string{"Alice"},
+		}),
+	))
+
+	memories, err := service.ReadMemories(ctx, userKey, 10)
+	require.NoError(t, err)
+	require.Len(t, memories, 2)
+	assert.NotEqual(t, memories[0].ID, memories[1].ID)
+}
+
 func TestMemoryService_UpdateMemory(t *testing.T) {
 	service := NewMemoryService()
 	ctx := context.Background()
@@ -85,6 +124,86 @@ func TestMemoryService_UpdateMemory(t *testing.T) {
 	require.NoError(t, err, "ReadMemories failed")
 
 	assert.Equal(t, "updated memory", memories[0].Memory.Memory, "Expected updated memory content")
+}
+
+func TestMemoryService_UpdateMemory_RotatesIDAndReturnsResult(t *testing.T) {
+	service := NewMemoryService()
+	ctx := context.Background()
+	userKey := memory.UserKey{
+		AppName: "test-app",
+		UserID:  "test-user",
+	}
+
+	require.NoError(t, service.AddMemory(ctx, userKey, "first memory", nil))
+	memories, err := service.ReadMemories(ctx, userKey, 1)
+	require.NoError(t, err)
+	require.Len(t, memories, 1)
+
+	oldID := memories[0].ID
+	result := &memory.UpdateResult{}
+	memKey := memory.Key{
+		AppName:  userKey.AppName,
+		UserID:   userKey.UserID,
+		MemoryID: oldID,
+	}
+	require.NoError(t, service.UpdateMemory(
+		ctx,
+		memKey,
+		"updated memory",
+		[]string{"updated"},
+		memory.WithUpdateResult(result),
+	))
+
+	assert.NotEmpty(t, result.MemoryID)
+	assert.NotEqual(t, oldID, result.MemoryID)
+
+	memories, err = service.ReadMemories(ctx, userKey, 10)
+	require.NoError(t, err)
+	require.Len(t, memories, 1)
+	assert.Equal(t, result.MemoryID, memories[0].ID)
+	assert.Equal(t, memory.KindFact, memories[0].Memory.Kind)
+}
+
+func TestMemoryService_UpdateMemory_PreservesMetadataWhenNotProvided(t *testing.T) {
+	service := NewMemoryService()
+	ctx := context.Background()
+	userKey := memory.UserKey{
+		AppName: "test-app",
+		UserID:  "test-user",
+	}
+	eventTime := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
+
+	require.NoError(t, service.AddMemory(
+		ctx,
+		userKey,
+		"first memory",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind:         memory.KindEpisode,
+			EventTime:    &eventTime,
+			Participants: []string{"Alice"},
+			Location:     "Kyoto",
+		}),
+	))
+
+	memories, err := service.ReadMemories(ctx, userKey, 1)
+	require.NoError(t, err)
+	memKey := memory.Key{
+		AppName:  userKey.AppName,
+		UserID:   userKey.UserID,
+		MemoryID: memories[0].ID,
+	}
+
+	require.NoError(t, service.UpdateMemory(ctx, memKey, "updated memory", []string{"updated"}))
+
+	memories, err = service.ReadMemories(ctx, userKey, 1)
+	require.NoError(t, err)
+	require.Len(t, memories, 1)
+	assert.Equal(t, memory.KindEpisode, memories[0].Memory.Kind)
+	require.NotNil(t, memories[0].Memory.EventTime)
+	assert.Equal(t, eventTime, *memories[0].Memory.EventTime)
+	assert.Equal(t, []string{"Alice"}, memories[0].Memory.Participants)
+	assert.Equal(t, "Kyoto", memories[0].Memory.Location)
 }
 
 func TestMemoryService_DeleteMemory(t *testing.T) {
@@ -172,6 +291,105 @@ func TestMemoryService_SearchMemories(t *testing.T) {
 	assert.Len(t, results, 0, "Expected 0 results for 'nonexistent' search")
 }
 
+func TestMemoryService_SearchMemories_RanksAndLimitsByDefault(t *testing.T) {
+	service := NewMemoryService()
+	ctx := context.Background()
+	userKey := memory.UserKey{
+		AppName: "test-app",
+		UserID:  "test-user",
+	}
+
+	app := service.getAppMemories(userKey.AppName)
+	app.memories[userKey.UserID] = make(map[string]*memory.Entry)
+
+	base := time.Now().UTC()
+	app.memories[userKey.UserID]["best"] = &memory.Entry{
+		ID:        "best",
+		AppName:   userKey.AppName,
+		UserID:    userKey.UserID,
+		CreatedAt: base.Add(-20 * time.Minute),
+		UpdatedAt: base.Add(-20 * time.Minute),
+		Memory: &memory.Memory{
+			Memory:      "User likes coffee and tea",
+			LastUpdated: ptrTime(base.Add(-20 * time.Minute)),
+		},
+	}
+
+	for i := 0; i < 10; i++ {
+		ts := base.Add(time.Duration(i) * time.Minute)
+		id := fmt.Sprintf("partial-%02d", i)
+		app.memories[userKey.UserID][id] = &memory.Entry{
+			ID:        id,
+			AppName:   userKey.AppName,
+			UserID:    userKey.UserID,
+			CreatedAt: ts,
+			UpdatedAt: ts,
+			Memory: &memory.Memory{
+				Memory:      "User likes coffee",
+				LastUpdated: ptrTime(ts),
+			},
+		}
+	}
+
+	results, err := service.SearchMemories(ctx, userKey, "coffee tea")
+	require.NoError(t, err, "SearchMemories failed")
+	require.Len(t, results, 10)
+	assert.Equal(t, "best", results[0].ID)
+	assert.Equal(t, "partial-09", results[1].ID)
+	assert.Equal(t, "partial-01", results[9].ID)
+}
+
+func TestMemoryService_SearchMemories_CustomSearchOptions(t *testing.T) {
+	service := NewMemoryService(
+		WithMinSearchScore(0),
+		WithMaxResults(0),
+	)
+	ctx := context.Background()
+	userKey := memory.UserKey{
+		AppName: "test-app",
+		UserID:  "test-user",
+	}
+
+	app := service.getAppMemories(userKey.AppName)
+	app.memories[userKey.UserID] = make(map[string]*memory.Entry)
+
+	base := time.Now().UTC()
+	app.memories[userKey.UserID]["best"] = &memory.Entry{
+		ID:        "best",
+		AppName:   userKey.AppName,
+		UserID:    userKey.UserID,
+		CreatedAt: base.Add(-20 * time.Minute),
+		UpdatedAt: base.Add(-20 * time.Minute),
+		Memory: &memory.Memory{
+			Memory:      "User likes coffee and tea",
+			LastUpdated: ptrTime(base.Add(-20 * time.Minute)),
+		},
+	}
+
+	for i := 0; i < 10; i++ {
+		ts := base.Add(time.Duration(i) * time.Minute)
+		id := fmt.Sprintf("partial-%02d", i)
+		app.memories[userKey.UserID][id] = &memory.Entry{
+			ID:        id,
+			AppName:   userKey.AppName,
+			UserID:    userKey.UserID,
+			CreatedAt: ts,
+			UpdatedAt: ts,
+			Memory: &memory.Memory{
+				Memory:      "User likes coffee",
+				LastUpdated: ptrTime(ts),
+			},
+		}
+	}
+
+	results, err := service.SearchMemories(ctx, userKey, "coffee tea")
+	require.NoError(t, err, "SearchMemories failed")
+	require.Len(t, results, 11)
+	assert.Equal(t, "best", results[0].ID)
+	assert.Equal(t, "partial-09", results[1].ID)
+	assert.Equal(t, "partial-00", results[10].ID)
+}
+
 func TestMemoryService_ReadMemoriesWithLimit(t *testing.T) {
 	service := NewMemoryService()
 	ctx := context.Background()
@@ -194,6 +412,10 @@ func TestMemoryService_ReadMemoriesWithLimit(t *testing.T) {
 	memories, err = service.ReadMemories(ctx, userKey, 0)
 	require.NoError(t, err, "ReadMemories failed")
 	assert.Len(t, memories, 5, "Expected 5 memories without limit")
+}
+
+func ptrTime(t time.Time) *time.Time {
+	return &t
 }
 
 func TestMemoryService_Concurrency(t *testing.T) {

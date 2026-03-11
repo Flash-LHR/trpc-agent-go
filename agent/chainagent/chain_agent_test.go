@@ -17,11 +17,15 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	tracesdk "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/graphagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
+	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -974,4 +978,56 @@ func TestChainAgent_DisableGraphCompletionEvent_AddsVisibleCompletionMetadataFor
 	require.NotNil(t, visibleEvent)
 	require.Equal(t, []byte("{}"), visibleEvent.StateDelta[graph.MetadataKeyCompletion])
 	require.Equal(t, "manual-final", visibleEvent.Response.Choices[0].Message.Content)
+}
+
+func TestChainAgent_Run_RecordsStreamTraceAttribute(t *testing.T) {
+	originalTracer := trace.Tracer
+	defer func() {
+		trace.Tracer = originalTracer
+	}()
+
+	spanRecorder := tracetest.NewSpanRecorder()
+	tp := tracesdk.NewTracerProvider(tracesdk.WithSpanProcessor(spanRecorder))
+	defer func() {
+		_ = tp.Shutdown(context.Background())
+	}()
+	trace.Tracer = tp.Tracer("test")
+
+	chainAgent := New(
+		"test-chain",
+		WithSubAgents([]agent.Agent{
+			&mockAgent{
+				name:         "child",
+				eventCount:   1,
+				eventContent: "streamed content",
+			},
+		}),
+	)
+
+	stream := true
+	invocation := &agent.Invocation{
+		InvocationID: "test-invocation",
+		Message:      model.Message{Role: model.RoleUser, Content: "hello"},
+		RunOptions: agent.RunOptions{
+			Stream: &stream,
+		},
+	}
+
+	events, err := chainAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	for range events {
+	}
+
+	spans := spanRecorder.Ended()
+	require.Len(t, spans, 1)
+
+	found := false
+	for _, attr := range spans[0].Attributes() {
+		if string(attr.Key) == semconvtrace.KeyGenAIRequestIsStream {
+			found = true
+			require.True(t, attr.Value.AsBool())
+			break
+		}
+	}
+	require.True(t, found, "expected stream trace attribute to be recorded")
 }

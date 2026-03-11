@@ -299,42 +299,20 @@ func (p *ContentRequestProcessor) ProcessRequest(
 		if !skipHistory && p.AddSessionSummary && p.TimelineFilterMode == TimelineFilterAll {
 			// Fetch session summary early so we can insert it after other
 			// semi-stable system blocks (for example, preloaded memories).
-			summaryMsg, summaryUpdatedAt =
-				p.getSessionSummaryMessage(invocation)
+			summaryMsg, summaryUpdatedAt = p.getSessionSummaryMessage(invocation)
 		}
 
 		// Preload memories into system prompt if configured.
 		// PreloadMemory: 0 = disabled, -1 = all, N > 0 = most recent N.
 		if p.PreloadMemory != 0 && invocation.MemoryService != nil {
 			if memMsg := p.getPreloadMemoryMessage(ctx, invocation); memMsg != nil {
-				// Insert memory as a system message after the last system
-				// message to keep stable instructions cacheable.
-				systemMsgIndex := findLastSystemMessageIndex(
-					req.Messages,
-				)
-				if systemMsgIndex >= 0 {
-					req.Messages = append(req.Messages[:systemMsgIndex+1],
-						append([]model.Message{*memMsg}, req.Messages[systemMsgIndex+1:]...)...)
-				} else {
-					req.Messages = append([]model.Message{*memMsg}, req.Messages...)
-				}
+				p.injectSystemContextMessage(req, *memMsg)
 			}
 		}
 
 		if summaryMsg != nil {
-			invocation.SetState(
-				contentHasSessionSummaryStateKey,
-				true,
-			)
-			// Insert summary as a separate system message after the last
-			// system message to keep stable instructions cacheable.
-			systemMsgIndex := findLastSystemMessageIndex(req.Messages)
-			if systemMsgIndex >= 0 {
-				req.Messages = append(req.Messages[:systemMsgIndex+1],
-					append([]model.Message{*summaryMsg}, req.Messages[systemMsgIndex+1:]...)...)
-			} else {
-				req.Messages = append([]model.Message{*summaryMsg}, req.Messages...)
-			}
+			invocation.SetState(contentHasSessionSummaryStateKey, true)
+			p.injectSystemContextMessage(req, *summaryMsg)
 		}
 
 		if skipHistory {
@@ -376,6 +354,28 @@ func (p *ContentRequestProcessor) ProcessRequest(
 		invocation.AgentName,
 		event.WithObject(model.ObjectTypePreprocessingContent),
 	))
+}
+
+// injectSystemContextMessage injects summary or memory context into request.
+// It merges the content into an existing system message if one exists,
+// or prepends as a new system message if none exists.
+func (p *ContentRequestProcessor) injectSystemContextMessage(
+	req *model.Request,
+	msg model.Message,
+) {
+	if msg.Role != model.RoleSystem {
+		return
+	}
+	systemMsgIndex := findSystemMessageIndex(req.Messages)
+	if systemMsgIndex >= 0 {
+		if req.Messages[systemMsgIndex].Content == "" {
+			req.Messages[systemMsgIndex].Content = msg.Content
+			return
+		}
+		req.Messages[systemMsgIndex].Content += "\n\n" + msg.Content
+		return
+	}
+	req.Messages = append([]model.Message{msg}, req.Messages...)
 }
 
 // injectInjectedContextMessages inserts per-run context messages into the request
@@ -1539,13 +1539,35 @@ func (p *ContentRequestProcessor) getPreloadMemoryMessage(
 func formatMemoryContent(memories []*memory.Entry) string {
 	var sb strings.Builder
 	sb.WriteString("## User Memories\n\n")
-	sb.WriteString("The following are memories about the user:\n\n")
+	sb.WriteString("The following are stored memories about the user. ")
+	sb.WriteString("Use these to answer questions. Episodic memories include ")
+	sb.WriteString("event details (time, participants, location).\n\n")
 	for _, mem := range memories {
 		if mem == nil || mem.Memory == nil {
 			continue
 		}
-		fmt.Fprintf(&sb, "ID: %s\n", mem.ID)
-		fmt.Fprintf(&sb, "Memory: %s\n\n", mem.Memory.Memory)
+		fmt.Fprintf(&sb, "- [%s] %s", mem.ID, mem.Memory.Memory)
+		// Append metadata inline for richer context.
+		var meta []string
+		if mem.Memory.Kind != "" {
+			meta = append(meta, fmt.Sprintf("kind=%s", mem.Memory.Kind))
+		}
+		if mem.Memory.EventTime != nil {
+			meta = append(meta, fmt.Sprintf("date=%s", mem.Memory.EventTime.Format("2006-01-02")))
+		}
+		if len(mem.Memory.Participants) > 0 {
+			meta = append(meta, fmt.Sprintf("with=%s", strings.Join(mem.Memory.Participants, ", ")))
+		}
+		if mem.Memory.Location != "" {
+			meta = append(meta, fmt.Sprintf("at=%s", mem.Memory.Location))
+		}
+		if len(mem.Memory.Topics) > 0 {
+			meta = append(meta, fmt.Sprintf("topics=%s", strings.Join(mem.Memory.Topics, ", ")))
+		}
+		if len(meta) > 0 {
+			fmt.Fprintf(&sb, " (%s)", strings.Join(meta, "; "))
+		}
+		sb.WriteString("\n")
 	}
 	return sb.String()
 }
