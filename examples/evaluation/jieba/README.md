@@ -53,7 +53,7 @@ The checked-in metric is:
 - Metric name: `final_response_avg_score`
 - Criterion: `finalResponse.rouge`
 - ROUGE type: `rouge1`
-- Measure: `F1`
+- Measure: `f1`
 - Thresholds: precision `0.3`, recall `0.6`, f1 `0.4`
 - Tokenizer name: `jieba`
 

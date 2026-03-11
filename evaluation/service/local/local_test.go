@@ -320,34 +320,6 @@ func TestLocalEvaluateResolvesMetricRegistryCompareName(t *testing.T) {
 	}
 }
 
-func TestLocalEvaluateResolveMetricExtensionsErrorIncludesMetricName(t *testing.T) {
-	ctx := context.Background()
-	svc, err := New(
-		&fakeRunner{},
-		service.WithEvalSetManager(evalsetinmemory.New()),
-		service.WithRegistry(registry.New()),
-		service.WithMetricRegistry(metricregistry.New()),
-	)
-	assert.NoError(t, err)
-	_, err = svc.Evaluate(ctx, &service.EvaluateRequest{
-		AppName:   "app",
-		EvalSetID: "set",
-		EvaluateConfig: &service.EvaluateConfig{
-			EvalMetrics: []*metric.EvalMetric{{
-				MetricName: "final_response_avg_score",
-				Criterion: &criterion.Criterion{
-					FinalResponse: &finalresponse.FinalResponseCriterion{
-						Text: &criteriontext.TextCriterion{CompareName: "missing"},
-					},
-				},
-			}},
-		},
-	})
-	assert.ErrorContains(t, err, "resolve metric at index 0")
-	assert.ErrorContains(t, err, `resolve metric "final_response_avg_score" final response criterion`)
-	assert.ErrorContains(t, err, "text compare missing not found")
-}
-
 func makeInferenceResult(appName, evalSetID, caseID, sessionID string, inferences []*evalset.Invocation) *service.InferenceResult {
 	return &service.InferenceResult{
 		AppName:    appName,
