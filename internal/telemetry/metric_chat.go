@@ -281,6 +281,45 @@ func (t *ChatMetricsTracker) SetInvocationState(
 	t.timingInfo = timingInfo
 }
 
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func sameMetricsSessionView(previous *session.Session, current *session.Session) bool {
+	if previous == nil || current == nil {
+		return previous == current
+	}
+	return previous.ID == current.ID &&
+		previous.UserID == current.UserID &&
+		previous.AppName == current.AppName
+}
+
+func mergeMetricsSessionView(
+	previous *session.Session,
+	current *session.Session,
+) *session.Session {
+	if previous == nil {
+		return metricsSessionView(current)
+	}
+	if current == nil {
+		return previous
+	}
+	sessionView := &session.Session{
+		ID:      firstNonEmptyString(previous.ID, current.ID),
+		UserID:  firstNonEmptyString(previous.UserID, current.UserID),
+		AppName: firstNonEmptyString(previous.AppName, current.AppName),
+	}
+	if sameMetricsSessionView(previous, sessionView) {
+		return previous
+	}
+	return sessionView
+}
+
 func mergeInvocationForMetrics(
 	previous *agent.Invocation,
 	current *agent.Invocation,
@@ -291,47 +330,16 @@ func mergeInvocationForMetrics(
 	if current == nil {
 		return previous
 	}
-	needsAgentName := previous.AgentName == "" && current.AgentName != ""
-	needsModel := previous.Model == nil && current.Model != nil
-	needsSession := previous.Session == nil ||
-		(previous.Session.ID == "" && current.Session != nil && current.Session.ID != "") ||
-		(previous.Session.UserID == "" && current.Session != nil && current.Session.UserID != "") ||
-		(previous.Session.AppName == "" && current.Session != nil && current.Session.AppName != "")
-	if !needsAgentName && !needsModel && !needsSession {
-		return previous
-	}
-	agentName := previous.AgentName
-	if agentName == "" {
-		agentName = current.AgentName
-	}
+	agentName := firstNonEmptyString(previous.AgentName, current.AgentName)
 	modelValue := previous.Model
 	if modelValue == nil {
 		modelValue = current.Model
 	}
-	var sessionID, userID, appName string
-	if previous.Session != nil {
-		sessionID = previous.Session.ID
-		userID = previous.Session.UserID
-		appName = previous.Session.AppName
-	}
-	if current.Session != nil {
-		if sessionID == "" {
-			sessionID = current.Session.ID
-		}
-		if userID == "" {
-			userID = current.Session.UserID
-		}
-		if appName == "" {
-			appName = current.Session.AppName
-		}
-	}
-	var sessionView *session.Session
-	if sessionID != "" || userID != "" || appName != "" {
-		sessionView = &session.Session{
-			ID:      sessionID,
-			UserID:  userID,
-			AppName: appName,
-		}
+	sessionView := mergeMetricsSessionView(previous.Session, current.Session)
+	if agentName == previous.AgentName &&
+		modelValue == previous.Model &&
+		sameMetricsSessionView(previous.Session, sessionView) {
+		return previous
 	}
 	return &agent.Invocation{
 		AgentName: agentName,

@@ -1244,6 +1244,36 @@ func (r *llmRunner) executeHistoryStage(ctx context.Context, state State, span o
 	return nil, nil
 }
 
+func applyInvocationRequestOverrides(
+	request *model.Request,
+	invocation *agent.Invocation,
+	nodeID string,
+) {
+	if invocation == nil {
+		return
+	}
+	if opts := graphCallOptionsFromConfigs(
+		invocation.RunOptions.CustomAgentConfigs,
+	); opts != nil {
+		patch := generationPatchForNode(opts, nodeID)
+		request.GenerationConfig = model.ApplyGenerationConfigPatch(
+			request.GenerationConfig,
+			patch,
+		)
+	}
+	if invocation.RunOptions.Stream != nil {
+		request.GenerationConfig.Stream = *invocation.RunOptions.Stream
+	}
+}
+
+func extractModelResponseSummary(result any) (string, string) {
+	finalResponse, ok := result.(*model.Response)
+	if !ok || finalResponse == nil || len(finalResponse.Choices) == 0 {
+		return "", ""
+	}
+	return finalResponse.Choices[0].Message.Content, finalResponse.ID
+}
+
 func (r *llmRunner) executeModel(
 	ctx context.Context,
 	state State,
@@ -1267,20 +1297,7 @@ func (r *llmRunner) executeModel(
 	// Sanitize invalid tool calls in history to avoid poisoning future requests.
 	request.Messages = toolcall.SanitizeMessagesWithTools(request.Messages, request.Tools)
 	invocation := invocationFromContextOrDefault(ctx, nil)
-	if invocation != nil {
-		if opts := graphCallOptionsFromConfigs(
-			invocation.RunOptions.CustomAgentConfigs,
-		); opts != nil {
-			patch := generationPatchForNode(opts, nodeID)
-			request.GenerationConfig = model.ApplyGenerationConfigPatch(
-				request.GenerationConfig,
-				patch,
-			)
-		}
-		if invocation.RunOptions.Stream != nil {
-			request.GenerationConfig.Stream = *invocation.RunOptions.Stream
-		}
-	}
+	applyInvocationRequestOverrides(request, invocation, nodeID)
 	invocationID, sessionID, appName, userID, eventChan := extractExecutionContext(state)
 	modelCallbacks, _ := state[StateKeyModelCallbacks].(*model.Callbacks)
 	emittedModelStartEvent := false
@@ -1358,13 +1375,10 @@ func (r *llmRunner) executeModel(
 		}
 	}
 	if emittedModelStartEvent {
-		var modelOutput string
-		var responseID string
-		if err == nil && result != nil {
-			if finalResponse, ok := result.(*model.Response); ok && len(finalResponse.Choices) > 0 {
-				modelOutput = finalResponse.Choices[0].Message.Content
-				responseID = finalResponse.ID
-			}
+		modelOutput := ""
+		responseID := ""
+		if err == nil {
+			modelOutput, responseID = extractModelResponseSummary(result)
 		}
 		emitModelCompleteEvent(
 			ctx,
@@ -1509,6 +1523,72 @@ func invocationFromContextOrDefault(
 
 func shouldDisableModelExecutionEvents(invocation *agent.Invocation) bool {
 	return invocation != nil && invocation.RunOptions.DisableModelExecutionEvents
+}
+
+func applyBeforeModelPluginCallbacks(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	request *model.Request,
+	span oteltrace.Span,
+) (context.Context, bool, *model.Response, error) {
+	if invocation == nil || invocation.Plugins == nil {
+		return ctx, false, nil, nil
+	}
+	callbacks := invocation.Plugins.ModelCallbacks()
+	if callbacks == nil {
+		return ctx, false, nil, nil
+	}
+	args := &model.BeforeModelArgs{Request: request}
+	result, err := callbacks.RunBeforeModel(ctx, args)
+	if err != nil {
+		span.SetAttributes(
+			attribute.String("trpc.go.agent.error", err.Error()),
+		)
+		return ctx, false, nil, fmt.Errorf(
+			"callback before model error: %w",
+			err,
+		)
+	}
+	if result != nil && result.Context != nil {
+		ctx = result.Context
+	}
+	if result != nil && result.CustomResponse != nil {
+		return ctx, true, result.CustomResponse, nil
+	}
+	return ctx, false, nil, nil
+}
+
+func applyBeforeModelCallbacks(
+	ctx context.Context,
+	callbacks *model.Callbacks,
+	request *model.Request,
+	span oteltrace.Span,
+) (context.Context, *model.Response, error) {
+	if callbacks == nil {
+		return ctx, nil, nil
+	}
+	args := &model.BeforeModelArgs{Request: request}
+	result, err := callbacks.RunBeforeModel(ctx, args)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return ctx, nil, fmt.Errorf("callback before model error: %w", err)
+	}
+	if result != nil && result.Context != nil {
+		ctx = result.Context
+	}
+	if result != nil && result.CustomResponse != nil {
+		return ctx, result.CustomResponse, nil
+	}
+	return ctx, nil, nil
+}
+
+func singleResponseStream(response *model.Response) modelResponseStream {
+	return modelResponseStream{
+		Seq: func(yield func(*model.Response) bool) {
+			yield(response)
+		},
+	}
 }
 
 func applyAfterModelPluginCallbacks(
@@ -1750,6 +1830,36 @@ type modelResponseStream struct {
 	Seq model.Seq[*model.Response]
 }
 
+func generateModelStream(
+	ctx context.Context,
+	llmModel model.Model,
+	request *model.Request,
+	span oteltrace.Span,
+) (modelResponseStream, error) {
+	// Generate content.
+	if iterModel, ok := llmModel.(model.IterModel); ok {
+		seq, err := iterModel.GenerateContentIter(ctx, request)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return modelResponseStream{}, fmt.Errorf("failed to generate content: %w", err)
+		}
+		if seq == nil {
+			err = errors.New(errMsgNoModelResponse)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		return modelResponseStream{Seq: seq}, nil
+	}
+	responseChan, err := llmModel.GenerateContent(ctx, request)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return modelResponseStream{}, fmt.Errorf("failed to generate content: %w", err)
+	}
+	return modelResponseStream{Ch: responseChan}, nil
+}
+
 func runModelStream(
 	ctx context.Context,
 	invocation *agent.Invocation,
@@ -1767,92 +1877,50 @@ func runModelStream(
 			attribute.String("trpc.go.agent.model_name", llmModel.Info().Name),
 		)
 	}
-
-	if invocation != nil && invocation.Plugins != nil {
-		callbacks := invocation.Plugins.ModelCallbacks()
-		if callbacks != nil {
-			args := &model.BeforeModelArgs{Request: request}
-			result, err := callbacks.RunBeforeModel(ctx, args)
-			if err != nil {
-				if beforeGenerate != nil {
-					beforeGenerate(ctx)
-				}
-				span.SetAttributes(
-					attribute.String("trpc.go.agent.error", err.Error()),
-				)
-				return ctx, modelResponseStream{}, fmt.Errorf(
-					"callback before model error: %w",
-					err,
-				)
-			}
-			if result != nil && result.Context != nil {
-				ctx = result.Context
-			}
-			if result != nil && result.CustomResponse != nil {
-				if beforeGenerate != nil {
-					beforeGenerate(ctx)
-				}
-				return ctx, modelResponseStream{
-					Seq: func(yield func(*model.Response) bool) {
-						yield(result.CustomResponse)
-					},
-				}, nil
-			}
+	pluginOverride := false
+	customResponse := (*model.Response)(nil)
+	var err error
+	ctx, pluginOverride, customResponse, err = applyBeforeModelPluginCallbacks(
+		ctx,
+		invocation,
+		request,
+		span,
+	)
+	if err != nil {
+		if beforeGenerate != nil {
+			beforeGenerate(ctx)
 		}
+		return ctx, modelResponseStream{}, err
 	}
-
-	if modelCallbacks != nil {
-		args := &model.BeforeModelArgs{Request: request}
-		result, err := modelCallbacks.RunBeforeModel(ctx, args)
-		if err != nil {
-			if beforeGenerate != nil {
-				beforeGenerate(ctx)
-			}
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-			return ctx, modelResponseStream{}, fmt.Errorf("callback before model error: %w", err)
+	if pluginOverride {
+		if beforeGenerate != nil {
+			beforeGenerate(ctx)
 		}
-		// Use the context from result if provided.
-		if result != nil && result.Context != nil {
-			ctx = result.Context
+		return ctx, singleResponseStream(customResponse), nil
+	}
+	ctx, customResponse, err = applyBeforeModelCallbacks(
+		ctx,
+		modelCallbacks,
+		request,
+		span,
+	)
+	if err != nil {
+		if beforeGenerate != nil {
+			beforeGenerate(ctx)
 		}
-		if result != nil && result.CustomResponse != nil {
-			if beforeGenerate != nil {
-				beforeGenerate(ctx)
-			}
-			return ctx, modelResponseStream{
-				Seq: func(yield func(*model.Response) bool) {
-					yield(result.CustomResponse)
-				},
-			}, nil
+		return ctx, modelResponseStream{}, err
+	}
+	if customResponse != nil {
+		if beforeGenerate != nil {
+			beforeGenerate(ctx)
 		}
+		return ctx, singleResponseStream(customResponse), nil
 	}
 	if beforeGenerate != nil {
 		beforeGenerate(ctx)
 	}
-	// Generate content.
-	if iterModel, ok := llmModel.(model.IterModel); ok {
-		seq, err := iterModel.GenerateContentIter(ctx, request)
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-			return ctx, modelResponseStream{}, fmt.Errorf("failed to generate content: %w", err)
-		}
-		if seq == nil {
-			err = errors.New(errMsgNoModelResponse)
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-		}
-		return ctx, modelResponseStream{Seq: seq}, nil
-	}
-
-	responseChan, err := llmModel.GenerateContent(ctx, request)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return ctx, modelResponseStream{}, fmt.Errorf("failed to generate content: %w", err)
-	}
-	return ctx, modelResponseStream{Ch: responseChan}, nil
+	stream, err := generateModelStream(ctx, llmModel, request, span)
+	return ctx, stream, err
 }
 
 // runModel preserves the pre-refactor test-facing helper signature by
@@ -3812,6 +3880,88 @@ func observabilityInvocationView(
 	}
 }
 
+func hasObservabilityModelValue(
+	invocation *agent.Invocation,
+	config modelExecutionConfig,
+) bool {
+	return config.LLMModel != nil || (invocation != nil && invocation.Model != nil)
+}
+
+func hasObservabilityInvocationIDValue(
+	invocation *agent.Invocation,
+	config modelExecutionConfig,
+) bool {
+	return config.InvocationID != "" || (invocation != nil && invocation.InvocationID != "")
+}
+
+func hasObservabilitySessionIDValue(
+	invocation *agent.Invocation,
+	config modelExecutionConfig,
+) bool {
+	return config.SessionID != "" ||
+		(invocation != nil && invocation.Session != nil && invocation.Session.ID != "")
+}
+
+func hasObservabilityUserIDValue(
+	invocation *agent.Invocation,
+	config modelExecutionConfig,
+) bool {
+	return config.UserID != "" ||
+		(invocation != nil && invocation.Session != nil && invocation.Session.UserID != "")
+}
+
+func hasObservabilityAppNameValue(
+	invocation *agent.Invocation,
+	config modelExecutionConfig,
+) bool {
+	return config.AppName != "" ||
+		(invocation != nil && invocation.Session != nil && invocation.Session.AppName != "")
+}
+
+func shouldRefreshObservabilitySessionView(
+	currentSession *session.Session,
+	invocation *agent.Invocation,
+	config modelExecutionConfig,
+) bool {
+	if currentSession == nil {
+		return hasObservabilitySessionIDValue(invocation, config) ||
+			hasObservabilityUserIDValue(invocation, config) ||
+			hasObservabilityAppNameValue(invocation, config)
+	}
+	if currentSession.ID == "" && hasObservabilitySessionIDValue(invocation, config) {
+		return true
+	}
+	if currentSession.UserID == "" && hasObservabilityUserIDValue(invocation, config) {
+		return true
+	}
+	if currentSession.AppName == "" && hasObservabilityAppNameValue(invocation, config) {
+		return true
+	}
+	return false
+}
+
+func shouldRefreshObservabilityInvocationView(
+	currentView *agent.Invocation,
+	invocation *agent.Invocation,
+	config modelExecutionConfig,
+) bool {
+	if currentView.InvocationID == "" &&
+		hasObservabilityInvocationIDValue(invocation, config) {
+		return true
+	}
+	if currentView.AgentName == "" && invocation != nil && invocation.AgentName != "" {
+		return true
+	}
+	if currentView.Model == nil && hasObservabilityModelValue(invocation, config) {
+		return true
+	}
+	return shouldRefreshObservabilitySessionView(
+		currentView.Session,
+		invocation,
+		config,
+	)
+}
+
 func refreshObservabilityInvocationView(
 	currentView *agent.Invocation,
 	invocation *agent.Invocation,
@@ -3820,37 +3970,8 @@ func refreshObservabilityInvocationView(
 	if currentView == nil {
 		return observabilityInvocationView(invocation, config)
 	}
-	if currentView.InvocationID == "" {
-		if config.InvocationID != "" || (invocation != nil && invocation.InvocationID != "") {
-			return observabilityInvocationView(invocation, config)
-		}
-	}
-	if currentView.AgentName == "" && invocation != nil && invocation.AgentName != "" {
+	if shouldRefreshObservabilityInvocationView(currentView, invocation, config) {
 		return observabilityInvocationView(invocation, config)
-	}
-	if currentView.Model == nil {
-		if config.LLMModel != nil || (invocation != nil && invocation.Model != nil) {
-			return observabilityInvocationView(invocation, config)
-		}
-	}
-	currentSession := currentView.Session
-	hasSessionID := currentSession != nil && currentSession.ID != ""
-	hasUserID := currentSession != nil && currentSession.UserID != ""
-	hasAppName := currentSession != nil && currentSession.AppName != ""
-	if !hasSessionID {
-		if config.SessionID != "" || (invocation != nil && invocation.Session != nil && invocation.Session.ID != "") {
-			return observabilityInvocationView(invocation, config)
-		}
-	}
-	if !hasUserID {
-		if config.UserID != "" || (invocation != nil && invocation.Session != nil && invocation.Session.UserID != "") {
-			return observabilityInvocationView(invocation, config)
-		}
-	}
-	if !hasAppName {
-		if config.AppName != "" || (invocation != nil && invocation.Session != nil && invocation.Session.AppName != "") {
-			return observabilityInvocationView(invocation, config)
-		}
 	}
 	return currentView
 }
