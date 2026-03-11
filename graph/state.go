@@ -271,103 +271,6 @@ type StateSchema struct {
 	Fields map[string]StateField
 }
 
-var mergeReducerPtr = reflect.ValueOf(StateReducer(MergeReducer)).Pointer()
-var messageReducerPtr = reflect.ValueOf(StateReducer(MessageReducer)).Pointer()
-
-func isMergeReducer(reducer StateReducer) bool {
-	if reducer == nil {
-		return false
-	}
-	return reflect.ValueOf(reducer).Pointer() == mergeReducerPtr
-}
-
-func isMessageReducer(reducer StateReducer) bool {
-	if reducer == nil {
-		return false
-	}
-	return reflect.ValueOf(reducer).Pointer() == messageReducerPtr
-}
-
-func messageReducerCanUseRawMessageOp(op MessageOp) bool {
-	switch op.(type) {
-	case nil:
-		return true
-	case AppendMessages:
-		return true
-	case ReplaceLastUser:
-		return true
-	case RemoveAllMessages:
-		return true
-	default:
-		return false
-	}
-}
-
-func messageReducerCanUseRawUpdate(update any) bool {
-	switch v := update.(type) {
-	case nil:
-		return true
-	case model.Message:
-		return true
-	case []model.Message:
-		return true
-	case AppendMessages:
-		return true
-	case ReplaceLastUser:
-		return true
-	case RemoveAllMessages:
-		return true
-	case MessageOp:
-		return messageReducerCanUseRawMessageOp(v)
-	case []MessageOp:
-		for _, op := range v {
-			if !messageReducerCanUseRawMessageOp(op) {
-				return false
-			}
-		}
-		return true
-	default:
-		return false
-	}
-}
-
-func messageReducerCanUseRawCurrentValue(currentValue any) bool {
-	if currentValue == nil {
-		return true
-	}
-	_, ok := currentValue.([]model.Message)
-	return ok
-}
-
-// applyLegacyMessageReducerDisableDeepCopy preserves main-branch semantics.
-func applyLegacyMessageReducerDisableDeepCopy(existing, update any) any {
-	if existing == nil {
-		existing = []model.Message{}
-	}
-	existingMsgs, ok := existing.([]model.Message)
-	if !ok {
-		return update
-	}
-	switch x := update.(type) {
-	case nil:
-		return existingMsgs
-	case model.Message:
-		return append(existingMsgs, x)
-	case []model.Message:
-		return append(existingMsgs, x...)
-	case MessageOp:
-		return x.Apply(existingMsgs)
-	case []MessageOp:
-		result := existingMsgs
-		for _, op := range x {
-			result = op.Apply(result)
-		}
-		return result
-	default:
-		return update
-	}
-}
-
 // NewStateSchema creates a new state schema.
 func NewStateSchema() *StateSchema {
 	return &StateSchema{
@@ -392,10 +295,7 @@ func (s *StateSchema) AddField(name string, field StateField) *StateSchema {
 func (s *StateSchema) ApplyUpdate(currentState State, update State) State {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make(State, len(currentState)+len(update))
-	for k, v := range currentState {
-		result[k] = v
-	}
+	result := currentState.Clone()
 	for key, updateValue := range update {
 		field, exists := s.Fields[key]
 		if !exists {
@@ -422,26 +322,6 @@ func (s *StateSchema) ApplyUpdate(currentState State, update State) State {
 		}
 
 		if field.DisableDeepCopy {
-			if isMessageReducer(field.Reducer) {
-				result[key] = applyLegacyMessageReducerDisableDeepCopy(
-					currentValue,
-					updateValue,
-				)
-				continue
-			}
-			result[key] = field.Reducer(currentValue, updateValue)
-			continue
-		}
-
-		// MergeReducer already deep-copies map entries and values, so we can
-		// safely skip the generic deep-copy path here to avoid redundant work.
-		if isMergeReducer(field.Reducer) {
-			result[key] = field.Reducer(currentValue, updateValue)
-			continue
-		}
-		if isMessageReducer(field.Reducer) &&
-			messageReducerCanUseRawCurrentValue(currentValue) &&
-			messageReducerCanUseRawUpdate(updateValue) {
 			result[key] = field.Reducer(currentValue, updateValue)
 			continue
 		}
@@ -577,19 +457,13 @@ func MergeReducer(existing, update any) any {
 	if existing == nil {
 		existing = make(map[string]any)
 	}
+
 	existingMap, ok1 := existing.(map[string]any)
 	updateMap, ok2 := update.(map[string]any)
 
 	if !ok1 || !ok2 {
 		// Fallback to default behavior; deep copy if composite
 		return deepCopyAny(update)
-	}
-
-	if len(existingMap) == 0 {
-		return cloneMergedMap(updateMap)
-	}
-	if len(updateMap) == 0 {
-		return cloneMergedMap(existingMap)
 	}
 
 	result := make(map[string]any, len(existingMap)+len(updateMap))
@@ -600,17 +474,6 @@ func MergeReducer(existing, update any) any {
 		result[k] = deepCopyAny(v)
 	}
 	return result
-}
-
-func cloneMergedMap(in map[string]any) map[string]any {
-	if len(in) == 0 {
-		return map[string]any{}
-	}
-	out := make(map[string]any, len(in))
-	for k, v := range in {
-		out[k] = deepCopyAny(v)
-	}
-	return out
 }
 
 // OneShotMessagesByNodeReducer merges targeted one-shot inputs scoped by node
@@ -750,175 +613,31 @@ func decodeMessages(v any) ([]model.Message, error) {
 
 // MessageReducer handles message arrays with ID-based updates and MessageOp support.
 func MessageReducer(existing, update any) any {
-	// Normalize existing to a stable []model.Message value. When existing is nil,
-	// preserve legacy semantics by treating it as an empty (non-nil) slice.
 	if existing == nil {
 		existing = []model.Message{}
 	}
-	existingMsgs, ok := existing.([]model.Message)
-	if !ok {
+	existingMsgs, ok1 := existing.([]model.Message)
+	if !ok1 {
 		return update
 	}
-
 	switch x := update.(type) {
 	case nil:
+		// no-op
 		return existingMsgs
 	case model.Message:
-		return appendOwnedMessage(existingMsgs, x)
+		return append(existingMsgs, x)
 	case []model.Message:
-		return appendOwnedMessages(existingMsgs, x)
-	case AppendMessages:
-		return appendOwnedMessages(existingMsgs, x.Items)
-	case ReplaceLastUser:
-		return replaceLastUserOwned(existingMsgs, x.Content)
-	case RemoveAllMessages:
-		return nil
+		return append(existingMsgs, x...)
 	case MessageOp:
-		return applyGenericMessageOp(existingMsgs, x)
+		return x.Apply(existingMsgs)
 	case []MessageOp:
-		return applyMessageOps(existingMsgs, x)
+		result := existingMsgs
+		for _, op := range x {
+			result = op.Apply(result)
+		}
+		return result
 	default:
 		// Fallback to default behavior for unsupported types
 		return update
 	}
-}
-
-func appendOwnedMessage(existing []model.Message, msg model.Message) []model.Message {
-	out := cloneMessageSlicePreserveEmpty(existing)
-	return appendCopiedMessages(out, []model.Message{msg})
-}
-
-func appendOwnedMessages(existing, updates []model.Message) []model.Message {
-	if len(updates) == 0 {
-		return existing
-	}
-	out := cloneMessageSlicePreserveEmpty(existing)
-	return appendCopiedMessages(out, updates)
-}
-
-func cloneMessageSlicePreserveEmpty(in []model.Message) []model.Message {
-	if in == nil {
-		return nil
-	}
-	return deepCopyModelMessages(in)
-}
-
-func appendCopiedMessages(
-	out []model.Message,
-	updates []model.Message,
-) []model.Message {
-	if len(updates) == 0 {
-		return out
-	}
-	return append(out, deepCopyModelMessages(updates)...)
-}
-
-func replaceLastUserOwned(existing []model.Message, content string) []model.Message {
-	out := cloneMessageSlicePreserveEmpty(existing)
-	for i := len(out) - 1; i >= 0; i-- {
-		if out[i].Role != model.RoleUser {
-			continue
-		}
-		out[i] = replaceUserMessageContent(out[i], content)
-		return out
-	}
-	return appendOwnedMessage(out, model.NewUserMessage(content))
-}
-
-func replaceUserMessageContent(msg model.Message, content string) model.Message {
-	return model.Message{
-		Role:             model.RoleUser,
-		Content:          content,
-		ContentParts:     msg.ContentParts,
-		ToolID:           msg.ToolID,
-		ToolName:         msg.ToolName,
-		ToolCalls:        msg.ToolCalls,
-		ReasoningContent: msg.ReasoningContent,
-	}
-}
-
-func applyGenericMessageOp(existing []model.Message, op MessageOp) []model.Message {
-	return finalizeCustomMessageOp(op.Apply(cloneCustomMessageOpInput(existing)))
-}
-
-func applyMessageOps(existing []model.Message, ops []MessageOp) []model.Message {
-	if out, ok := fastAppendMessageOps(existing, ops); ok {
-		return out
-	}
-
-	out := cloneMessageSlicePreserveEmpty(existing)
-	for _, op := range ops {
-		out = applyOwnedMessageOp(out, op)
-	}
-	return out
-}
-
-func fastAppendMessageOps(existing []model.Message, ops []MessageOp) ([]model.Message, bool) {
-	totalAppend := 0
-	for _, op := range ops {
-		switch v := op.(type) {
-		case nil:
-			continue
-		case AppendMessages:
-			totalAppend += len(v.Items)
-		default:
-			return nil, false
-		}
-	}
-	if totalAppend == 0 {
-		return existing, true
-	}
-	base := cloneMessageSlicePreserveEmpty(existing)
-	out := make([]model.Message, len(base)+totalAppend)
-	copy(out, base)
-	pos := len(base)
-	for _, op := range ops {
-		appendOp, ok := op.(AppendMessages)
-		if !ok || len(appendOp.Items) == 0 {
-			continue
-		}
-		copiedItems := deepCopyModelMessages(appendOp.Items)
-		copy(out[pos:], copiedItems)
-		pos += len(copiedItems)
-	}
-	return out, true
-}
-
-func applyOwnedMessageOp(out []model.Message, op MessageOp) []model.Message {
-	switch v := op.(type) {
-	case nil:
-		return out
-	case AppendMessages:
-		return appendCopiedMessages(out, v.Items)
-	case ReplaceLastUser:
-		replaced := replaceLastUserOwned(out, v.Content)
-		return tightenMessageCapacity(replaced)
-	case RemoveAllMessages:
-		return nil
-	default:
-		return finalizeCustomMessageOp(v.Apply(cloneCustomMessageOpInput(out)))
-	}
-}
-
-func cloneCustomMessageOpInput(in []model.Message) []model.Message {
-	return deepCopyModelMessages(in)
-}
-
-func finalizeCustomMessageOp(out []model.Message) []model.Message {
-	if out == nil {
-		return nil
-	}
-	return deepCopyModelMessages(out)
-}
-
-func tightenMessageCapacity(out []model.Message) []model.Message {
-	if out == nil {
-		return nil
-	}
-	if cap(out) == len(out) {
-		return out
-	}
-	tightened := make([]model.Message, len(out))
-	copy(tightened, out)
-	return tightened
 }

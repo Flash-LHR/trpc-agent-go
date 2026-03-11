@@ -20,6 +20,14 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
+type testMessageOp struct {
+	out []model.Message
+}
+
+func (o testMessageOp) Apply(_ []model.Message) []model.Message {
+	return o.out
+}
+
 type testStruct struct {
 	Name  string
 	Value int
