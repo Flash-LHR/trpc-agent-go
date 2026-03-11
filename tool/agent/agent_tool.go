@@ -529,140 +529,196 @@ func (at *Tool) collectResponse(evCh <-chan *event.Event) (string, error) {
 // The returned chunks' Content are plain strings representing incremental text.
 func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.StreamReader, error) {
 	stream := tool.NewStream(64)
-
-	toolCallID, hasToolCallID := tool.ToolCallIDFromContext(ctx)
-
-	runCtx := agent.CloneContext(ctx)
-	if hasToolCallID && toolCallID != "" {
-		if _, ok := tool.ToolCallIDFromContext(runCtx); !ok {
-			runCtx = context.WithValue(
-				runCtx,
-				tool.ContextKeyToolCallID{},
-				toolCallID,
-			)
-		}
-	}
-	go func(ctx context.Context) {
-		defer stream.Writer.Close()
-
-		// Try to reuse parent invocation for consistent invocationId/session
-		parentInv, ok := agent.InvocationFromContext(ctx)
-		message := model.NewUserMessage(string(jsonArgs))
-
-		if ok && parentInv != nil && parentInv.Session != nil {
-			if err := flush.Invoke(ctx, parentInv); err != nil {
-				_ = stream.Writer.Send(
-					tool.StreamChunk{},
-					fmt.Errorf("flush parent invocation session failed: %w", err),
-				)
-				return
-			}
-			childKey := at.buildChildFilterKey(parentInv)
-			subInv := parentInv.Clone(
-				agent.WithInvocationAgent(at.agent),
-				agent.WithInvocationMessage(message),
-				// Reset event filter key to the sub-agent name so that content
-				// processors fetch session messages belonging to the sub-agent,
-				// not the parent agent. Use unique FilterKey to prevent cross-invocation event pollution.
-				agent.WithInvocationEventFilterKey(childKey),
-			)
-
-			subCtx := graph.WithGraphCompletionCapture(
-				agent.NewInvocationContext(ctx, subInv),
-			)
-			evCh, err := agent.RunWithPlugins(subCtx, subInv, at.agent)
-			if err != nil {
-				_ = stream.Writer.Send(
-					tool.StreamChunk{},
-					fmt.Errorf("agent tool run error: %w", err),
-				)
-				return
-			}
-			wrapped := at.wrapWithStreamSemantics(subCtx, subInv, evCh)
-
-			var pendingCompletionChunk *tool.FinalResultChunk
-			var sawGraphCompletionSnapshot bool
-			var lastAssistantResponseID string
-			var lastAssistantContent string
-			var overrideResult string
-			for ev := range wrapped {
-				if subInv.RunOptions.DisableGraphCompletionEvent &&
-					isGraphCompletionSnapshotEvent(ev) {
-					if chunk, ok := graphCompletionFinalChunk(ev); ok {
-						responseID := completionResponseIDFromStateDelta(chunk.StateDelta)
-						if chunk.Result == nil &&
-							lastAssistantContent != "" &&
-							(responseID == "" || responseID == lastAssistantResponseID) {
-							chunk.Result = lastAssistantContent
-						}
-						pendingChunk := chunk
-						pendingCompletionChunk = &pendingChunk
-						sawGraphCompletionSnapshot = true
-					}
-					continue
-				}
-				graphCompletionSnapshot := isGraphCompletionSnapshotEvent(ev)
-				if graphCompletionSnapshot {
-					sawGraphCompletionSnapshot = true
-				}
-				if ev != nil && ev.Error != nil {
-					pendingCompletionChunk = nil
-					sawGraphCompletionSnapshot = false
-					overrideResult = ""
-				}
-				if content, ok := assistantMessageContent(ev); ok &&
-					!graphCompletionSnapshot &&
-					!ev.IsPartial {
-					lastAssistantContent = content
-					if ev.Response != nil {
-						lastAssistantResponseID = ev.Response.ID
-					}
-				}
-				if content, ok := assistantMessageContent(ev); ok &&
-					!graphCompletionSnapshot &&
-					sawGraphCompletionSnapshot &&
-					!ev.IsPartial {
-					overrideResult = content
-				}
-				if stream.Writer.Send(tool.StreamChunk{Content: ev}, nil) {
-					return
-				}
-			}
-			if pendingCompletionChunk != nil {
-				if overrideResult != "" {
-					pendingCompletionChunk.Result = overrideResult
-				}
-				_ = stream.Writer.Send(tool.StreamChunk{
-					Content: *pendingCompletionChunk,
-				}, nil)
-			}
-			return
-		}
-
-		// Fallback: run with ad-hoc runner
-		r := runner.NewRunner(
-			at.name,
-			at.agent,
-			runner.WithSessionService(inmemory.NewSessionService()),
-		)
-		evCh, err := r.Run(ctx, "tool_user", "tool_session", message)
-		if err != nil {
-			_ = stream.Writer.Send(
-				tool.StreamChunk{},
-				fmt.Errorf("agent tool run error: %w", err),
-			)
-			return
-		}
-		for ev := range evCh {
-			if ev != nil {
-				if stream.Writer.Send(tool.StreamChunk{Content: ev}, nil) {
-					return
-				}
-			}
-		}
-	}(runCtx)
+	runCtx := at.streamableCallContext(ctx)
+	go at.runStreamableCall(runCtx, jsonArgs, stream.Writer)
 
 	return stream.Reader, nil
+}
+
+type streamCompletionState struct {
+	pendingCompletionChunk     *tool.FinalResultChunk
+	sawGraphCompletionSnapshot bool
+	lastAssistantResponseID    string
+	lastAssistantContent       string
+	overrideResult             string
+}
+
+func (at *Tool) streamableCallContext(ctx context.Context) context.Context {
+	toolCallID, hasToolCallID := tool.ToolCallIDFromContext(ctx)
+	runCtx := agent.CloneContext(ctx)
+	if !hasToolCallID || toolCallID == "" {
+		return runCtx
+	}
+	if _, ok := tool.ToolCallIDFromContext(runCtx); ok {
+		return runCtx
+	}
+	return context.WithValue(
+		runCtx,
+		tool.ContextKeyToolCallID{},
+		toolCallID,
+	)
+}
+
+func (at *Tool) runStreamableCall(
+	ctx context.Context,
+	jsonArgs []byte,
+	writer *tool.StreamWriter,
+) {
+	defer writer.Close()
+	parentInv, ok := agent.InvocationFromContext(ctx)
+	message := model.NewUserMessage(string(jsonArgs))
+	if ok && parentInv != nil && parentInv.Session != nil {
+		at.streamFromParentInvocation(ctx, parentInv, message, writer)
+		return
+	}
+	at.streamFromFallbackRunner(ctx, message, writer)
+}
+
+func (at *Tool) streamFromParentInvocation(
+	ctx context.Context,
+	parentInv *agent.Invocation,
+	message model.Message,
+	writer *tool.StreamWriter,
+) {
+	if err := flush.Invoke(ctx, parentInv); err != nil {
+		sendStreamableCallError(
+			writer,
+			"flush parent invocation session failed: %w",
+			err,
+		)
+		return
+	}
+	childKey := at.buildChildFilterKey(parentInv)
+	subInv := parentInv.Clone(
+		agent.WithInvocationAgent(at.agent),
+		agent.WithInvocationMessage(message),
+		// Reset event filter key to the sub-agent name so that content
+		// processors fetch session messages belonging to the sub-agent,
+		// not the parent agent. Use unique FilterKey to prevent cross-invocation event pollution.
+		agent.WithInvocationEventFilterKey(childKey),
+	)
+	subCtx := graph.WithGraphCompletionCapture(
+		agent.NewInvocationContext(ctx, subInv),
+	)
+	evCh, err := agent.RunWithPlugins(subCtx, subInv, at.agent)
+	if err != nil {
+		sendStreamableCallError(writer, "agent tool run error: %w", err)
+		return
+	}
+	at.forwardSubInvocationStream(
+		subInv,
+		at.wrapWithStreamSemantics(subCtx, subInv, evCh),
+		writer,
+	)
+}
+
+func (at *Tool) forwardSubInvocationStream(
+	subInv *agent.Invocation,
+	wrapped <-chan *event.Event,
+	writer *tool.StreamWriter,
+) {
+	state := streamCompletionState{}
+	for ev := range wrapped {
+		if subInv.RunOptions.DisableGraphCompletionEvent &&
+			isGraphCompletionSnapshotEvent(ev) {
+			at.capturePendingCompletionChunk(ev, &state)
+			continue
+		}
+		at.updateStreamCompletionState(ev, &state)
+		if writer.Send(tool.StreamChunk{Content: ev}, nil) {
+			return
+		}
+	}
+	at.emitPendingCompletionChunk(&state, writer)
+}
+
+func (at *Tool) capturePendingCompletionChunk(
+	ev *event.Event,
+	state *streamCompletionState,
+) {
+	if chunk, ok := graphCompletionFinalChunk(ev); ok {
+		responseID := completionResponseIDFromStateDelta(chunk.StateDelta)
+		if chunk.Result == nil &&
+			state.lastAssistantContent != "" &&
+			(responseID == "" || responseID == state.lastAssistantResponseID) {
+			chunk.Result = state.lastAssistantContent
+		}
+		pendingChunk := chunk
+		state.pendingCompletionChunk = &pendingChunk
+		state.sawGraphCompletionSnapshot = true
+	}
+}
+
+func (at *Tool) updateStreamCompletionState(
+	ev *event.Event,
+	state *streamCompletionState,
+) {
+	graphCompletionSnapshot := isGraphCompletionSnapshotEvent(ev)
+	if graphCompletionSnapshot {
+		state.sawGraphCompletionSnapshot = true
+	}
+	if ev != nil && ev.Error != nil {
+		state.pendingCompletionChunk = nil
+		state.sawGraphCompletionSnapshot = false
+		state.overrideResult = ""
+		return
+	}
+	content, ok := assistantMessageContent(ev)
+	if !ok || graphCompletionSnapshot || ev.IsPartial {
+		return
+	}
+	state.lastAssistantContent = content
+	if ev.Response != nil {
+		state.lastAssistantResponseID = ev.Response.ID
+	}
+	if state.sawGraphCompletionSnapshot {
+		state.overrideResult = content
+	}
+}
+
+func (at *Tool) emitPendingCompletionChunk(
+	state *streamCompletionState,
+	writer *tool.StreamWriter,
+) {
+	if state.pendingCompletionChunk == nil {
+		return
+	}
+	if state.overrideResult != "" {
+		state.pendingCompletionChunk.Result = state.overrideResult
+	}
+	_ = writer.Send(tool.StreamChunk{
+		Content: *state.pendingCompletionChunk,
+	}, nil)
+}
+
+func (at *Tool) streamFromFallbackRunner(
+	ctx context.Context,
+	message model.Message,
+	writer *tool.StreamWriter,
+) {
+	r := runner.NewRunner(
+		at.name,
+		at.agent,
+		runner.WithSessionService(inmemory.NewSessionService()),
+	)
+	evCh, err := r.Run(ctx, "tool_user", "tool_session", message)
+	if err != nil {
+		sendStreamableCallError(writer, "agent tool run error: %w", err)
+		return
+	}
+	for ev := range evCh {
+		if ev != nil && writer.Send(tool.StreamChunk{Content: ev}, nil) {
+			return
+		}
+	}
+}
+
+func sendStreamableCallError(
+	writer *tool.StreamWriter,
+	format string,
+	err error,
+) {
+	_ = writer.Send(tool.StreamChunk{}, fmt.Errorf(format, err))
 }
 
 // SkipSummarization exposes whether the AgentTool prefers skipping

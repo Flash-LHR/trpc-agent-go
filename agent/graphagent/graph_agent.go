@@ -402,44 +402,15 @@ func (ga *GraphAgent) wrapEventChannel(
 	runCtx := agent.CloneContext(ctx)
 	go func(ctx context.Context) {
 		defer close(wrappedChan)
-		var fullRespEvent *event.Event
-		var emittedAssistantResponseIDs map[string]struct{}
-		visibleCtx := graph.WithoutGraphCompletionCapture(ctx)
-		// Forward all events from the original channel
-		for evt := range originalChan {
-			if evt != nil && evt.Response != nil && !evt.Response.IsPartial {
-				fullRespEvent = evt
-			}
-			if suppressHiddenCompletion &&
-				graph.ShouldSuppressGraphCompletionEvent(
-					visibleCtx,
-					invocation,
-					evt,
-				) {
-				if visibleEvent, ok := graph.VisibleGraphCompletionEventWithDedup(
-					evt,
-					emittedAssistantResponseIDs,
-				); ok {
-					if err := event.EmitEvent(ctx, wrappedChan, visibleEvent); err != nil {
-						return
-					}
-					if visibleEvent.Response != nil && !visibleEvent.Response.IsPartial {
-						fullRespEvent = visibleEvent
-					}
-					emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
-						emittedAssistantResponseIDs,
-						visibleEvent,
-					)
-				}
-				continue
-			}
-			if err := event.EmitEvent(ctx, wrappedChan, evt); err != nil {
-				return
-			}
-			emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
-				emittedAssistantResponseIDs,
-				evt,
-			)
+		fullRespEvent, ok := ga.forwardWrappedEvents(
+			ctx,
+			invocation,
+			originalChan,
+			wrappedChan,
+			suppressHiddenCompletion,
+		)
+		if !ok {
+			return
 		}
 		if ga.agentCallbacks == nil {
 			return
@@ -449,8 +420,7 @@ func (ga *GraphAgent) wrapEventChannel(
 		// callbacks can observe execution failures, matching LLMAgent
 		// semantics.
 		var agentErr error
-		if fullRespEvent != nil &&
-			fullRespEvent.Response != nil &&
+		if fullRespEvent != nil && fullRespEvent.Response != nil &&
 			fullRespEvent.Response.Error != nil {
 			agentErr = fmt.Errorf(
 				"%s: %s",
@@ -490,6 +460,50 @@ func (ga *GraphAgent) wrapEventChannel(
 		agent.EmitEvent(ctx, invocation, wrappedChan, evt)
 	}(runCtx)
 	return wrappedChan
+}
+
+func (ga *GraphAgent) forwardWrappedEvents(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	originalChan <-chan *event.Event,
+	wrappedChan chan<- *event.Event,
+	suppressHiddenCompletion bool,
+) (*event.Event, bool) {
+	var fullRespEvent *event.Event
+	var emittedAssistantResponseIDs map[string]struct{}
+	visibleCtx := graph.WithoutGraphCompletionCapture(ctx)
+	for evt := range originalChan {
+		outEvt := evt
+		if evt != nil && evt.Response != nil && !evt.Response.IsPartial {
+			fullRespEvent = evt
+		}
+		if suppressHiddenCompletion &&
+			graph.ShouldSuppressGraphCompletionEvent(
+				visibleCtx,
+				invocation,
+				evt,
+			) {
+			visibleEvent, ok := graph.VisibleGraphCompletionEventWithDedup(
+				evt,
+				emittedAssistantResponseIDs,
+			)
+			if !ok {
+				continue
+			}
+			outEvt = visibleEvent
+			if visibleEvent.Response != nil && !visibleEvent.Response.IsPartial {
+				fullRespEvent = visibleEvent
+			}
+		}
+		if err := event.EmitEvent(ctx, wrappedChan, outEvt); err != nil {
+			return nil, false
+		}
+		emittedAssistantResponseIDs = graph.RecordAssistantResponseID(
+			emittedAssistantResponseIDs,
+			outEvt,
+		)
+	}
+	return fullRespEvent, true
 }
 
 // Executor returns the graph executor for direct access to checkpoint management.
