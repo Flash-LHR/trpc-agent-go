@@ -46,6 +46,10 @@ type visibleCompletionThenAfterAgent struct {
 	name string
 }
 
+type assistantThenVisibleCompletionAgent struct {
+	name string
+}
+
 type assistantThenVisibleStateOnlyCompletionAgent struct {
 	name string
 }
@@ -154,6 +158,44 @@ func (a *visibleCompletionThenAfterAgent) Run(
 				Message: model.NewAssistantMessage("after callback"),
 			}},
 		})
+	}()
+	return ch, nil
+}
+
+func (a *assistantThenVisibleCompletionAgent) Run(
+	ctx context.Context,
+	invocation *agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event, 2)
+	go func() {
+		defer close(ch)
+		invocationID := "assistant-then-visible-completion-agent"
+		author := a.name
+		if invocation != nil {
+			invocationID = invocation.InvocationID
+			if invocation.AgentName != "" {
+				author = invocation.AgentName
+			}
+		}
+		assistantEvent := event.NewResponseEvent(invocationID, author, &model.Response{
+			Object: model.ObjectTypeChatCompletion,
+			Done:   true,
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("draft"),
+			}},
+		})
+		rawCompletion := graph.NewGraphCompletionEvent(
+			graph.WithCompletionEventInvocationID(invocationID),
+			graph.WithCompletionEventFinalState(graph.State{
+				graph.StateKeyLastResponse: "child-final",
+			}),
+		)
+		visibleCompletion, ok := graph.VisibleGraphCompletionEvent(rawCompletion)
+		if !ok {
+			return
+		}
+		_ = agent.EmitEvent(ctx, invocation, ch, assistantEvent)
+		_ = agent.EmitEvent(ctx, invocation, ch, visibleCompletion)
 	}()
 	return ch, nil
 }
@@ -291,6 +333,23 @@ func (a *visibleCompletionThenAfterAgent) SubAgents() []agent.Agent {
 }
 
 func (a *visibleCompletionThenAfterAgent) FindSubAgent(name string) agent.Agent {
+	_ = name
+	return nil
+}
+
+func (a *assistantThenVisibleCompletionAgent) Tools() []tool.Tool {
+	return nil
+}
+
+func (a *assistantThenVisibleCompletionAgent) Info() agent.Info {
+	return agent.Info{Name: a.name}
+}
+
+func (a *assistantThenVisibleCompletionAgent) SubAgents() []agent.Agent {
+	return nil
+}
+
+func (a *assistantThenVisibleCompletionAgent) FindSubAgent(name string) agent.Agent {
 	_ = name
 	return nil
 }
@@ -541,6 +600,15 @@ func TestTool_Call_DisableGraphCompletionEvent_PrefersAfterCallbackCustomRespons
 	resultText, ok := result.(string)
 	require.True(t, ok)
 	require.Equal(t, "after callback", resultText)
+}
+
+func TestTool_Call_VisibleCompletionSnapshotReplacesPriorAssistantText(t *testing.T) {
+	at := NewTool(&assistantThenVisibleCompletionAgent{name: "visible-agent"})
+	result, err := at.Call(context.Background(), []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	resultText, ok := result.(string)
+	require.True(t, ok)
+	require.Equal(t, "child-final", resultText)
 }
 
 func TestTool_DefaultSkipSummarization(t *testing.T) {

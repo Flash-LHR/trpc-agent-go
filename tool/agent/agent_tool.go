@@ -509,6 +509,12 @@ func (at *Tool) collectResponse(evCh <-chan *event.Event) (string, error) {
 		if graphCompletionSnapshot && content == lastAssistantMessage {
 			continue
 		}
+		if graphCompletionSnapshot &&
+			!ev.IsPartial &&
+			response.Len() > 0 {
+			response.Reset()
+			lastAssistantMessage = ""
+		}
 		if !graphCompletionSnapshot &&
 			sawGraphCompletionSnapshot &&
 			!ev.IsPartial {

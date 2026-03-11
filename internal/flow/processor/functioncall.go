@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/internal/jsonrepair"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
@@ -1522,6 +1523,9 @@ func streamToolEventError(ev *event.Event) error {
 	if ev.Error != nil && ev.Error.Type == agent.ErrorTypeStopAgentError {
 		return agent.NewStopError(ev.Error.Message)
 	}
+	if isRetryingGraphNodeErrorEvent(ev) {
+		return nil
+	}
 	if ev.Error != nil {
 		return fmt.Errorf(
 			"%s: %s: %s",
@@ -1531,6 +1535,23 @@ func streamToolEventError(ev *event.Event) error {
 		)
 	}
 	return fmt.Errorf(ErrorStreamableToolExecution)
+}
+
+func isRetryingGraphNodeErrorEvent(ev *event.Event) bool {
+	if ev == nil ||
+		ev.Error == nil ||
+		ev.StateDelta == nil {
+		return false
+	}
+	rawMetadata := ev.StateDelta[graph.MetadataKeyNode]
+	if len(rawMetadata) == 0 {
+		return false
+	}
+	var metadata graph.NodeExecutionMetadata
+	if err := json.Unmarshal(rawMetadata, &metadata); err != nil {
+		return false
+	}
+	return metadata.Phase == graph.ExecutionPhaseError && metadata.Retrying
 }
 
 // marshalChunkToText converts a chunk content into a string representation.
