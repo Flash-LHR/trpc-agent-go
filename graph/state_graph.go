@@ -3789,7 +3789,7 @@ func (p *modelResponseProcessor) handleResponse(response *model.Response) (bool,
 	p.invocation = invocationFromContextOrDefault(p.ctx, p.invocation)
 	p.timingInfo = responseUsageTimingInfo(p.invocation)
 	if p.tracker != nil {
-		p.tracker.SetInvocationState(p.stableInvocation, p.timingInfo)
+		p.tracker.SetInvocationState(p.invocation, p.timingInfo)
 	}
 	p.tap.WriteDelta(response)
 	trackModelResponseTelemetry(response, p.tracker)

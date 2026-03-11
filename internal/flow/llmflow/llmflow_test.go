@@ -300,7 +300,7 @@ func TestProcessStreamingResponses_DisableResponseUsageTrackingStillRecordsMetri
 	require.NotEmpty(t, rm.ScopeMetrics)
 }
 
-func TestProcessStreamingResponses_UsesStableInvocationForMetricsMetadata(t *testing.T) {
+func TestProcessStreamingResponses_MergesUpdatedInvocationIntoMetricsMetadata(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	originalProvider := itelemetry.MeterProvider
@@ -379,13 +379,99 @@ func TestProcessStreamingResponses_UsesStableInvocationForMetricsMetadata(t *tes
 	require.NotNil(t, lastEvent)
 	var rm metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(context.Background(), &rm))
-	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, baseInvocation.AgentName))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, updatedInvocation.AgentName))
 	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIRequestModel, baseInvocation.Model.Info().Name))
-	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, baseInvocation.Session.ID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, updatedInvocation.Session.ID))
 	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoUserID, baseInvocation.Session.UserID))
 	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoAppName, baseInvocation.Session.AppName))
-	require.False(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, updatedInvocation.AgentName))
-	require.False(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, updatedInvocation.Session.ID))
+	require.False(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, baseInvocation.AgentName))
+	require.False(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, baseInvocation.Session.ID))
+}
+
+func TestProcessStreamingResponses_UsesUpdatedInvocationForMetricsMetadataWhenBaseIsSparse(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	originalProvider := itelemetry.MeterProvider
+	originalMeter := itelemetry.ChatMeter
+	originalRequestCnt := itelemetry.ChatMetricTRPCAgentGoClientRequestCnt
+	originalTokenUsage := itelemetry.ChatMetricGenAIClientTokenUsage
+	originalOperationDuration := itelemetry.ChatMetricGenAIClientOperationDuration
+	originalServerTimeToFirstToken := itelemetry.ChatMetricGenAIServerTimeToFirstToken
+	originalClientTimeToFirstToken := itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken
+	originalTimePerOutputToken := itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken
+	originalOutputTokenPerTime := itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime
+	defer func() {
+		itelemetry.MeterProvider = originalProvider
+		itelemetry.ChatMeter = originalMeter
+		itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = originalRequestCnt
+		itelemetry.ChatMetricGenAIClientTokenUsage = originalTokenUsage
+		itelemetry.ChatMetricGenAIClientOperationDuration = originalOperationDuration
+		itelemetry.ChatMetricGenAIServerTimeToFirstToken = originalServerTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = originalClientTimeToFirstToken
+		itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = originalTimePerOutputToken
+		itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = originalOutputTokenPerTime
+	}()
+	itelemetry.MeterProvider = provider
+	itelemetry.ChatMeter = provider.Meter(semconvmetrics.MeterNameChat)
+	requestCnt, err := itelemetry.ChatMeter.Int64Counter("trpc_agent_go.client.request.cnt")
+	require.NoError(t, err)
+	itelemetry.ChatMetricTRPCAgentGoClientRequestCnt = requestCnt
+	itelemetry.ChatMetricGenAIClientTokenUsage = nil
+	itelemetry.ChatMetricGenAIClientOperationDuration = nil
+	itelemetry.ChatMetricGenAIServerTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimeToFirstToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientTimePerOutputToken = nil
+	itelemetry.ChatMetricTRPCAgentGoClientOutputTokenPerTime = nil
+	f := New(nil, nil, Options{})
+	baseInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-base-sparse-metrics"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableResponseUsageTracking: true,
+		}),
+	)
+	updatedModel := &mockModel{}
+	updatedInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-updated-full-metrics"),
+		agent.WithInvocationModel(updatedModel),
+		agent.WithInvocationSession(&session.Session{
+			ID:      "sess-updated-full-metrics",
+			UserID:  "user-updated-full-metrics",
+			AppName: "app-updated-full-metrics",
+		}),
+	)
+	updatedInvocation.AgentName = "agent-updated-full-metrics"
+	req := &model.Request{}
+	responseSeq := func(yield func(*model.Response) bool) {
+		yield(&model.Response{
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("done")},
+			},
+		})
+	}
+	eventChan := make(chan *event.Event, 10)
+	tracer := oteltrace.NewNoopTracerProvider().Tracer("t")
+	ctx, span := tracer.Start(
+		agent.NewInvocationContext(context.Background(), updatedInvocation),
+		"s",
+	)
+	defer span.End()
+	lastEvent, err := f.processStreamingResponses(
+		ctx,
+		baseInvocation,
+		req,
+		responseSeq,
+		eventChan,
+		span,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, lastEvent)
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIAgentName, updatedInvocation.AgentName))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIRequestModel, updatedModel.Info().Name))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyGenAIConversationID, updatedInvocation.Session.ID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoUserID, updatedInvocation.Session.UserID))
+	require.True(t, resourceMetricsContainAttribute(rm, semconvtrace.KeyTRPCAgentGoAppName, updatedInvocation.Session.AppName))
 }
 
 func TestProcessStreamingResponses_UsesUpdatedInvocationForResponseUsageTiming(t *testing.T) {
