@@ -137,11 +137,15 @@ func (r *registry) Resolve(evalMetric *metric.EvalMetric) error {
 	if evalMetric.Criterion == nil {
 		return nil
 	}
+	metricName := evalMetric.MetricName
+	if metricName == "" {
+		metricName = "<unnamed>"
+	}
 	if err := r.resolveToolTrajectoryCriterion(evalMetric.Criterion.ToolTrajectory); err != nil {
-		return fmt.Errorf("resolve tool trajectory criterion: %w", err)
+		return fmt.Errorf("resolve metric %q tool trajectory criterion: %w", metricName, err)
 	}
 	if err := r.resolveFinalResponseCriterion(evalMetric.Criterion.FinalResponse); err != nil {
-		return fmt.Errorf("resolve final response criterion: %w", err)
+		return fmt.Errorf("resolve metric %q final response criterion: %w", metricName, err)
 	}
 	return nil
 }

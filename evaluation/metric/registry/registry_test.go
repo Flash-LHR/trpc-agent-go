@@ -159,6 +159,7 @@ func TestRegistryResolve_TopLevelCompareNameSkipsNestedResolution(t *testing.T) 
 func TestRegistryResolve_MissingRegistration(t *testing.T) {
 	reg := New()
 	evalMetric := &metric.EvalMetric{
+		MetricName: "missing_metric",
 		Criterion: &criterion.Criterion{
 			FinalResponse: &finalresponse.FinalResponseCriterion{
 				Text: &criteriontext.TextCriterion{CompareName: "missing"},
@@ -169,6 +170,7 @@ func TestRegistryResolve_MissingRegistration(t *testing.T) {
 	err := reg.Resolve(evalMetric)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, os.ErrNotExist))
+	assert.Contains(t, err.Error(), `resolve metric "missing_metric"`)
 	assert.Contains(t, err.Error(), "text compare missing not found")
 }
 

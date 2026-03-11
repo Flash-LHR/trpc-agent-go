@@ -1097,7 +1097,7 @@ This mechanism applies to the following cases:
 - `finalResponse.compareName`
 - `rouge.tokenizerName`
 
-If you use a local file Manager, you can declare `tokenizerName` in the metric file like this:
+If you use a local file manager, you can declare `tokenizerName` in the metric file like this:
 
 ```json
 [
