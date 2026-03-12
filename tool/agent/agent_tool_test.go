@@ -627,6 +627,34 @@ func TestTool_Call_DisableGraphCompletionEvent_PreservesFinalTextInSharedSession
 	require.True(t, sessionHasAssistantContent(sess, "child-final"))
 }
 
+func TestTool_Call_DisableGraphCompletionEvent_PreservesConsecutiveVisibleCompletionStatesInSharedSession(
+	t *testing.T,
+) {
+	at := NewTool(
+		&doubleVisibleCompletionAgent{name: "double-visible-agent"},
+		WithHistoryScope(HistoryScopeParentBranch),
+	)
+	sess := session.NewSession("app", "user", "session")
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	resultText, ok := result.(string)
+	require.True(t, ok)
+	require.Equal(t, "second-final", resultText)
+	firstValue, ok := sess.GetState("first_key")
+	require.True(t, ok)
+	require.Equal(t, []byte(`"first-value"`), firstValue)
+	secondValue, ok := sess.GetState("second_key")
+	require.True(t, ok)
+	require.Equal(t, []byte(`"second-value"`), secondValue)
+}
+
 func TestTool_Call_DisableGraphCompletionEvent_SharedSessionPrefersAfterCallbackCustomResponse(t *testing.T) {
 	ga := newGraphAgentWithAfterCallback(
 		t,
@@ -805,6 +833,10 @@ type visibleCompletionBarrierAgent struct {
 	name string
 }
 
+type doubleVisibleCompletionAgent struct {
+	name string
+}
+
 func (m *graphCompletionMockAgent) Run(
 	ctx context.Context,
 	inv *agent.Invocation,
@@ -896,6 +928,52 @@ func (m *visibleCompletionBarrierAgent) SubAgents() []agent.Agent {
 	return nil
 }
 func (m *visibleCompletionBarrierAgent) FindSubAgent(string) agent.Agent {
+	return nil
+}
+
+func (m *doubleVisibleCompletionAgent) Run(
+	ctx context.Context,
+	inv *agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event, 2)
+	go func() {
+		defer close(ch)
+		firstRaw := graph.NewGraphCompletionEvent(
+			graph.WithCompletionEventInvocationID(inv.InvocationID),
+			graph.WithCompletionEventFinalState(graph.State{
+				graph.StateKeyLastResponse: "first-final",
+				"first_key":                "first-value",
+			}),
+		)
+		firstVisible, ok := graph.VisibleGraphCompletionEvent(firstRaw)
+		if !ok {
+			return
+		}
+		_ = agent.EmitEvent(ctx, inv, ch, firstVisible)
+		secondRaw := graph.NewGraphCompletionEvent(
+			graph.WithCompletionEventInvocationID(inv.InvocationID),
+			graph.WithCompletionEventFinalState(graph.State{
+				graph.StateKeyLastResponse: "second-final",
+				"second_key":               "second-value",
+			}),
+		)
+		secondVisible, ok := graph.VisibleGraphCompletionEvent(secondRaw)
+		if !ok {
+			return
+		}
+		_ = agent.EmitEvent(ctx, inv, ch, secondVisible)
+	}()
+	return ch, nil
+}
+
+func (m *doubleVisibleCompletionAgent) Tools() []tool.Tool { return nil }
+func (m *doubleVisibleCompletionAgent) Info() agent.Info {
+	return agent.Info{Name: m.name, Description: "double visible completion"}
+}
+func (m *doubleVisibleCompletionAgent) SubAgents() []agent.Agent {
+	return nil
+}
+func (m *doubleVisibleCompletionAgent) FindSubAgent(string) agent.Agent {
 	return nil
 }
 
@@ -1867,6 +1945,57 @@ func TestTool_StreamableCall_DefersCompletion_PersistsStateOnlyCompletionToShare
 	require.True(t, ok)
 	require.Equal(t, []byte(graphStateValue), stateValue)
 	require.False(t, sessionHasAssistantContent(sess, graphCompletionMsg))
+}
+
+func TestTool_StreamableCall_DefersCompletion_PreservesConsecutiveVisibleCompletionStatesInSharedSession(
+	t *testing.T,
+) {
+	const toolCallID = "call-1"
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sess := session.NewSession("app", "user", "session")
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	appender.Attach(parent, func(_ context.Context, evt *event.Event) error {
+		if evt == nil {
+			return nil
+		}
+		parent.Session.UpdateUserSession(evt)
+		return nil
+	})
+	at := NewTool(
+		&doubleVisibleCompletionAgent{name: "double-visible-agent"},
+		WithStreamInner(true),
+	)
+	toolCtx := agent.NewInvocationContext(ctx, parent)
+	ctxWithToolCallID := context.WithValue(
+		toolCtx,
+		tool.ContextKeyToolCallID{},
+		toolCallID,
+	)
+	reader, err := at.StreamableCall(
+		ctxWithToolCallID,
+		[]byte(`{"request":"payload"}`),
+	)
+	require.NoError(t, err)
+	defer reader.Close()
+	for {
+		_, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+	}
+	firstValue, ok := sess.GetState("first_key")
+	require.True(t, ok)
+	require.Equal(t, []byte(`"first-value"`), firstValue)
+	secondValue, ok := sess.GetState("second_key")
+	require.True(t, ok)
+	require.Equal(t, []byte(`"second-value"`), secondValue)
 }
 
 type toolCallIDDroppingContext struct {

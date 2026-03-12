@@ -251,7 +251,12 @@ func (at *Tool) wrapWithCallSemantics(
 				if shouldMirrorEventToSession(evt) {
 					persistedEvent := persistableSessionEvent(evt)
 					if shouldDelayVisibleCompletionSessionMirror(persistedEvent) {
-						pendingVisibleCompletion = persistedEvent
+						pendingVisibleCompletion = at.replacePendingVisibleCompletionForSession(
+							ctx,
+							inv,
+							pendingVisibleCompletion,
+							persistedEvent,
+						)
 					} else {
 						at.appendEvent(ctx, inv, persistedEvent)
 					}
@@ -315,6 +320,21 @@ func (at *Tool) appendPendingVisibleCompletionState(
 		return
 	}
 	at.appendEvent(ctx, inv, stateOnly)
+}
+
+func (at *Tool) replacePendingVisibleCompletionForSession(
+	ctx context.Context,
+	inv *agent.Invocation,
+	pending *event.Event,
+	next *event.Event,
+) *event.Event {
+	if next == nil {
+		return pending
+	}
+	if pending != nil {
+		at.appendPendingVisibleCompletionState(ctx, inv, pending)
+	}
+	return next
 }
 
 func (at *Tool) wrapWithStreamSemantics(
@@ -716,7 +736,7 @@ func (at *Tool) forwardSubInvocationStream(
 			isGraphCompletionSnapshotEvent(ev) {
 			at.capturePendingCompletionChunk(ev, &state)
 			if managePendingVisibleCompletion {
-				at.capturePendingVisibleCompletion(ev, &state)
+				at.capturePendingVisibleCompletion(ctx, subInv, ev, &state)
 			}
 			continue
 		}
@@ -749,6 +769,8 @@ func (at *Tool) forwardSubInvocationStream(
 }
 
 func (at *Tool) capturePendingVisibleCompletion(
+	ctx context.Context,
+	inv *agent.Invocation,
 	ev *event.Event,
 	state *streamCompletionState,
 ) {
@@ -759,7 +781,12 @@ func (at *Tool) capturePendingVisibleCompletion(
 	if sessionEvent == nil {
 		return
 	}
-	state.pendingVisibleCompletion = sessionEvent
+	state.pendingVisibleCompletion = at.replacePendingVisibleCompletionForSession(
+		ctx,
+		inv,
+		state.pendingVisibleCompletion,
+		sessionEvent,
+	)
 }
 
 func (at *Tool) flushPendingVisibleCompletionForSession(
