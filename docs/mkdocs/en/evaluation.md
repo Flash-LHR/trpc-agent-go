@@ -3067,7 +3067,7 @@ By default, the service exposes three resource groups:
 - `runs`: trigger an evaluation execution.
 - `results`: query evaluation results and individual result details.
 
-On success, `POST /evaluation/runs` returns the direct output of `AgentEvaluator.Evaluate` rather than introducing an additional result abstraction. For frontend integration, platform access, or SDK generation, the OpenAPI description should be treated as the API contract.
+On success, `POST /evaluation/runs` returns the result of `AgentEvaluator.Evaluate` in the `evaluationResult` field. For frontend integration, platform access, or SDK generation, the OpenAPI description should be treated as the API contract.
 
 ## Best Practices
 

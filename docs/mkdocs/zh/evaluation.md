@@ -3070,7 +3070,7 @@ if err := http.ListenAndServe(":8080", server.Handler()); err != nil {
 - `runs`：触发一次评估执行。
 - `results`：查询评估结果列表与单个评估结果详情。
 
-其中，`POST /evaluation/runs` 的成功响应直接返回 `AgentEvaluator.Evaluate` 的结果，不再额外引入新的结果抽象。对于需要页面联调、平台接入或 SDK 生成的场景，建议直接以 OpenAPI 描述作为接口契约。
+其中，`POST /evaluation/runs` 的成功响应返回 `AgentEvaluator.Evaluate` 的结果，位于 `evaluationResult` 字段中。对于需要页面联调、平台接入或 SDK 生成的场景，建议直接以 OpenAPI 描述作为接口契约。
 
 ## 最佳实践
 
