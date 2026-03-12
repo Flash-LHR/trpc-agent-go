@@ -465,3 +465,19 @@ func TestWithDisableTracing(t *testing.T) {
 	WithDisableTracing(false)(opts)
 	require.False(t, opts.DisableTracing)
 }
+
+func TestModelResponseRunOptionSetters(t *testing.T) {
+	opts := &RunOptions{}
+
+	WithDisableResponseUsageTracking(true)(opts)
+	require.True(t, opts.DisableResponseUsageTracking)
+
+	WithDisableModelExecutionEvents(true)(opts)
+	require.True(t, opts.DisableModelExecutionEvents)
+
+	WithDisablePartialEventIDs(true)(opts)
+	require.True(t, opts.DisablePartialEventIDs)
+
+	WithDisablePartialEventTimestamps(true)(opts)
+	require.True(t, opts.DisablePartialEventTimestamps)
+}
