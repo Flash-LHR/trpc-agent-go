@@ -825,6 +825,9 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 			return ctx, nil, modifiedArgs, true, nil
 		}
 	}
+	if shouldSuppressDefaultToolMessage(ctx, result) {
+		return ctx, nil, modifiedArgs, true, nil
+	}
 
 	// Marshal the result to JSON for the default tool message.
 	// Note: mcpToolResult implements MarshalJSON to only marshal Content for backward compatibility.
@@ -1221,7 +1224,7 @@ func (p *FunctionCallResponseProcessor) executeToolWithCallbacks(
 	}
 
 	// Execute the actual tool.
-	toolResult, toolErr := p.executeTool(
+	ctx, toolResult, toolErr := p.executeTool(
 		ctx,
 		invocation,
 		toolCall,
@@ -1288,7 +1291,7 @@ func (f *FunctionCallResponseProcessor) executeTool(
 	toolCall model.ToolCall,
 	tl tool.Tool,
 	eventChan chan<- *event.Event,
-) (any, error) {
+) (context.Context, any, error) {
 	// originalTool refers to the actual underlying tool used to determine
 	// whether streaming is supported. If tl is a NamedTool, use its
 	// inner original tool instead of the wrapper itself.
@@ -1307,7 +1310,7 @@ func (f *FunctionCallResponseProcessor) executeTool(
 	if callable, ok := tl.(tool.CallableTool); ok {
 		return f.executeCallableTool(ctx, toolCall, callable)
 	}
-	return nil, fmt.Errorf("unsupported tool type: %T", tl)
+	return ctx, nil, fmt.Errorf("unsupported tool type: %T", tl)
 }
 
 // executeCallableTool executes a callable tool.
@@ -1315,7 +1318,7 @@ func (p *FunctionCallResponseProcessor) executeCallableTool(
 	ctx context.Context,
 	toolCall model.ToolCall,
 	tl tool.CallableTool,
-) (any, error) {
+) (context.Context, any, error) {
 	result, err := tl.Call(ctx, toolCall.Function.Arguments)
 	if err != nil {
 		log.ErrorfContext(
@@ -1324,9 +1327,9 @@ func (p *FunctionCallResponseProcessor) executeCallableTool(
 			toolCall.Function.Name,
 			err,
 		)
-		return nil, fmt.Errorf("%s: %w", ErrorCallableToolExecution, err)
+		return ctx, nil, fmt.Errorf("%s: %w", ErrorCallableToolExecution, err)
 	}
-	return result, nil
+	return ctx, result, nil
 }
 
 // executeStreamableTool executes a streamable tool.
@@ -1336,7 +1339,7 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 	toolCall model.ToolCall,
 	tl tool.StreamableTool,
 	eventChan chan<- *event.Event,
-) (any, error) {
+) (context.Context, any, error) {
 	reader, err := tl.StreamableCall(ctx, toolCall.Function.Arguments)
 	if err != nil {
 		log.ErrorfContext(
@@ -1345,7 +1348,7 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 			toolCall.Function.Name,
 			err,
 		)
-		return nil, fmt.Errorf("%s: %w", ErrorStreamableToolExecution, err)
+		return ctx, nil, fmt.Errorf("%s: %w", ErrorStreamableToolExecution, err)
 	}
 	defer reader.Close()
 
@@ -1360,17 +1363,32 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 		eventChan,
 	)
 	if err != nil {
-		return nil, err
+		return ctx, nil, err
 	}
 	if finalResult.seen {
-		return finalResult.value, nil
+		if finalResult.value == nil {
+			ctx = context.WithValue(
+				ctx,
+				suppressDefaultToolMessageKey{},
+				true,
+			)
+		}
+		return ctx, finalResult.value, nil
 	}
 	// If we forwarded inner events, still return the merged content as the tool
 	// result so it can be recorded in the tool response message for the next LLM
 	// turn (to satisfy providers that require tool messages). The UI example
 	// suppresses printing these aggregated strings to avoid duplication; they are
 	// primarily for model consumption.
-	return tool.Merge(contents), nil
+	return ctx, tool.Merge(contents), nil
+}
+
+func shouldSuppressDefaultToolMessage(ctx context.Context, result any) bool {
+	if result != nil || ctx == nil {
+		return false
+	}
+	suppress, _ := ctx.Value(suppressDefaultToolMessageKey{}).(bool)
+	return suppress
 }
 
 type streamFinalResult struct {
@@ -1387,6 +1405,8 @@ type normalizedFinalResultChunk struct {
 	result     any
 	stateDelta map[string][]byte
 }
+
+type suppressDefaultToolMessageKey struct{}
 
 // consumeStream reads all chunks from the reader and processes them.
 func (f *FunctionCallResponseProcessor) consumeStream(

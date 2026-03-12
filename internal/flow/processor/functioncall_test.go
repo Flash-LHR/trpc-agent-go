@@ -248,6 +248,54 @@ func TestExecuteToolCall(t *testing.T) {
 	assert.Equal(t, string(res), choices[0].Message.Content)
 }
 
+func TestExecuteToolCall_StreamableFinalStateOnlyResultSkipsNullToolMessage(t *testing.T) {
+	ctx := context.Background()
+	p := NewFunctionCallResponseProcessor(false, nil)
+	inv := &agent.Invocation{
+		InvocationID: "inv-state-only",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID: "call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "final",
+			Arguments: []byte(`{}`),
+		},
+	}
+	tools := map[string]tool.Tool{
+		"final": &finalResultStreamTool{
+			name:       "final",
+			stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
+		},
+	}
+	eventCh := make(chan *event.Event, 4)
+	_, choices, _, _, err := p.executeToolCall(
+		ctx,
+		inv,
+		tc,
+		tools,
+		0,
+		eventCh,
+	)
+	require.NoError(t, err)
+	require.Len(t, choices, 0)
+	first := <-eventCh
+	require.NotNil(t, first)
+	require.True(t, first.IsPartial)
+	require.Equal(t, "line-1", first.Choices[0].Delta.Content)
+	second := <-eventCh
+	require.NotNil(t, second)
+	require.True(t, second.IsPartial)
+	require.Equal(t, []byte(`"ok"`), second.StateDelta["final"])
+	select {
+	case evt := <-eventCh:
+		require.Failf(t, "unexpected tool message event", "%#v", evt)
+	default:
+	}
+}
+
 func TestExecuteToolCall_ToolResultMessagesCallback_Nil_NoOverride(t *testing.T) {
 	ctx := context.Background()
 
@@ -2341,7 +2389,7 @@ func TestExecuteStreamableTool_EmitsPartialEvents(t *testing.T) {
 	ch := make(chan *event.Event, 4)
 
 	// Call and collect
-	res, err := f.executeStreamableTool(ctx, inv, toolCall, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, toolCall, st, ch)
 	require.NoError(t, err)
 	require.NotNil(t, res)
 	// merged content should equal concatenation
@@ -2387,7 +2435,7 @@ func TestExecuteCallableTool_ErrorWrap(t *testing.T) {
 			return nil, errors.New("e")
 		},
 	}
-	_, err := p.executeCallableTool(context.Background(),
+	_, _, err := p.executeCallableTool(context.Background(),
 		model.ToolCall{Function: model.FunctionDefinitionParam{
 			Name: "t",
 		}}, tl,
@@ -2600,7 +2648,7 @@ func TestExecuteStreamableTool_ForwardsFinalOnlyInnerMessage(t *testing.T) {
 	st := &finalOnlyInnerEventStreamTool{name: "inner-final"}
 	ch := make(chan *event.Event, 2)
 
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
 	require.Equal(t, "final", res.(string))
 
@@ -2666,7 +2714,7 @@ func TestExecuteTool_RespectsStreamInnerPreference(t *testing.T) {
 
 	// preferInner=false => should call callable path
 	pt := &prefTool{name: "pref", preferInner: false}
-	res, err := f.executeTool(ctx, inv, toolCall, pt, ch)
+	_, res, err := f.executeTool(ctx, inv, toolCall, pt, ch)
 	require.NoError(t, err)
 	str, _ := res.(string)
 	require.Equal(t, "called:pref", str)
@@ -2674,7 +2722,7 @@ func TestExecuteTool_RespectsStreamInnerPreference(t *testing.T) {
 
 	// preferInner=true => should stream
 	pt.preferInner = true
-	res2, err := f.executeTool(ctx, inv, toolCall, pt, ch)
+	_, res2, err := f.executeTool(ctx, inv, toolCall, pt, ch)
 	require.NoError(t, err)
 	str2, _ := res2.(string)
 	require.Equal(t, "streamed:pref", str2)
@@ -2893,7 +2941,7 @@ func TestExecuteStreamableTool_ChunkStructJSON(t *testing.T) {
 	tc := model.ToolCall{ID: "c1", Function: model.FunctionDefinitionParam{Name: "s"}}
 	st := &structStreamTool{name: "s"}
 	ch := make(chan *event.Event, 4)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
 	// merged should be concatenation of marshaled chunks
 	require.Equal(t, `{"a":1}{"b":"x"}`, res.(string))
@@ -3058,7 +3106,7 @@ func TestExecuteStreamableTool_PreservesFinalResultChunk(t *testing.T) {
 		result: map[string]any{"status": "ok"},
 	}
 	ch := make(chan *event.Event, 4)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{"status": "ok"}, res)
 
@@ -3091,7 +3139,7 @@ func TestExecuteStreamableTool_FinalResultChunkEmitsStateDelta(t *testing.T) {
 		stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
 	}
 	ch := make(chan *event.Event, 4)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{"status": "ok"}, res)
 
@@ -3135,7 +3183,7 @@ func TestExecuteStreamableTool_FinalResultChunkStateDeltaUsesAgentInjection(t *t
 		stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
 	}
 	ch := make(chan *event.Event, 4)
-	_, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, _, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
 	<-ch
 	second := <-ch
@@ -3166,7 +3214,7 @@ func TestExecuteStreamableTool_FinalResultChunkNilResultOverridesMergedContent(t
 		stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
 	}
 	ch := make(chan *event.Event, 4)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
 	require.Nil(t, res)
 
@@ -3196,7 +3244,7 @@ func TestExecuteStreamableTool_ErrorEventStopsBeforeStaleFinalResult(t *testing.
 	}
 	st := &errorThenFinalResultStreamTool{name: "final"}
 	ch := make(chan *event.Event, 4)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.Error(t, err)
 	require.Nil(t, res)
 
@@ -3228,7 +3276,7 @@ func TestExecuteStreamableTool_RetryingNodeErrorDoesNotStopStream(t *testing.T) 
 	}
 	st := &retryingNodeErrorThenFinalResultStreamTool{name: "final"}
 	ch := make(chan *event.Event, 4)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
 	require.Equal(t, "ok", res)
 
@@ -3259,7 +3307,7 @@ func TestExecuteStreamableTool_RetryingToolResponseErrorDoesNotStopStream(t *tes
 	}
 	st := &retryingToolResponseErrorThenFinalResultStreamTool{name: "final"}
 	ch := make(chan *event.Event, 8)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
 	require.Equal(t, "ok", res)
 
@@ -3325,7 +3373,7 @@ func TestExecuteStreamableTool_TerminalToolResponseErrorStopsStream(t *testing.T
 	}
 	st := &terminalToolResponseErrorStreamTool{name: "final"}
 	ch := make(chan *event.Event, 4)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.Error(t, err)
 	require.Nil(t, res)
 
@@ -3434,7 +3482,7 @@ func TestExecuteStreamableTool_ForwardsInnerEvents(t *testing.T) {
 	tc := model.ToolCall{ID: "c1", Function: model.FunctionDefinitionParam{Name: "inner"}}
 	st := &innerEventStreamTool{name: "inner"}
 	ch := make(chan *event.Event, 4)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
 	require.Equal(t, "abcdef", res.(string))
 	// At least one forwarded event (delta). Final full message may be suppressed.
@@ -3537,7 +3585,7 @@ func TestExecuteStreamableTool_DedupsRepeatedInnerFinalMessage(t *testing.T) {
 	}
 	st := &duplicateInnerEventStreamTool{name: "inner"}
 	ch := make(chan *event.Event, 4)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
 	require.Equal(t, "abc", res.(string))
 }
@@ -3557,7 +3605,7 @@ func TestExecuteStreamableTool_DoesNotDedupDistinctInnerFinalMessagesWithSameCon
 	}
 	st := &duplicateFullInnerEventStreamTool{name: "inner"}
 	ch := make(chan *event.Event, 4)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
 	require.Equal(t, "abcabc", res.(string))
 }
@@ -3618,7 +3666,7 @@ func TestExecuteStreamableTool_DoesNotDedupSuffixMatchedInnerFinalMessage(t *tes
 	}
 	st := &suffixMatchedInnerEventStreamTool{name: "inner"}
 	ch := make(chan *event.Event, 4)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
 	require.Equal(t, "xabcabc", res.(string))
 }
@@ -3835,7 +3883,7 @@ func TestExecuteTool_UnsupportedToolType(t *testing.T) {
 	ctx := context.Background()
 	inv := &agent.Invocation{}
 	tc := model.ToolCall{Function: model.FunctionDefinitionParam{Name: "only"}}
-	_, err := p.executeTool(ctx, inv, tc, &onlyTool{}, nil)
+	_, _, err := p.executeTool(ctx, inv, tc, &onlyTool{}, nil)
 	require.Error(t, err)
 }
 
@@ -4375,7 +4423,7 @@ func TestExecuteStreamableTool_StreamableCallError(t *testing.T) {
 	tc := model.ToolCall{ID: "x", Function: model.FunctionDefinitionParam{Name: "s"}}
 	st := &errStreamTool{name: "s"}
 	ch := make(chan *event.Event, 1)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.Error(t, err)
 	require.Nil(t, res)
 }
@@ -4387,7 +4435,7 @@ func TestExecuteStreamableTool_StreamReaderError(t *testing.T) {
 	tc := model.ToolCall{ID: "x", Function: model.FunctionDefinitionParam{Name: "s"}}
 	st := &recvErrStreamTool{name: "s"}
 	ch := make(chan *event.Event, 1)
-	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	_, res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.Error(t, err)
 	require.Nil(t, res)
 }
