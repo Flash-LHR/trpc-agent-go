@@ -229,6 +229,10 @@ func newTestEvalResult(evalSetResultID, evalSetID string, numRuns int) *evalresu
 	}
 }
 
+func intPtr(v int) *int {
+	return &v
+}
+
 func newTestEvaluationResult(evalSetID, evalSetResultID string, numRuns int, executionTime time.Duration) *coreevaluation.EvaluationResult {
 	return &coreevaluation.EvaluationResult{
 		EvalSetID:     evalSetID,
@@ -307,7 +311,7 @@ func TestHandleCreateRun(t *testing.T) {
 			return newTestEvaluationResult(evalSetID, "result-1", 2, 2*time.Second), nil
 		},
 	}))
-	body, err := json.Marshal(&RunEvaluationRequest{SetID: "math-basic", NumRuns: 2})
+	body, err := json.Marshal(&RunEvaluationRequest{SetID: "math-basic", NumRuns: intPtr(2)})
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, srv.RunsPath(), bytes.NewReader(body))
 	recorder := httptest.NewRecorder()
@@ -363,9 +367,10 @@ func TestHandleCreateRunNotFound(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(recorder, req)
 	require.Equal(t, http.StatusNotFound, recorder.Code)
+	assert.JSONEq(t, `{"error":"not found"}`, recorder.Body.String())
 }
 
-func TestHandleCreateRunTimeoutCreatesFailedRun(t *testing.T) {
+func TestHandleCreateRunTimeoutReturnsGatewayTimeout(t *testing.T) {
 	srv := newTestServer(t,
 		WithTimeout(10*time.Millisecond),
 		WithAgentEvaluator(&fakeAgentEvaluator{
@@ -383,7 +388,7 @@ func TestHandleCreateRunTimeoutCreatesFailedRun(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(recorder, req)
 	require.Equal(t, http.StatusGatewayTimeout, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), "deadline exceeded")
+	assert.JSONEq(t, `{"error":"evaluation timed out"}`, recorder.Body.String())
 }
 
 func TestHandleRunsRejectsReadRequests(t *testing.T) {
@@ -471,6 +476,24 @@ func TestHandleRunCollectionRedirectsTrailingSlash(t *testing.T) {
 	assert.Equal(t, srv.RunsPath(), recorder.Header().Get("Location"))
 }
 
+func TestHandleCreateRunRejectsUnknownFields(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, srv.RunsPath(), bytes.NewBufferString(`{"setId":"math-basic","unexpected":true}`))
+	recorder := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(recorder, req)
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "unknown field")
+}
+
+func TestHandleCreateRunRejectsZeroNumRuns(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, srv.RunsPath(), bytes.NewBufferString(`{"setId":"math-basic","numRuns":0}`))
+	recorder := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(recorder, req)
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	assert.JSONEq(t, `{"error":"numRuns must be greater than 0 when provided"}`, recorder.Body.String())
+}
+
 func TestHandleResultQueries(t *testing.T) {
 	srv := newTestServer(t, WithEvalResultManager(&fakeEvalResultManager{
 		list: func(ctx context.Context, appName string) ([]string, error) {
@@ -527,4 +550,21 @@ func TestHandleResultQueries(t *testing.T) {
 		require.Equal(t, http.StatusPermanentRedirect, recorder.Code)
 		assert.Equal(t, srv.ResultsPath()+"/result-1", recorder.Header().Get("Location"))
 	})
+}
+
+func TestRespondStatusErrorUsesSafeMessageAndLogs(t *testing.T) {
+	srv := newTestServer(t)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, srv.ResultsPath(), nil)
+	logger := &stubLogger{}
+	originalLogger := agentlog.Default
+	agentlog.Default = logger
+	defer func() {
+		agentlog.Default = originalLogger
+	}()
+	srv.respondStatusError(recorder, req, errors.New("sensitive backend detail"))
+	require.Equal(t, http.StatusInternalServerError, recorder.Code)
+	assert.JSONEq(t, `{"error":"internal server error"}`, recorder.Body.String())
+	require.Len(t, logger.errorfCalls, 1)
+	assert.Contains(t, logger.errorfCalls[0], "sensitive backend detail")
 }

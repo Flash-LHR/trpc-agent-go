@@ -139,7 +139,8 @@ components:
           type: string
         numRuns:
           type: integer
-          minimum: 0
+          minimum: 1
+          description: Optional. Uses the evaluator default when omitted.
       required:
         - setId
       additionalProperties: false

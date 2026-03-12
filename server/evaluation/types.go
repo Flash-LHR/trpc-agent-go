@@ -17,7 +17,7 @@ import (
 // RunEvaluationRequest represents the request payload for creating an evaluation run.
 type RunEvaluationRequest struct {
 	SetID   string `json:"setId,omitempty"`
-	NumRuns int    `json:"numRuns,omitempty"`
+	NumRuns *int   `json:"numRuns,omitempty"`
 }
 
 // ListSetsResponse represents the response payload for listing sets.

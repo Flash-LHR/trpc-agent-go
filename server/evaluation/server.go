@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -221,10 +222,6 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := newExecutionContext(r.Context(), s.timeout)
 	defer cancel()
-	if err := validateRunEvaluationRequest(req); err != nil {
-		s.respondJSON(w, r, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
 	result, err := s.runEvaluation(ctx, req)
 	if err != nil {
 		s.respondStatusError(w, r, err)
@@ -318,8 +315,8 @@ func (s *Server) listEvalResults(ctx context.Context, filterSetID string) ([]*ev
 
 func (s *Server) runEvaluation(ctx context.Context, req *RunEvaluationRequest) (*coreevaluation.EvaluationResult, error) {
 	evalOpts := make([]coreevaluation.Option, 0, 1)
-	if req.NumRuns > 0 {
-		evalOpts = append(evalOpts, coreevaluation.WithNumRuns(req.NumRuns))
+	if req.NumRuns != nil {
+		evalOpts = append(evalOpts, coreevaluation.WithNumRuns(*req.NumRuns))
 	}
 	return s.agentEvaluator.Evaluate(ctx, req.SetID, evalOpts...)
 }
@@ -384,7 +381,8 @@ func statusCodeFromError(err error) int {
 }
 
 func (s *Server) respondStatusError(w http.ResponseWriter, r *http.Request, err error) {
-	s.respondJSON(w, r, statusCodeFromError(err), map[string]string{"error": err.Error()})
+	log.Errorf("evaluation server: handle %s %s: %v", r.Method, r.URL.RequestURI(), err)
+	s.respondJSON(w, r, statusCodeFromError(err), map[string]string{"error": errorMessageFromError(err)})
 }
 
 func (s *Server) logResponseWriteError(r *http.Request, err error) {
@@ -407,9 +405,19 @@ func newExecutionContext(ctx context.Context, timeout time.Duration) (context.Co
 func (s *Server) decodeRunEvaluationRequest(w http.ResponseWriter, r *http.Request) (*RunEvaluationRequest, error) {
 	defer r.Body.Close()
 	var req RunEvaluationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		s.respondJSON(w, r, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request body: %v", err)})
 		return nil, err
+	}
+	extraErr := decoder.Decode(&struct{}{})
+	if extraErr != io.EOF {
+		s.respondJSON(w, r, http.StatusBadRequest, map[string]string{"error": "invalid request body: request body must contain a single JSON object"})
+		if extraErr == nil {
+			extraErr = errors.New("request body must contain a single JSON object")
+		}
+		return nil, extraErr
 	}
 	if err := validateRunEvaluationRequest(&req); err != nil {
 		s.respondJSON(w, r, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -425,10 +433,23 @@ func validateRunEvaluationRequest(req *RunEvaluationRequest) error {
 	if strings.TrimSpace(req.SetID) == "" {
 		return errors.New("setId must not be empty")
 	}
-	if req.NumRuns < 0 {
-		return errors.New("numRuns must be greater than or equal to 0")
+	if req.NumRuns != nil && *req.NumRuns <= 0 {
+		return errors.New("numRuns must be greater than 0 when provided")
 	}
 	return nil
+}
+
+func errorMessageFromError(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "evaluation timed out"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "evaluation canceled"
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return "not found"
+	}
+	return "internal server error"
 }
 
 func readSetIDFilter(r *http.Request) string {
