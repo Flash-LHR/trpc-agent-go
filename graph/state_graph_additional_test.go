@@ -2938,6 +2938,25 @@ func TestLLMNode_DisableTracingUsesCurrentSpan(t *testing.T) {
 	}
 }
 
+func TestAddLLMNode_DisableTracingSkipsSpanCreation(t *testing.T) {
+	recorder := useSpanRecorder(t)
+	schema := MessagesStateSchema()
+	cm := &captureModel{}
+	sg := NewStateGraph(schema)
+	sg.AddLLMNode("llm", cm, "inst", nil)
+
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{DisableTracing: true}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	node := sg.graph.nodes["llm"]
+
+	_, err := node.Function(ctx, State{StateKeyUserInput: "hi"})
+	require.NoError(t, err)
+	require.NotNil(t, cm.lastReq)
+	require.Empty(t, recorder.Ended())
+}
+
 func TestStartNodeSpan_DisableTracingUsesNoopSpan(t *testing.T) {
 	parentSpan := &trackingSpan{}
 	invocation := agent.NewInvocation(

@@ -571,8 +571,11 @@ func (sg *StateGraph) AddLLMNode(
 	chatSpanName := itelemetry.NewChatSpanName(modelName)
 
 	node.Function = func(ctx context.Context, state State) (any, error) {
-		ctx, wfSpan := trace.Tracer.Start(ctx, workflowSpanName)
-		recordWorkflow := wfSpan != nil && wfSpan.IsRecording()
+		ctx, wfSpan, startedWorkflowSpan := startNodeSpan(
+			ctx,
+			workflowSpanName,
+		)
+		recordWorkflow := startedWorkflowSpan && wfSpan != nil && wfSpan.IsRecording()
 		var workflow *itelemetry.Workflow
 		if recordWorkflow {
 			workflow = &itelemetry.Workflow{Name: workflowName, ID: id, Request: state.safeClone()}
@@ -581,14 +584,14 @@ func (sg *StateGraph) AddLLMNode(
 			if recordWorkflow {
 				itelemetry.TraceWorkflow(wfSpan, workflow)
 			}
-			if wfSpan != nil {
+			if startedWorkflowSpan && wfSpan != nil {
 				wfSpan.End()
 			}
 		}()
 
-		ctx, span := trace.Tracer.Start(ctx, chatSpanName)
+		ctx, span, startedSpan := startNodeSpan(ctx, chatSpanName)
 		defer func() {
-			if span != nil {
+			if startedSpan && span != nil {
 				span.End()
 			}
 		}()
