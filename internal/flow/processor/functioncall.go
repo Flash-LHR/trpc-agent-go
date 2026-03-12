@@ -827,13 +827,12 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 	}
 	if suppressDefaultToolMessage {
 		defaultMsg := model.Message{
-			Role:   model.RoleTool,
-			ToolID: toolCall.ID,
+			Role:    model.RoleTool,
+			ToolID:  toolCall.ID,
+			Content: "{}",
 		}
-		defaultToolChoiceMsg := defaultMsg
-		defaultToolChoiceMsg.Content = "{}"
 		defaultChoices := []model.Choice{
-			{Index: index, Message: defaultToolChoiceMsg},
+			{Index: index, Message: defaultMsg},
 		}
 		ctx = markSyntheticStateOnlyToolChoice(ctx)
 		if p.toolCallbacks == nil || p.toolCallbacks.ToolResultMessages == nil {
