@@ -32,6 +32,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/plugin"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
+	agenttool "trpc.group/trpc-go/trpc-agent-go/tool/agent"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 	"trpc.group/trpc-go/trpc-agent-go/tool/transfer"
 )
@@ -3858,6 +3859,33 @@ func (m *mockTransferAgent) FindSubAgent(name string) agent.Agent {
 	return nil
 }
 
+type runErrorSubAgent struct {
+	name string
+}
+
+func (m *runErrorSubAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
+	return nil, errors.New("boom")
+}
+
+func (m *runErrorSubAgent) Tools() []tool.Tool {
+	return nil
+}
+
+func (m *runErrorSubAgent) Info() agent.Info {
+	return agent.Info{
+		Name:        m.name,
+		Description: "run error sub-agent",
+	}
+}
+
+func (m *runErrorSubAgent) SubAgents() []agent.Agent {
+	return nil
+}
+
+func (m *runErrorSubAgent) FindSubAgent(name string) agent.Agent {
+	return nil
+}
+
 func TestHandleFunctionCallsAndSendEvent_StopErrorEmitsErrorEvent(t *testing.T) {
 	ctx := context.Background()
 	p := NewFunctionCallResponseProcessor(false, nil)
@@ -4545,6 +4573,27 @@ func TestExecuteStreamableTool_StreamReaderError(t *testing.T) {
 	_, res, _, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.Error(t, err)
 	require.Nil(t, res)
+}
+
+func TestExecuteStreamableTool_AgentToolRunErrorDoesNotEmitPartial(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.WithValue(
+		context.Background(),
+		tool.ContextKeyToolCallID{},
+		"call-1",
+	)
+	inv := &agent.Invocation{InvocationID: "inv-agent-tool-err", AgentName: "tester", Branch: "b", Model: &mockModel{}}
+	tc := model.ToolCall{ID: "call-1", Function: model.FunctionDefinitionParam{Name: "agent-tool"}}
+	st := agenttool.NewTool(&runErrorSubAgent{name: "err-agent"}, agenttool.WithStreamInner(true))
+	ch := make(chan *event.Event, 1)
+	_, res, _, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.Error(t, err)
+	require.Nil(t, res)
+	select {
+	case ev := <-ch:
+		require.Failf(t, "unexpected tool response event", "%#v", ev)
+	default:
+	}
 }
 
 func TestMarshalChunkToText_MarshalError(t *testing.T) {

@@ -2529,6 +2529,21 @@ func TestTool_StreamableCall_RunErrorReturnsStreamError(t *testing.T) {
 	require.Contains(t, err.Error(), "agent tool run error")
 }
 
+func TestTool_StreamableCall_RunErrorWithToolCallIDReturnsStreamErrorOnly(t *testing.T) {
+	at := NewTool(&errorMockAgent{name: "err-agent"}, WithStreamInner(true))
+	ctx := context.WithValue(
+		context.Background(),
+		tool.ContextKeyToolCallID{},
+		"call-1",
+	)
+	r, err := at.StreamableCall(ctx, []byte(`{}`))
+	require.NoError(t, err)
+	defer r.Close()
+	_, err = r.Recv()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "agent tool run error")
+}
+
 // agentWithSchemaMock returns input/output schema maps in Info()
 type agentWithSchemaMock struct{ name, desc string }
 

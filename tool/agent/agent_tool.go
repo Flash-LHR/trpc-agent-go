@@ -667,6 +667,7 @@ func (at *Tool) streamFromParentInvocation(
 ) {
 	if err := flush.Invoke(ctx, parentInv); err != nil {
 		sendStreamableCallError(
+			ctx,
 			writer,
 			"flush parent invocation session failed: %w",
 			err,
@@ -685,7 +686,7 @@ func (at *Tool) streamFromParentInvocation(
 	subCtx := agent.NewInvocationContext(ctx, subInv)
 	evCh, err := agent.RunWithPlugins(subCtx, subInv, at.agent)
 	if err != nil {
-		sendStreamableCallError(writer, "agent tool run error: %w", err)
+		sendStreamableCallError(ctx, writer, "agent tool run error: %w", err)
 		return
 	}
 	at.forwardSubInvocationStream(
@@ -861,7 +862,7 @@ func (at *Tool) streamFromFallbackRunner(
 	)
 	evCh, err := r.Run(ctx, "tool_user", "tool_session", message)
 	if err != nil {
-		sendStreamableCallError(writer, "agent tool run error: %w", err)
+		sendStreamableCallError(ctx, writer, "agent tool run error: %w", err)
 		return
 	}
 	for ev := range evCh {
@@ -872,15 +873,22 @@ func (at *Tool) streamFromFallbackRunner(
 }
 
 func sendStreamableCallError(
+	ctx context.Context,
 	writer *tool.StreamWriter,
 	format string,
 	err error,
 ) {
 	streamErr := fmt.Errorf(format, err)
-	if writer.Send(tool.StreamChunk{Content: streamErr.Error()}, nil) {
+	if shouldEmitStreamableCallErrorChunk(ctx) &&
+		writer.Send(tool.StreamChunk{Content: streamErr.Error()}, nil) {
 		return
 	}
 	_ = writer.Send(tool.StreamChunk{}, streamErr)
+}
+
+func shouldEmitStreamableCallErrorChunk(ctx context.Context) bool {
+	toolCallID, ok := tool.ToolCallIDFromContext(ctx)
+	return !ok || toolCallID == ""
 }
 
 // SkipSummarization exposes whether the AgentTool prefers skipping
