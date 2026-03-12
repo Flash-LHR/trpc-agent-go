@@ -2884,6 +2884,45 @@ func TestRunner_DisableGraphExecutorEvents_HidesBarrierEvents(t *testing.T) {
 	require.Equal(t, "hidden barrier", last.Response.Choices[0].Message.Content)
 }
 
+func TestRunner_DisableGraphExecutorEvents_PreservesGraphFailure(t *testing.T) {
+	schema := graph.MessagesStateSchema()
+	sg := graph.NewStateGraph(schema)
+	sg.AddNode("boom", func(context.Context, graph.State) (any, error) {
+		return nil, errors.New("boom")
+	})
+	compiled := sg.SetEntryPoint("boom").SetFinishPoint("boom").MustCompile()
+	ga, err := graphagent.New("ga", compiled)
+	require.NoError(t, err)
+	svc := sessioninmemory.NewSessionService()
+	r := NewRunner("app", ga, WithSessionService(svc))
+	ch, err := r.Run(
+		context.Background(),
+		"u",
+		"s",
+		model.NewUserMessage("hi"),
+		agent.WithDisableGraphExecutorEvents(true),
+	)
+	require.NoError(t, err)
+	var last *event.Event
+	var sawErrorEvent bool
+	for evt := range ch {
+		require.NotEqual(t, graph.ObjectTypeGraphPregelStep, evt.Object)
+		if evt.Object == model.ObjectTypeError &&
+			evt.Response != nil &&
+			evt.Response.Error != nil {
+			sawErrorEvent = true
+			require.Contains(t, evt.Response.Error.Message, "boom")
+		}
+		last = evt
+	}
+	require.True(t, sawErrorEvent)
+	require.NotNil(t, last)
+	require.True(t, last.IsRunnerCompletion())
+	require.NotNil(t, last.Response)
+	require.Nil(t, last.Response.Error)
+	require.Len(t, last.Response.Choices, 0)
+}
+
 func TestRunner_GraphAgentPersistsLLMDoneResponses(t *testing.T) {
 	schema := graph.MessagesStateSchema()
 	sg := graph.NewStateGraph(schema)

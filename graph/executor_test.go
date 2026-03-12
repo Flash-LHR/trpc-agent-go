@@ -357,6 +357,38 @@ func TestExecutor_DisableGraphExecutorEvents_SuppressesEventHelpers(t *testing.T
 	require.Len(t, eventCh, 0)
 }
 
+func TestExecutor_DisableGraphExecutorEvents_PreservesTerminalError(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	sg.AddNode("boom", func(context.Context, State) (any, error) {
+		return nil, errors.New("boom")
+	})
+	compiled := sg.SetEntryPoint("boom").SetFinishPoint("boom").MustCompile()
+	exec, err := NewExecutor(compiled)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-events-error"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphExecutorEvents: true,
+		}),
+	)
+	ch, err := exec.Execute(context.Background(), State{}, invocation)
+	require.NoError(t, err)
+	var sawTerminalError bool
+	for evt := range ch {
+		if evt == nil {
+			continue
+		}
+		require.NotEqual(t, ObjectTypeGraphPregelStep, evt.Object)
+		if evt.Object == model.ObjectTypeError &&
+			evt.Response != nil &&
+			evt.Response.Error != nil {
+			sawTerminalError = true
+			require.Contains(t, evt.Response.Error.Message, "boom")
+		}
+	}
+	require.True(t, sawTerminalError)
+}
+
 func TestExecuteSingleToolCall_DisableGraphExecutorEvents_FallsBackToOriginalInvocation(t *testing.T) {
 	callbacks := tool.NewCallbacks()
 	callbacks.RegisterBeforeTool(func(

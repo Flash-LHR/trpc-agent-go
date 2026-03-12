@@ -301,19 +301,12 @@ func (e *Executor) Execute(
 					string(stack),
 				)
 				workflow.Error = fmt.Errorf("executor panic: %v", r)
-				if shouldEmitPregelStepEvents(invocation) {
-					agent.EmitEvent(ctx, invocation, eventChan, NewPregelErrorEvent(
-						WithPregelEventInvocationID(invocation.InvocationID),
-						WithPregelEventStepNumber(-1),
-						WithPregelEventError(workflow.Error.Error()),
-						WithPregelEventResponseError(
-							model.ResponseErrorFromError(
-								workflow.Error,
-								model.ErrorTypeFlowError,
-							),
-						),
-					))
-				}
+				emitTerminalGraphErrorEvent(
+					ctx,
+					invocation,
+					eventChan,
+					workflow.Error,
+				)
 			}
 			agent.GetOrCreateStreamHub(invocation).CloseAll(ctx.Err())
 			close(eventChan)
@@ -328,20 +321,13 @@ func (e *Executor) Execute(
 				return
 			}
 			workflow.Error = err
-			// Emit error event for other errors.
-			if shouldEmitPregelStepEvents(invocation) {
-				agent.EmitEvent(ctx, invocation, eventChan, NewPregelErrorEvent(
-					WithPregelEventInvocationID(invocation.InvocationID),
-					WithPregelEventStepNumber(-1),
-					WithPregelEventError(err.Error()),
-					WithPregelEventResponseError(
-						model.ResponseErrorFromError(
-							err,
-							model.ErrorTypeFlowError,
-						),
-					),
-				))
-			}
+			// Emit terminal error for other failures.
+			emitTerminalGraphErrorEvent(
+				ctx,
+				invocation,
+				eventChan,
+				err,
+			)
 		}
 	}(runCtx)
 	return outputChan, nil
@@ -1713,6 +1699,54 @@ func shouldEmitCheckpointLifecycleEvents(
 
 func shouldEmitPregelStepEvents(invocation *agent.Invocation) bool {
 	return invocation == nil || !invocation.RunOptions.DisableGraphExecutorEvents
+}
+
+func emitTerminalGraphErrorEvent(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	eventChan chan<- *event.Event,
+	err error,
+) {
+	if err == nil || eventChan == nil {
+		return
+	}
+	if shouldEmitPregelStepEvents(invocation) {
+		invocationID := ""
+		if invocation != nil {
+			invocationID = invocation.InvocationID
+		}
+		agent.EmitEvent(ctx, invocation, eventChan, NewPregelErrorEvent(
+			WithPregelEventInvocationID(invocationID),
+			WithPregelEventStepNumber(-1),
+			WithPregelEventError(err.Error()),
+			WithPregelEventResponseError(
+				model.ResponseErrorFromError(
+					err,
+					model.ErrorTypeFlowError,
+				),
+			),
+		))
+		return
+	}
+	invocationID := ""
+	author := AuthorGraphExecutor
+	if invocation != nil {
+		invocationID = invocation.InvocationID
+		if invocation.AgentName != "" {
+			author = invocation.AgentName
+		}
+	}
+	agent.EmitEvent(
+		ctx,
+		invocation,
+		eventChan,
+		event.NewErrorEvent(
+			invocationID,
+			author,
+			model.ErrorTypeFlowError,
+			err.Error(),
+		),
+	)
 }
 
 // applyPendingWrites replays pending writes into channels to rebuild frontier.
