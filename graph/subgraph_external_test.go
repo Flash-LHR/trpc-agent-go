@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -283,4 +284,65 @@ func TestSubgraph_DisableGraphCompletionEvent_DropsStaleOutputAfterChildAfterCal
 
 	require.True(t, sawCallbackError)
 	require.False(t, sawStaleChildValue)
+}
+
+func TestSubgraph_DisableGraphExecutorEvents_ChildFailureStopsParentGraph(t *testing.T) {
+	const (
+		childNodeName = "child"
+		afterNodeName = "after"
+	)
+	childSchema := graph.NewStateSchema().
+		AddField(graph.StateKeyLastResponse, graph.StateField{Type: reflect.TypeOf("")})
+	childGraph := graph.NewStateGraph(childSchema)
+	childGraph.AddNode("boom", func(context.Context, graph.State) (any, error) {
+		return nil, errors.New("child boom")
+	})
+	childCompiled := childGraph.SetEntryPoint("boom").SetFinishPoint("boom").MustCompile()
+	childAgent, err := graphagent.New(childNodeName, childCompiled)
+	require.NoError(t, err)
+
+	parentSchema := graph.NewStateSchema().
+		AddField(graph.StateKeyLastResponse, graph.StateField{Type: reflect.TypeOf("")})
+	parentGraph := graph.NewStateGraph(parentSchema)
+	parentGraph.AddAgentNode(childNodeName)
+	parentGraph.AddNode(afterNodeName, func(context.Context, graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "after-ran"}, nil
+	})
+	parentGraph.AddEdge(childNodeName, afterNodeName)
+	parentCompiled := parentGraph.SetEntryPoint(childNodeName).SetFinishPoint(afterNodeName).MustCompile()
+	parentAgent, err := graphagent.New(
+		"parent",
+		parentCompiled,
+		graphagent.WithSubAgents([]agent.Agent{childAgent}),
+	)
+	require.NoError(t, err)
+
+	invocation := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("hello")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+			DisableGraphExecutorEvents:  true,
+		}),
+	)
+	eventCh, err := parentAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+
+	var sawChildError bool
+	var sawAfterResponse bool
+	for evt := range eventCh {
+		if evt != nil &&
+			evt.Error != nil &&
+			strings.Contains(evt.Error.Message, "child boom") {
+			sawChildError = true
+		}
+		if evt != nil &&
+			evt.Response != nil &&
+			len(evt.Response.Choices) > 0 &&
+			evt.Response.Choices[0].Message.Content == "after-ran" {
+			sawAfterResponse = true
+		}
+	}
+
+	require.True(t, sawChildError)
+	require.False(t, sawAfterResponse)
 }

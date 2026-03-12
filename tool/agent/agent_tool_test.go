@@ -1807,6 +1807,64 @@ func TestTool_StreamableCall_DefersCompletion_FlushesVisibleCompletionBeforeBarr
 	require.True(t, sawFinalChunk)
 }
 
+func TestTool_StreamableCall_DefersCompletion_PersistsStateOnlyCompletionToSharedSession(
+	t *testing.T,
+) {
+	const toolCallID = "call-1"
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sess := session.NewSession("app", "user", "session")
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	appender.Attach(parent, func(_ context.Context, evt *event.Event) error {
+		if evt == nil {
+			return nil
+		}
+		parent.Session.UpdateUserSession(evt)
+		return nil
+	})
+	at := NewTool(
+		&graphCompletionMockAgent{name: graphCompletionAgent, stateOnly: true},
+		WithStreamInner(true),
+		WithHistoryScope(HistoryScopeParentBranch),
+	)
+	toolCtx := agent.NewInvocationContext(ctx, parent)
+	ctxWithToolCallID := context.WithValue(
+		toolCtx,
+		tool.ContextKeyToolCallID{},
+		toolCallID,
+	)
+	reader, err := at.StreamableCall(
+		ctxWithToolCallID,
+		[]byte(`{"request":"payload"}`),
+	)
+	require.NoError(t, err)
+	defer reader.Close()
+	var sawFinalChunk bool
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		if _, ok := chunk.Content.(*event.Event); ok {
+			continue
+		}
+		finalChunk := requireFinalChunkView(t, chunk.Content)
+		sawFinalChunk = true
+		require.Equal(t, []byte(graphStateValue), finalChunk.StateDelta[graphStateKey])
+	}
+	require.True(t, sawFinalChunk)
+	stateValue, ok := sess.GetState(graphStateKey)
+	require.True(t, ok)
+	require.Equal(t, []byte(graphStateValue), stateValue)
+	require.False(t, sessionHasAssistantContent(sess, graphCompletionMsg))
+}
+
 type toolCallIDDroppingContext struct {
 	context.Context
 }

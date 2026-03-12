@@ -756,7 +756,9 @@ func (at *Tool) flushPendingVisibleCompletionForSession(
 	if state == nil || state.pendingVisibleCompletion == nil {
 		return
 	}
-	at.ensureUserMessageForCall(ctx, inv)
+	if _, ok := assistantMessageContent(state.pendingVisibleCompletion); ok {
+		at.ensureUserMessageForCall(ctx, inv)
+	}
 	at.appendEvent(ctx, inv, state.pendingVisibleCompletion)
 	state.pendingVisibleCompletion = nil
 }
@@ -818,7 +820,7 @@ func visibleCompletionSessionEvent(evt *event.Event) *event.Event {
 		visible = rewritten
 	}
 	if !shouldDelayVisibleCompletionSessionMirror(visible) {
-		return nil
+		return visibleCompletionStateOnlySessionEvent(visible)
 	}
 	return persistableSessionEvent(visible)
 }

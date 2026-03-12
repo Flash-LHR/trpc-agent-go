@@ -2343,6 +2343,7 @@ type agentEventStreamResult struct {
 	fullRespEvent    *event.Event
 	tokenUsage       *itelemetry.TokenUsage
 	interrupt        *InterruptError
+	terminalErr      error
 }
 
 type agentDeltaStreamTap struct {
@@ -2442,6 +2443,7 @@ func updateAgentStreamResultFromEvent(
 	updateAgentInterrupt(res, ev)
 	updateAgentFinalState(ctx, res, ev)
 	clearAgentSuccessResultOnError(res, ev)
+	updateAgentTerminalError(res, ev)
 }
 
 func updateAgentLastResponse(res *agentEventStreamResult, ev *event.Event) {
@@ -2510,6 +2512,47 @@ func clearAgentSuccessResultOnError(res *agentEventStreamResult, ev *event.Event
 	res.finalState = nil
 	res.rawDelta = nil
 	res.structuredOutput = nil
+}
+
+func updateAgentTerminalError(res *agentEventStreamResult, ev *event.Event) {
+	if res == nil || res.terminalErr != nil || !isTerminalAgentErrorEvent(ev) {
+		return
+	}
+	if ev.Error != nil && ev.Error.Type == agent.ErrorTypeStopAgentError {
+		res.terminalErr = agent.NewStopError(ev.Error.Message)
+		return
+	}
+	if ev.Error != nil {
+		res.terminalErr = errors.New(ev.Error.Message)
+	}
+}
+
+func isTerminalAgentErrorEvent(ev *event.Event) bool {
+	if ev == nil ||
+		ev.Response == nil ||
+		ev.Response.Error == nil ||
+		ev.Object != model.ObjectTypeError {
+		return false
+	}
+	if len(ev.StateDelta) == 0 {
+		return true
+	}
+	for _, key := range []string{
+		MetadataKeyNode,
+		MetadataKeyPregel,
+		MetadataKeyTool,
+		MetadataKeyModel,
+		MetadataKeyChannel,
+		MetadataKeyState,
+		MetadataKeyCheckpoint,
+		MetadataKeyCacheHit,
+		MetadataKeyNodeCustom,
+	} {
+		if _, ok := ev.StateDelta[key]; ok {
+			return false
+		}
+	}
+	return true
 }
 
 func updateAgentFinalState(
@@ -2603,7 +2646,9 @@ func processAgentEventStream(
 		tap.WriteDelta(agentEvent)
 		updateAgentStreamResultFromEvent(ctx, &res, agentEvent, tracker)
 	}
-
+	if res.terminalErr != nil {
+		return res, res.terminalErr
+	}
 	return res, nil
 }
 
