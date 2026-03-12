@@ -621,6 +621,7 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 
 type streamCompletionState struct {
 	pendingCompletionChunk     *pendingFinalResultChunk
+	pendingVisibleCompletion   *event.Event
 	sawGraphCompletionSnapshot bool
 	lastAssistantResponseID    string
 	lastAssistantContent       string
@@ -688,6 +689,7 @@ func (at *Tool) streamFromParentInvocation(
 		return
 	}
 	at.forwardSubInvocationStream(
+		subCtx,
 		subInv,
 		at.wrapWithStreamSemantics(subCtx, subInv, evCh),
 		writer,
@@ -695,6 +697,7 @@ func (at *Tool) streamFromParentInvocation(
 }
 
 func (at *Tool) forwardSubInvocationStream(
+	ctx context.Context,
 	subInv *agent.Invocation,
 	wrapped <-chan *event.Event,
 	writer *tool.StreamWriter,
@@ -704,14 +707,58 @@ func (at *Tool) forwardSubInvocationStream(
 		if subInv.RunOptions.DisableGraphCompletionEvent &&
 			isGraphCompletionSnapshotEvent(ev) {
 			at.capturePendingCompletionChunk(ev, &state)
+			at.capturePendingVisibleCompletion(ev, &state)
 			continue
+		}
+		state.pendingVisibleCompletion = at.updatePendingVisibleCompletionForSession(
+			ctx,
+			subInv,
+			state.pendingVisibleCompletion,
+			ev,
+		)
+		if ev != nil &&
+			ev.RequiresCompletion &&
+			state.pendingVisibleCompletion != nil {
+			at.flushPendingVisibleCompletionForSession(
+				ctx,
+				subInv,
+				&state,
+			)
 		}
 		at.updateStreamCompletionState(ev, &state)
 		if writer.Send(tool.StreamChunk{Content: ev}, nil) {
 			return
 		}
 	}
+	at.flushPendingVisibleCompletionForSession(ctx, subInv, &state)
 	at.emitPendingCompletionChunk(&state, writer)
+}
+
+func (at *Tool) capturePendingVisibleCompletion(
+	ev *event.Event,
+	state *streamCompletionState,
+) {
+	if state == nil {
+		return
+	}
+	sessionEvent := visibleCompletionSessionEvent(ev)
+	if sessionEvent == nil {
+		return
+	}
+	state.pendingVisibleCompletion = sessionEvent
+}
+
+func (at *Tool) flushPendingVisibleCompletionForSession(
+	ctx context.Context,
+	inv *agent.Invocation,
+	state *streamCompletionState,
+) {
+	if state == nil || state.pendingVisibleCompletion == nil {
+		return
+	}
+	at.ensureUserMessageForCall(ctx, inv)
+	at.appendEvent(ctx, inv, state.pendingVisibleCompletion)
+	state.pendingVisibleCompletion = nil
 }
 
 func (at *Tool) capturePendingCompletionChunk(
@@ -756,6 +803,24 @@ func (at *Tool) updateStreamCompletionState(
 	if state.sawGraphCompletionSnapshot {
 		state.overrideResult = content
 	}
+}
+
+func visibleCompletionSessionEvent(evt *event.Event) *event.Event {
+	if evt == nil {
+		return nil
+	}
+	visible := evt
+	if isGraphCompletionEvent(evt) {
+		rewritten, ok := graph.VisibleGraphCompletionEvent(evt)
+		if !ok {
+			return nil
+		}
+		visible = rewritten
+	}
+	if !shouldDelayVisibleCompletionSessionMirror(visible) {
+		return nil
+	}
+	return persistableSessionEvent(visible)
 }
 
 func (at *Tool) emitPendingCompletionChunk(

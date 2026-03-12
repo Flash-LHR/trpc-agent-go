@@ -1745,6 +1745,68 @@ func TestTool_StreamableCall_DefersCompletionToRunner(t *testing.T) {
 	require.Len(t, parent.Session.Events, 0)
 }
 
+func TestTool_StreamableCall_DefersCompletion_FlushesVisibleCompletionBeforeBarrierNotification(
+	t *testing.T,
+) {
+	const toolCallID = "call-1"
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sess := session.NewSession("app", "user", "session")
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	appender.Attach(parent, func(_ context.Context, evt *event.Event) error {
+		if evt == nil {
+			return nil
+		}
+		parent.Session.UpdateUserSession(evt)
+		return nil
+	})
+	at := NewTool(
+		&visibleCompletionBarrierAgent{name: "visible-barrier-agent"},
+		WithStreamInner(true),
+	)
+	toolCtx := agent.NewInvocationContext(ctx, parent)
+	ctxWithToolCallID := context.WithValue(
+		toolCtx,
+		tool.ContextKeyToolCallID{},
+		toolCallID,
+	)
+	reader, err := at.StreamableCall(
+		ctxWithToolCallID,
+		[]byte(`{"request":"payload"}`),
+	)
+	require.NoError(t, err)
+	defer reader.Close()
+	first, err := reader.Recv()
+	require.NoError(t, err)
+	barrierEvt, ok := first.Content.(*event.Event)
+	require.True(t, ok)
+	require.True(t, barrierEvt.RequiresCompletion)
+	require.True(t, sessionHasAssistantContent(sess, "child-final"))
+	completionID := agent.GetAppendEventNoticeKey(barrierEvt.ID)
+	require.NoError(t, parent.NotifyCompletion(ctx, completionID))
+	var sawFinalChunk bool
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		if evt, ok := chunk.Content.(*event.Event); ok {
+			require.False(t, evt.IsError())
+			continue
+		}
+		finalChunk := requireFinalChunkView(t, chunk.Content)
+		sawFinalChunk = true
+		require.Equal(t, "child-final", finalChunk.Result)
+	}
+	require.True(t, sawFinalChunk)
+}
+
 type toolCallIDDroppingContext struct {
 	context.Context
 }
