@@ -108,12 +108,19 @@ func (ga *GraphAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-
 	// Setup invocation
 	ga.setupInvocation(invocation)
 	out := make(chan *event.Event, ga.eventChannelBufferSize(invocation))
+	emitChan := out
+	if shouldHideGraphAgentBarrierEvents(invocation) {
+		hiddenChan := make(chan *event.Event, ga.eventChannelBufferSize(invocation))
+		emitChan = hiddenChan
+		forwardCtx := agent.CloneContext(ctx)
+		go ga.forwardVisibleEvents(forwardCtx, invocation, hiddenChan, out)
+	}
 	runCtx := agent.CloneContext(ctx)
 	if invocation.RunOptions.DisableTracing && ga.agentCallbacks == nil && !barrier.Enabled(invocation) {
-		go ga.runWithoutBarrier(runCtx, invocation, out)
+		go ga.runWithoutBarrier(runCtx, invocation, emitChan)
 		return out, nil
 	}
-	go ga.runWithBarrier(runCtx, invocation, out)
+	go ga.runWithBarrier(runCtx, invocation, emitChan)
 	return out, nil
 }
 
@@ -430,6 +437,55 @@ func shouldSuppressHiddenCompletion(
 	return invocation != nil &&
 		agent.IsGraphCompletionEventDisabled(invocation) &&
 		!graph.ShouldCaptureGraphCompletion(ctx)
+}
+
+func shouldHideGraphAgentBarrierEvents(invocation *agent.Invocation) bool {
+	return invocation != nil &&
+		barrier.Enabled(invocation) &&
+		agent.IsGraphExecutorEventsDisabled(invocation)
+}
+
+func shouldSuppressGraphAgentBarrierEvent(
+	invocation *agent.Invocation,
+	evt *event.Event,
+) bool {
+	return shouldHideGraphAgentBarrierEvents(invocation) &&
+		evt != nil &&
+		evt.Object == graph.ObjectTypeGraphBarrier
+}
+
+func (ga *GraphAgent) forwardVisibleEvents(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	src <-chan *event.Event,
+	dst chan<- *event.Event,
+) {
+	defer close(dst)
+	for evt := range src {
+		if shouldSuppressGraphAgentBarrierEvent(invocation, evt) {
+			if err := completeSuppressedGraphAgentBarrier(ctx, invocation, evt); err != nil {
+				log.Errorf("graphagent: complete hidden barrier failed: %v", err)
+				return
+			}
+			continue
+		}
+		if err := event.EmitEvent(ctx, dst, evt); err != nil {
+			log.Errorf("graphagent: emit forwarded event failed: %v.", err)
+			return
+		}
+	}
+}
+
+func completeSuppressedGraphAgentBarrier(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	evt *event.Event,
+) error {
+	if invocation == nil || evt == nil || !evt.RequiresCompletion {
+		return nil
+	}
+	completionID := agent.GetAppendEventNoticeKey(evt.ID)
+	return invocation.NotifyCompletion(ctx, completionID)
 }
 
 func (ga *GraphAgent) setupInvocation(invocation *agent.Invocation) {

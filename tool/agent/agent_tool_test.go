@@ -2903,6 +2903,14 @@ func TestTool_SkipSummarization(t *testing.T) {
 	}
 }
 
+func TestTool_StructuredStreamErrors(t *testing.T) {
+	a := &mockAgent{name: "test", description: "test"}
+	at1 := NewTool(a)
+	require.False(t, at1.StructuredStreamErrors())
+	at2 := NewTool(a, WithStructuredStreamErrors(true))
+	require.True(t, at2.StructuredStreamErrors())
+}
+
 // eventErrorMockAgent returns an event with error
 type eventErrorMockAgent struct{ name string }
 

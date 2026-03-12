@@ -276,12 +276,14 @@ func (e *Executor) Execute(
 	// Create the internal event channel used by graph execution.
 	eventChan := make(chan *event.Event, eventChanSize)
 	outputChan := (<-chan *event.Event)(eventChan)
-	if agent.IsGraphCompletionEventDisabled(invocation) &&
-		!shouldCaptureGraphCompletion(ctx) {
+	hideGraphCompletion := agent.IsGraphCompletionEventDisabled(invocation) &&
+		!shouldCaptureGraphCompletion(ctx)
+	hideBarrierEvents := shouldHideExecutorBarrierEvents(invocation)
+	if hideGraphCompletion || hideBarrierEvents {
 		filteredChan := make(chan *event.Event, eventChanSize)
 		outputChan = filteredChan
 		forwardCtx := agent.CloneContext(ctx)
-		go e.forwardExecutionEvents(forwardCtx, eventChan, filteredChan)
+		go e.forwardExecutionEvents(forwardCtx, invocation, eventChan, filteredChan)
 	}
 	// Start execution in a goroutine.
 	runCtx := agent.CloneContext(ctx)
@@ -347,6 +349,7 @@ func (e *Executor) Execute(
 
 func (e *Executor) forwardExecutionEvents(
 	ctx context.Context,
+	invocation *agent.Invocation,
 	src <-chan *event.Event,
 	dst chan<- *event.Event,
 ) {
@@ -354,8 +357,26 @@ func (e *Executor) forwardExecutionEvents(
 		ctx = context.Background()
 	}
 	defer close(dst)
+	hideGraphCompletion := agent.IsGraphCompletionEventDisabled(invocation) &&
+		!shouldCaptureGraphCompletion(ctx)
+	hideBarrierEvents := shouldHideExecutorBarrierEvents(invocation)
 	for evt := range src {
-		if isGraphCompletionEvent(evt) {
+		if hideGraphCompletion && isGraphCompletionEvent(evt) {
+			continue
+		}
+		if hideBarrierEvents && isGraphNodeBarrierEvent(evt) {
+			if err := notifySuppressedBarrierCompletion(
+				ctx,
+				invocation,
+				evt,
+			); err != nil {
+				log.WarnfContext(
+					ctx,
+					"Failed to complete hidden executor barrier event: %v",
+					err,
+				)
+				return
+			}
 			continue
 		}
 		if ctx.Err() == nil {
@@ -376,6 +397,28 @@ func (e *Executor) forwardExecutionEvents(
 			)
 		}
 	}
+}
+
+func shouldHideExecutorBarrierEvents(invocation *agent.Invocation) bool {
+	return invocation != nil &&
+		barrier.Enabled(invocation) &&
+		agent.IsGraphExecutorEventsDisabled(invocation)
+}
+
+func isGraphNodeBarrierEvent(evt *event.Event) bool {
+	return evt != nil && evt.Object == ObjectTypeGraphNodeBarrier
+}
+
+func notifySuppressedBarrierCompletion(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	evt *event.Event,
+) error {
+	if invocation == nil || evt == nil || !evt.RequiresCompletion {
+		return nil
+	}
+	completionID := agent.GetAppendEventNoticeKey(evt.ID)
+	return invocation.NotifyCompletion(ctx, completionID)
 }
 
 // executeGraph executes the graph using Pregel-style BSP execution.

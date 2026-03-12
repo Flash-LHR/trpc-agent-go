@@ -391,6 +391,36 @@ func TestExecutor_DisableGraphExecutorEvents_PreservesTerminalError(t *testing.T
 	require.True(t, sawTerminalError)
 }
 
+func TestExecutor_DisableGraphExecutorEvents_HidesNodeBarrierEvents(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	sg.AddNode("done", func(context.Context, State) (any, error) {
+		return State{StateKeyLastResponse: "ok"}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	exec, err := NewExecutor(compiled)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-events-barrier"),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
+	)
+	barrier.Enable(invocation)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	ch, err := exec.Execute(ctx, State{}, invocation)
+	require.NoError(t, err)
+	var sawCompletion bool
+	for evt := range ch {
+		require.NotNil(t, evt)
+		require.NotEqual(t, ObjectTypeGraphNodeBarrier, evt.Object)
+		if evt.Object == ObjectTypeGraphExecution {
+			sawCompletion = true
+		}
+	}
+	require.True(t, sawCompletion)
+}
+
 func TestExecuteSingleToolCall_DisableGraphExecutorEvents_FallsBackToOriginalInvocation(t *testing.T) {
 	callbacks := tool.NewCallbacks()
 	callbacks.RegisterBeforeTool(func(
@@ -801,8 +831,12 @@ func TestForwardExecutionEvents_DrainsQueuedEventsAfterContextCancellation(t *te
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-
-	exec.forwardExecutionEvents(ctx, src, dst)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
+	)
+	exec.forwardExecutionEvents(ctx, invocation, src, dst)
 
 	evt, ok := <-dst
 	require.True(t, ok)
@@ -827,7 +861,7 @@ func TestForwardExecutionEvents_DoesNotBlockOnBackpressuredOutputAfterCancellati
 
 	done := make(chan struct{})
 	go func() {
-		exec.forwardExecutionEvents(ctx, src, dst)
+		exec.forwardExecutionEvents(ctx, nil, src, dst)
 		close(done)
 	}()
 

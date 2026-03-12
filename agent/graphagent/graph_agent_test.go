@@ -2266,6 +2266,47 @@ func TestGraphAgent_RunWithBarrierEmitError(t *testing.T) {
 	require.Contains(t, events[0].Response.Error.Message, "add notice channel")
 }
 
+func TestGraphAgent_RunWithBarrier_DisableGraphExecutorEventsHidesBarrierEvents(
+	t *testing.T,
+) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	schema := graph.NewStateSchema().
+		AddField("done", graph.StateField{
+			Type:    reflect.TypeOf(""),
+			Reducer: graph.DefaultReducer,
+		})
+	g, err := graph.NewStateGraph(schema).
+		AddNode("finish", func(ctx context.Context, state graph.State) (any, error) {
+			return graph.State{"done": "ok"}, nil
+		}).
+		SetEntryPoint("finish").
+		SetFinishPoint("finish").
+		Compile()
+	require.NoError(t, err)
+	ga, err := New("barrier-hidden", g)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationSession(session.NewSession("app", "u", "s")),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
+	)
+	barrier.Enable(inv)
+	ch, err := ga.Run(ctx, inv)
+	require.NoError(t, err)
+	var sawCompletion bool
+	for evt := range ch {
+		require.NotNil(t, evt)
+		require.NotEqual(t, graph.ObjectTypeGraphBarrier, evt.Object)
+		require.NotEqual(t, graph.ObjectTypeGraphNodeBarrier, evt.Object)
+		if evt.Object == graph.ObjectTypeGraphExecution {
+			sawCompletion = true
+		}
+	}
+	require.True(t, sawCompletion)
+}
+
 func TestGraphAgent_WithExecutorOptions(t *testing.T) {
 	// Create a simple graph
 	schema := graph.NewStateSchema().

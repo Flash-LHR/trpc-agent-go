@@ -33,14 +33,15 @@ import (
 // The agent's input schema is used to define the tool's input parameters, and
 // the agent's output is returned as the tool's result.
 type Tool struct {
-	agent             agent.Agent
-	skipSummarization bool
-	streamInner       bool
-	historyScope      HistoryScope
-	name              string
-	description       string
-	inputSchema       *tool.Schema
-	outputSchema      *tool.Schema
+	agent                  agent.Agent
+	skipSummarization      bool
+	streamInner            bool
+	structuredStreamErrors bool
+	historyScope           HistoryScope
+	name                   string
+	description            string
+	inputSchema            *tool.Schema
+	outputSchema           *tool.Schema
 }
 
 // Option is a function that configures an AgentTool.
@@ -48,9 +49,10 @@ type Option func(*agentToolOptions)
 
 // agentToolOptions holds the configuration options for AgentTool.
 type agentToolOptions struct {
-	skipSummarization bool
-	streamInner       bool
-	historyScope      HistoryScope
+	skipSummarization      bool
+	streamInner            bool
+	structuredStreamErrors bool
+	historyScope           HistoryScope
 }
 
 // WithSkipSummarization sets whether to skip summarization of the agent output.
@@ -66,6 +68,14 @@ func WithSkipSummarization(skip bool) Option {
 func WithStreamInner(enabled bool) Option {
 	return func(opts *agentToolOptions) {
 		opts.streamInner = enabled
+	}
+}
+
+// WithStructuredStreamErrors controls whether AgentTool opts into structured
+// error chunks when it is executed through the framework as a streamable tool.
+func WithStructuredStreamErrors(enabled bool) Option {
+	return func(opts *agentToolOptions) {
+		opts.structuredStreamErrors = enabled
 	}
 }
 
@@ -104,7 +114,11 @@ func WithHistoryScope(scope HistoryScope) Option {
 func NewTool(agent agent.Agent, opts ...Option) *Tool {
 	// Default to allowing summarization so the parent agent can perform its
 	// normal post-tool reasoning unless opt-out is requested.
-	options := &agentToolOptions{skipSummarization: false, historyScope: HistoryScopeIsolated}
+	options := &agentToolOptions{
+		skipSummarization:      false,
+		structuredStreamErrors: false,
+		historyScope:           HistoryScopeIsolated,
+	}
 	for _, opt := range opts {
 		opt(options)
 	}
@@ -139,14 +153,15 @@ func NewTool(agent agent.Agent, opts ...Option) *Tool {
 		}
 	}
 	return &Tool{
-		agent:             agent,
-		skipSummarization: options.skipSummarization,
-		streamInner:       options.streamInner,
-		historyScope:      options.historyScope,
-		name:              info.Name,
-		description:       info.Description,
-		inputSchema:       inputSchema,
-		outputSchema:      outputSchema,
+		agent:                  agent,
+		skipSummarization:      options.skipSummarization,
+		streamInner:            options.streamInner,
+		structuredStreamErrors: options.structuredStreamErrors,
+		historyScope:           options.historyScope,
+		name:                   info.Name,
+		description:            info.Description,
+		inputSchema:            inputSchema,
+		outputSchema:           outputSchema,
 	}
 }
 
@@ -1067,7 +1082,12 @@ func (at *Tool) fallbackRunnerRunOptions(ctx context.Context) []agent.RunOption 
 func (at *Tool) SkipSummarization() bool { return at.skipSummarization }
 
 // StructuredStreamErrors reports that AgentTool expects structured error chunks.
-func (at *Tool) StructuredStreamErrors() bool { return true }
+func (at *Tool) StructuredStreamErrors() bool {
+	if at == nil {
+		return false
+	}
+	return at.structuredStreamErrors
+}
 
 // StreamInner exposes whether this AgentTool prefers the flow to treat it as
 // streamable (forwarding inner deltas) versus callable-only.

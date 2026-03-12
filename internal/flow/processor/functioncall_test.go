@@ -4818,7 +4818,7 @@ func TestExecuteStreamableTool_StreamReaderError(t *testing.T) {
 	require.Nil(t, res)
 }
 
-func TestExecuteStreamableTool_AgentToolRunErrorEmitsErrorEventWithoutPartial(t *testing.T) {
+func TestExecuteStreamableTool_AgentToolRunErrorDefaultsToPlainTextFallback(t *testing.T) {
 	f := NewFunctionCallResponseProcessor(false, nil)
 	ctx := context.WithValue(
 		context.Background(),
@@ -4830,14 +4830,15 @@ func TestExecuteStreamableTool_AgentToolRunErrorEmitsErrorEventWithoutPartial(t 
 	st := agenttool.NewTool(&runErrorSubAgent{name: "err-agent"}, agenttool.WithStreamInner(true))
 	ch := make(chan *event.Event, 1)
 	_, res, _, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
-	require.Error(t, err)
-	require.Nil(t, res)
+	require.NoError(t, err)
+	require.Equal(t, "agent tool run error: boom", res)
 	ev := <-ch
 	require.NotNil(t, ev)
-	require.Equal(t, model.ObjectTypeError, ev.Object)
-	require.NotNil(t, ev.Error)
-	require.Contains(t, ev.Error.Message, "agent tool run error")
-	require.False(t, ev.IsPartial)
+	require.Equal(t, model.ObjectTypeToolResponse, ev.Object)
+	require.True(t, ev.IsPartial)
+	require.NotNil(t, ev.Response)
+	require.Len(t, ev.Response.Choices, 1)
+	require.Equal(t, "agent tool run error: boom", ev.Response.Choices[0].Delta.Content)
 	select {
 	case extra := <-ch:
 		require.Failf(t, "unexpected extra event", "%#v", extra)
@@ -4845,7 +4846,7 @@ func TestExecuteStreamableTool_AgentToolRunErrorEmitsErrorEventWithoutPartial(t 
 	}
 }
 
-func TestExecuteToolWithCallbacks_AgentToolRunErrorAfterBeforeToolContextReplacementEmitsErrorEvent(
+func TestExecuteToolWithCallbacks_AgentToolRunErrorAfterBeforeToolContextReplacementFallsBackToText(
 	t *testing.T,
 ) {
 	callbacks := tool.NewCallbacks()
@@ -4864,6 +4865,40 @@ func TestExecuteToolWithCallbacks_AgentToolRunErrorAfterBeforeToolContextReplace
 	st := agenttool.NewTool(&runErrorSubAgent{name: "err-agent"}, agenttool.WithStreamInner(true))
 	ch := make(chan *event.Event, 1)
 	_, res, _, _, err := f.executeToolWithCallbacks(ctx, inv, tc, st, ch)
+	require.NoError(t, err)
+	require.Equal(t, "agent tool run error: boom", res)
+	ev := <-ch
+	require.NotNil(t, ev)
+	require.Equal(t, model.ObjectTypeToolResponse, ev.Object)
+	require.True(t, ev.IsPartial)
+	require.NotNil(t, ev.Response)
+	require.Len(t, ev.Response.Choices, 1)
+	require.Equal(t, "agent tool run error: boom", ev.Response.Choices[0].Delta.Content)
+	select {
+	case extra := <-ch:
+		require.Failf(t, "unexpected extra event", "%#v", extra)
+	default:
+	}
+}
+
+func TestExecuteStreamableTool_AgentToolRunErrorWithStructuredStreamErrorsOptIn(
+	t *testing.T,
+) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.WithValue(
+		context.Background(),
+		tool.ContextKeyToolCallID{},
+		"call-1",
+	)
+	inv := &agent.Invocation{InvocationID: "inv-agent-tool-structured", AgentName: "tester", Branch: "b", Model: &mockModel{}}
+	tc := model.ToolCall{ID: "call-1", Function: model.FunctionDefinitionParam{Name: "agent-tool"}}
+	st := agenttool.NewTool(
+		&runErrorSubAgent{name: "err-agent"},
+		agenttool.WithStreamInner(true),
+		agenttool.WithStructuredStreamErrors(true),
+	)
+	ch := make(chan *event.Event, 1)
+	_, res, _, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.Error(t, err)
 	require.Nil(t, res)
 	ev := <-ch
