@@ -1863,11 +1863,6 @@ func TestContentRequestProcessor_mergeFunctionResponseEvents(t *testing.T) {
 					Choices: []model.Choice{
 						{
 							Message: model.Message{
-								ToolID: "tool1",
-							},
-						},
-						{
-							Message: model.Message{
 								ToolID:  "tool3",
 								Content: "result3",
 							},
@@ -1922,11 +1917,6 @@ func TestContentRequestProcessor_mergeFunctionResponseEvents(t *testing.T) {
 				Author: "agent1",
 				Response: &model.Response{
 					Choices: []model.Choice{
-						{
-							Message: model.Message{
-								ToolID: "tool1",
-							},
-						},
 						{
 							Message: model.Message{
 								ToolID:  "tool2",

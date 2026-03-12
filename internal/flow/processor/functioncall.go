@@ -830,8 +830,10 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 			Role:   model.RoleTool,
 			ToolID: toolCall.ID,
 		}
+		defaultToolChoiceMsg := defaultMsg
+		defaultToolChoiceMsg.Content = "{}"
 		defaultChoices := []model.Choice{
-			{Index: index, Message: defaultMsg},
+			{Index: index, Message: defaultToolChoiceMsg},
 		}
 		if p.toolCallbacks == nil || p.toolCallbacks.ToolResultMessages == nil {
 			return ctx, defaultChoices, modifiedArgs, true, nil
