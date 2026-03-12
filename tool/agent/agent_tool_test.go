@@ -26,6 +26,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
+	"trpc.group/trpc-go/trpc-agent-go/internal/state/barrier"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/flush"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -708,6 +709,31 @@ func TestTool_Call_DisableGraphCompletionEvent_FlushesVisibleCompletionBeforeBar
 	require.True(t, ok)
 	require.Equal(t, "child-final", resultText)
 	require.True(t, sessionHasAssistantContent(sess, "child-final"))
+}
+
+func TestTool_Call_DisableGraphExecutorEvents_SuppressesBarrierEvents(t *testing.T) {
+	sg := graph.NewStateGraph(graph.MessagesStateSchema())
+	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "child-final"}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	ga, err := graphagent.New("graph-child", compiled)
+	require.NoError(t, err)
+	at := NewTool(ga, WithHistoryScope(HistoryScopeParentBranch))
+	sess := session.NewSession("app", "user", "session")
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphExecutorEvents: true,
+		}),
+	)
+	barrier.Enable(parent)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	resultText, ok := result.(string)
+	require.True(t, ok)
+	require.Equal(t, "child-final", resultText)
 }
 
 func TestTool_Call_VisibleCompletionSnapshotReplacesPriorAssistantText(t *testing.T) {
@@ -1996,6 +2022,72 @@ func TestTool_StreamableCall_DefersCompletion_PreservesConsecutiveVisibleComplet
 	secondValue, ok := sess.GetState("second_key")
 	require.True(t, ok)
 	require.Equal(t, []byte(`"second-value"`), secondValue)
+}
+
+func TestTool_StreamableCall_DefersCompletion_SuppressesBarrierEventsWhenDisableGraphExecutorEvents(
+	t *testing.T,
+) {
+	const toolCallID = "call-1"
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	sg := graph.NewStateGraph(graph.MessagesStateSchema())
+	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "child-final"}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	ga, err := graphagent.New("graph-child", compiled)
+	require.NoError(t, err)
+	sess := session.NewSession("app", "user", "session")
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+			DisableGraphExecutorEvents:  true,
+		}),
+	)
+	barrier.Enable(parent)
+	appender.Attach(parent, func(_ context.Context, evt *event.Event) error {
+		if evt == nil {
+			return nil
+		}
+		parent.Session.UpdateUserSession(evt)
+		return nil
+	})
+	at := NewTool(ga, WithStreamInner(true))
+	toolCtx := agent.NewInvocationContext(ctx, parent)
+	ctxWithToolCallID := context.WithValue(
+		toolCtx,
+		tool.ContextKeyToolCallID{},
+		toolCallID,
+	)
+	reader, err := at.StreamableCall(
+		ctxWithToolCallID,
+		[]byte(`{"request":"payload"}`),
+	)
+	require.NoError(t, err)
+	defer reader.Close()
+	var sawBarrier bool
+	var sawFinalChunk bool
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		if evt, ok := chunk.Content.(*event.Event); ok {
+			if evt.Object == graph.ObjectTypeGraphBarrier ||
+				evt.Object == graph.ObjectTypeGraphNodeBarrier {
+				sawBarrier = true
+			}
+			continue
+		}
+		finalChunk := requireFinalChunkView(t, chunk.Content)
+		sawFinalChunk = true
+		require.Equal(t, "child-final", finalChunk.Result)
+	}
+	require.False(t, sawBarrier)
+	require.True(t, sawFinalChunk)
+	require.True(t, sessionHasAssistantContent(sess, "child-final"))
 }
 
 type toolCallIDDroppingContext struct {

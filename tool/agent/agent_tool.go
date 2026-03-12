@@ -248,6 +248,15 @@ func (at *Tool) wrapWithCallSemantics(
 					pendingVisibleCompletion,
 					evt,
 				)
+				if shouldSuppressGraphExecutorBarrierEvent(inv, evt) {
+					at.completeSuppressedBarrierEvent(
+						ctx,
+						inv,
+						evt,
+						&pendingVisibleCompletion,
+					)
+					continue
+				}
 				if shouldMirrorEventToSession(evt) {
 					persistedEvent := persistableSessionEvent(evt)
 					if shouldDelayVisibleCompletionSessionMirror(persistedEvent) {
@@ -477,6 +486,17 @@ func visibleCompletionStateOnlySessionEvent(evt *event.Event) *event.Event {
 		copyEvt.Response.Choices = nil
 	}
 	return &copyEvt
+}
+
+func shouldSuppressGraphExecutorBarrierEvent(
+	inv *agent.Invocation,
+	evt *event.Event,
+) bool {
+	if inv == nil || evt == nil || !inv.RunOptions.DisableGraphExecutorEvents {
+		return false
+	}
+	return evt.Object == graph.ObjectTypeGraphNodeBarrier ||
+		evt.Object == graph.ObjectTypeGraphBarrier
 }
 
 func isGraphCompletionEvent(evt *event.Event) bool {
@@ -732,6 +752,10 @@ func (at *Tool) forwardSubInvocationStream(
 	managePendingVisibleCompletion := shouldDeferStreamCompletion(ctx, subInv)
 	state := streamCompletionState{}
 	for ev := range wrapped {
+		if shouldSuppressGraphExecutorBarrierEvent(subInv, ev) {
+			at.completeSuppressedBarrierStreamEvent(ctx, subInv, ev, &state)
+			continue
+		}
 		if subInv.RunOptions.DisableGraphCompletionEvent &&
 			isGraphCompletionSnapshotEvent(ev) {
 			at.capturePendingCompletionChunk(ev, &state)
@@ -802,6 +826,43 @@ func (at *Tool) flushPendingVisibleCompletionForSession(
 	}
 	at.appendEvent(ctx, inv, state.pendingVisibleCompletion)
 	state.pendingVisibleCompletion = nil
+}
+
+func (at *Tool) completeSuppressedBarrierEvent(
+	ctx context.Context,
+	inv *agent.Invocation,
+	evt *event.Event,
+	pending **event.Event,
+) {
+	if evt == nil || inv == nil || !evt.RequiresCompletion {
+		return
+	}
+	if pending != nil && *pending != nil {
+		at.appendEvent(ctx, inv, *pending)
+		*pending = nil
+	}
+	completionID := agent.GetAppendEventNoticeKey(evt.ID)
+	if err := inv.NotifyCompletion(ctx, completionID); err != nil {
+		log.Errorf("AgentTool: notify suppressed barrier completion failed: %v", err)
+	}
+}
+
+func (at *Tool) completeSuppressedBarrierStreamEvent(
+	ctx context.Context,
+	inv *agent.Invocation,
+	evt *event.Event,
+	state *streamCompletionState,
+) {
+	if evt == nil || inv == nil || !evt.RequiresCompletion {
+		return
+	}
+	if state != nil && state.pendingVisibleCompletion != nil {
+		at.flushPendingVisibleCompletionForSession(ctx, inv, state)
+	}
+	completionID := agent.GetAppendEventNoticeKey(evt.ID)
+	if err := inv.NotifyCompletion(ctx, completionID); err != nil {
+		log.Errorf("AgentTool: notify suppressed barrier completion failed: %v", err)
+	}
 }
 
 func (at *Tool) capturePendingCompletionChunk(
