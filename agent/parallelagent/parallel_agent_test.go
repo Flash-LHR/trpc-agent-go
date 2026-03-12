@@ -232,9 +232,9 @@ func TestParallelAgentRun_UsesInvocationEventChannelBufferSize(t *testing.T) {
 		ChannelBufferSize: 1,
 	})
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			EventChannelBufferSize: 7,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithEventChannelBufferSize(7),
+		)),
 	)
 	events, err := parallelAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -256,9 +256,9 @@ func TestParallelAgent_DisableGraphCompletionEvent_SuppressesChildCompletionWith
 		SubAgents: []agent.Agent{child},
 	})
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := parallelAgent.Run(graph.WithGraphCompletionCapture(context.Background()), invocation)
 	require.NoError(t, err)
@@ -283,9 +283,9 @@ func TestParallelAgent_DisableGraphCompletionEvent_PreservesVisibleChildResponse
 		SubAgents: []agent.Agent{child},
 	})
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := parallelAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -320,9 +320,9 @@ func TestParallelAgent_DisableGraphCompletionEvent_PreservesStateOnlyChildComple
 		SubAgents: []agent.Agent{child},
 	})
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := parallelAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)

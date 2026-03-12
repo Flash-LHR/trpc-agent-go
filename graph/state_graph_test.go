@@ -542,9 +542,9 @@ func TestProcessAgentEventStream_StreamOutputWritesHiddenGraphCompletionFinal(
 ) {
 	inv := agent.NewInvocation(
 		agent.WithInvocationID("inv-stream-hidden-final"),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), inv)
 	agent.GetOrCreateStreamHub(inv)

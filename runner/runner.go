@@ -1129,7 +1129,7 @@ func shouldSuppressGraphCompletionEvent(
 	if loop == nil || loop.invocation == nil {
 		return false
 	}
-	if !loop.invocation.RunOptions.DisableGraphCompletionEvent {
+	if !agent.IsGraphCompletionEventDisabled(loop.invocation) {
 		return false
 	}
 	return isGraphCompletionEvent(agentEvent)
@@ -1142,7 +1142,7 @@ func shouldSuppressGraphExecutorBarrierEvent(
 	if loop == nil || loop.invocation == nil || agentEvent == nil {
 		return false
 	}
-	if !loop.invocation.RunOptions.DisableGraphExecutorEvents {
+	if !agent.IsGraphExecutorEventsDisabled(loop.invocation) {
 		return false
 	}
 	return agentEvent.Object == graph.ObjectTypeGraphNodeBarrier ||
@@ -1400,14 +1400,20 @@ func shouldClearRunnerCompletionChoicesInSession(
 	}
 	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)
 	if finalResponseID != "" {
-		_, ok := loop.filteredPersistedAssistantResponseIDs[finalResponseID]
+		if _, ok := loop.filteredPersistedAssistantResponseIDs[finalResponseID]; ok {
+			return true
+		}
+		_, ok := loop.emittedAssistantResponseIDs[finalResponseID]
 		return ok
 	}
 	signature := assistantChoiceSignature(finalChoices)
 	if signature == "" {
 		return false
 	}
-	_, ok := loop.filteredPersistedAssistantChoiceSignatures[signature]
+	if _, ok := loop.filteredPersistedAssistantChoiceSignatures[signature]; ok {
+		return true
+	}
+	_, ok := loop.emittedAssistantChoiceSignatures[signature]
 	return ok
 }
 
@@ -1463,7 +1469,9 @@ func (r *runner) shouldEchoFinalChoicesInCompletion(
 	if len(finalChoices) == 0 {
 		return false
 	}
-	if visibleCompletionAlreadyEmitted(loop, finalChoices, finalStateDelta) {
+	if loop.invocation != nil &&
+		agent.IsGraphCompletionEventDisabled(loop.invocation) &&
+		visibleCompletionAlreadyEmitted(loop, finalChoices, finalStateDelta) {
 		return false
 	}
 	if loop.invocation == nil {
@@ -1478,6 +1486,9 @@ func (r *runner) shouldEchoFinalChoicesInCompletion(
 	if finalResponseID != "" {
 		_, alreadyEmitted := loop.emittedAssistantResponseIDs[finalResponseID]
 		return !alreadyEmitted
+	}
+	if !agent.IsGraphCompletionEventDisabled(loop.invocation) {
+		return true
 	}
 	signature := assistantChoiceSignature(finalChoices)
 	if signature == "" {

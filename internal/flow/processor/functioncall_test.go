@@ -3304,7 +3304,7 @@ func TestExecuteStreamableTool_FinalResultChunkStateDeltaUsesAgentInjection(t *t
 	require.Equal(t, []byte(`"ok"`), second.StateDelta["final"])
 }
 
-func TestExecuteStreamableTool_FinalResultChunkNilResultOverridesMergedContent(t *testing.T) {
+func TestExecuteStreamableTool_FinalResultStateChunkNilResultOverridesMergedContent(t *testing.T) {
 	f := NewFunctionCallResponseProcessor(false, nil)
 	ctx := context.Background()
 	inv := &agent.Invocation{
@@ -3335,6 +3335,37 @@ func TestExecuteStreamableTool_FinalResultChunkNilResultOverridesMergedContent(t
 	require.NotNil(t, second)
 	require.True(t, second.IsPartial)
 	require.Equal(t, []byte(`"ok"`), second.StateDelta["final"])
+}
+
+func TestExecuteStreamableTool_FinalResultChunkNilResultFallsBackToMergedContent(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{
+		InvocationID: "inv-final-nil-merge",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID:       "c1",
+		Function: model.FunctionDefinitionParam{Name: "final"},
+	}
+	st := &finalResultStreamTool{name: "final"}
+	ch := make(chan *event.Event, 4)
+	_, res, _, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.NoError(t, err)
+	require.Equal(t, "line-1", res)
+
+	first := <-ch
+	require.NotNil(t, first)
+	require.True(t, first.IsPartial)
+	require.Equal(t, "line-1", first.Choices[0].Delta.Content)
+
+	select {
+	case evt := <-ch:
+		require.Failf(t, "unexpected extra event", "%#v", evt)
+	default:
+	}
 }
 
 func TestExecuteStreamableTool_ErrorEventStopsBeforeStaleFinalResult(t *testing.T) {
@@ -4571,11 +4602,11 @@ func TestExecuteStreamableTool_StreamReaderError(t *testing.T) {
 	st := &recvErrStreamTool{name: "s"}
 	ch := make(chan *event.Event, 1)
 	_, res, _, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
-	require.Error(t, err)
+	require.NoError(t, err)
 	require.Nil(t, res)
 }
 
-func TestExecuteStreamableTool_AgentToolRunErrorDoesNotEmitPartial(t *testing.T) {
+func TestExecuteStreamableTool_AgentToolRunErrorEmitsErrorEventWithoutPartial(t *testing.T) {
 	f := NewFunctionCallResponseProcessor(false, nil)
 	ctx := context.WithValue(
 		context.Background(),
@@ -4589,14 +4620,22 @@ func TestExecuteStreamableTool_AgentToolRunErrorDoesNotEmitPartial(t *testing.T)
 	_, res, _, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.Error(t, err)
 	require.Nil(t, res)
+	ev := <-ch
+	require.NotNil(t, ev)
+	require.Equal(t, model.ObjectTypeError, ev.Object)
+	require.NotNil(t, ev.Error)
+	require.Contains(t, ev.Error.Message, "agent tool run error")
+	require.False(t, ev.IsPartial)
 	select {
-	case ev := <-ch:
-		require.Failf(t, "unexpected tool response event", "%#v", ev)
+	case extra := <-ch:
+		require.Failf(t, "unexpected extra event", "%#v", extra)
 	default:
 	}
 }
 
-func TestExecuteToolWithCallbacks_AgentToolRunErrorAfterBeforeToolContextReplacementDoesNotEmitPartial(t *testing.T) {
+func TestExecuteToolWithCallbacks_AgentToolRunErrorAfterBeforeToolContextReplacementEmitsErrorEvent(
+	t *testing.T,
+) {
 	callbacks := tool.NewCallbacks()
 	callbacks.RegisterBeforeTool(func(
 		ctx context.Context,
@@ -4615,9 +4654,15 @@ func TestExecuteToolWithCallbacks_AgentToolRunErrorAfterBeforeToolContextReplace
 	_, res, _, _, err := f.executeToolWithCallbacks(ctx, inv, tc, st, ch)
 	require.Error(t, err)
 	require.Nil(t, res)
+	ev := <-ch
+	require.NotNil(t, ev)
+	require.Equal(t, model.ObjectTypeError, ev.Object)
+	require.NotNil(t, ev.Error)
+	require.Contains(t, ev.Error.Message, "agent tool run error")
+	require.False(t, ev.IsPartial)
 	select {
-	case ev := <-ch:
-		require.Failf(t, "unexpected tool response event", "%#v", ev)
+	case extra := <-ch:
+		require.Failf(t, "unexpected extra event", "%#v", extra)
 	default:
 	}
 }

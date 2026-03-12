@@ -26,7 +26,53 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
+
+type rawTerminalRecoveryAgent struct{ name string }
+
+func (a *rawTerminalRecoveryAgent) Run(
+	ctx context.Context,
+	invocation *agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event, 2)
+	go func() {
+		defer close(ch)
+		ch <- event.NewErrorEvent("", a.name, model.ErrorTypeFlowError, "child boom")
+		ch <- event.NewResponseEvent(
+			"",
+			a.name,
+			&model.Response{
+				Object: model.ObjectTypeChatCompletion,
+				Done:   true,
+				Choices: []model.Choice{{
+					Message: model.NewAssistantMessage("recovered"),
+				}},
+			},
+			event.WithStateDelta(map[string][]byte{
+				graph.MetadataKeyCompletion: []byte("{}"),
+				graph.StateKeyLastResponse:  []byte(`"recovered"`),
+				"child_value":               []byte(`"recovered"`),
+			}),
+		)
+	}()
+	return ch, nil
+}
+
+func (a *rawTerminalRecoveryAgent) Tools() []tool.Tool { return nil }
+
+func (a *rawTerminalRecoveryAgent) Info() agent.Info {
+	return agent.Info{Name: a.name}
+}
+
+func (a *rawTerminalRecoveryAgent) SubAgents() []agent.Agent { return nil }
+
+func (a *rawTerminalRecoveryAgent) FindSubAgent(name string) agent.Agent {
+	if name == a.name {
+		return a
+	}
+	return nil
+}
 
 func TestSubgraph_DisableGraphCompletionEvent_PreservesWrappedGraphAgentOutput(t *testing.T) {
 	const (
@@ -92,9 +138,9 @@ func TestSubgraph_DisableGraphCompletionEvent_PreservesWrappedGraphAgentOutput(t
 
 	invocation := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage(userInput)),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	eventCh, err := parentAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -179,9 +225,9 @@ func TestSubgraph_DisableGraphCompletionEvent_PreservesNestedCycleEscalation(t *
 
 	invocation := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage(userInput)),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	eventCh, err := parentAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -203,6 +249,56 @@ func TestSubgraph_DisableGraphCompletionEvent_PreservesNestedCycleEscalation(t *
 
 	require.Equal(t, 1, childVisibleCompletionCount)
 	require.Equal(t, valuePrefix+userInput, lastAssistant)
+}
+
+func TestSubgraph_RawTerminalSuccessClearsPriorTerminalError(t *testing.T) {
+	const (
+		childNodeName = "raw-child"
+		afterNodeName = "after"
+		childValueKey = "child_value"
+	)
+
+	parentSchema := graph.NewStateSchema().
+		AddField(graph.StateKeyLastResponse, graph.StateField{Type: reflect.TypeOf("")}).
+		AddField(childValueKey, graph.StateField{Type: reflect.TypeOf("")})
+	parentGraph := graph.NewStateGraph(parentSchema)
+	parentGraph.AddAgentNode(
+		childNodeName,
+		graph.WithSubgraphOutputMapper(func(_ graph.State, result graph.SubgraphResult) graph.State {
+			value, ok := graph.GetStateValue[string](result.FinalState, childValueKey)
+			if !ok {
+				return nil
+			}
+			return graph.State{childValueKey: value}
+		}),
+	)
+	parentGraph.AddNode(afterNodeName, func(ctx context.Context, state graph.State) (any, error) {
+		value, _ := graph.GetStateValue[string](state, childValueKey)
+		return graph.State{graph.StateKeyLastResponse: "after:" + value}, nil
+	})
+	parentGraph.AddEdge(childNodeName, afterNodeName)
+	parentCompiled := parentGraph.SetEntryPoint(childNodeName).SetFinishPoint(afterNodeName).MustCompile()
+	parentAgent, err := graphagent.New(
+		"parent",
+		parentCompiled,
+		graphagent.WithSubAgents([]agent.Agent{&rawTerminalRecoveryAgent{name: childNodeName}}),
+	)
+	require.NoError(t, err)
+
+	eventCh, err := parentAgent.Run(
+		context.Background(),
+		agent.NewInvocation(agent.WithInvocationMessage(model.NewUserMessage("hello"))),
+	)
+	require.NoError(t, err)
+
+	var lastAssistant string
+	for evt := range eventCh {
+		if evt.Response != nil && len(evt.Response.Choices) > 0 {
+			lastAssistant = evt.Response.Choices[0].Message.Content
+		}
+	}
+
+	require.Equal(t, "after:recovered", lastAssistant)
 }
 
 func TestSubgraph_DisableGraphCompletionEvent_DropsStaleOutputAfterChildAfterCallbackError(t *testing.T) {
@@ -261,9 +357,9 @@ func TestSubgraph_DisableGraphCompletionEvent_DropsStaleOutputAfterChildAfterCal
 
 	invocation := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("hello")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	eventCh, err := parentAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -321,10 +417,10 @@ func TestSubgraph_DisableGraphExecutorEvents_ChildFailureStopsParentGraph(t *tes
 
 	invocation := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("hello")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-			DisableGraphExecutorEvents:  true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
 	)
 	eventCh, err := parentAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -382,9 +478,9 @@ func TestSubgraph_DisableGraphCompletionEvent_ChildFailureStopsParentGraph(
 	require.NoError(t, err)
 	invocation := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("hello")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	eventCh, err := parentAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -454,9 +550,9 @@ func TestSubgraph_DisableGraphCompletionEvent_ParallelChildFailureStopsParentGra
 	require.NoError(t, err)
 	invocation := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("hello")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	eventCh, err := parentAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -527,9 +623,9 @@ func TestSubgraph_DisableGraphExecutorEvents_PreservesChildAfterCallbackCustomRe
 	require.NoError(t, err)
 	invocation := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("hello")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphExecutorEvents: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
 	)
 	eventCh, err := parentAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)

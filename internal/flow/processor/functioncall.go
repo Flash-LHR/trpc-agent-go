@@ -1482,7 +1482,7 @@ func (f *FunctionCallResponseProcessor) consumeStream(
 				toolCall.Function.Name,
 				err,
 			)
-			return nil, streamFinalResult{}, err
+			break
 		}
 
 		if err := f.processStreamChunk(
@@ -1910,19 +1910,25 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 func normalizeFinalResultChunk(content any) (*normalizedFinalResultChunk, bool) {
 	switch v := content.(type) {
 	case tool.FinalResultChunk:
+		if v.Result == nil {
+			return nil, true
+		}
 		return &normalizedFinalResultChunk{result: v.Result}, true
 	case *tool.FinalResultChunk:
-		if v == nil {
+		if v == nil || v.Result == nil {
 			return nil, true
 		}
 		return &normalizedFinalResultChunk{result: v.Result}, true
 	case tool.FinalResultStateChunk:
+		if v.Result == nil && len(v.StateDelta) == 0 {
+			return nil, true
+		}
 		return &normalizedFinalResultChunk{
 			result:     v.Result,
 			stateDelta: cloneEventStateDelta(v.StateDelta),
 		}, true
 	case *tool.FinalResultStateChunk:
-		if v == nil {
+		if v == nil || (v.Result == nil && len(v.StateDelta) == 0) {
 			return nil, true
 		}
 		return &normalizedFinalResultChunk{

@@ -188,6 +188,25 @@ func NewWaitNoticeTimeoutError(message string) *WaitNoticeTimeoutError {
 // RunOption is a function that configures a RunOptions.
 type RunOption func(*RunOptions)
 
+const runControlConfigKey = "__agent_internal_run_control__"
+
+type runControlConfig struct {
+	DisableGraphCompletionEvent bool
+	DisableGraphExecutorEvents  bool
+	EventChannelBufferSize      int
+}
+
+// NewRunOptions builds a RunOptions value from RunOption functions.
+func NewRunOptions(opts ...RunOption) RunOptions {
+	var runOpts RunOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&runOpts)
+		}
+	}
+	return runOpts
+}
+
 // WithRuntimeState sets the runtime state for the RunOptions.
 func WithRuntimeState(state map[string]any) RunOption {
 	return func(opts *RunOptions) {
@@ -321,14 +340,18 @@ func WithStreamMode(modes ...StreamMode) RunOption {
 // WithDisableGraphCompletionEvent disables emitting the final graph completion event.
 func WithDisableGraphCompletionEvent(disable bool) RunOption {
 	return func(opts *RunOptions) {
-		opts.DisableGraphCompletionEvent = disable
+		cfg := getRunControlConfig(opts)
+		cfg.DisableGraphCompletionEvent = disable
+		setRunControlConfig(opts, cfg)
 	}
 }
 
 // WithDisableGraphExecutorEvents disables emitting graph executor lifecycle events.
 func WithDisableGraphExecutorEvents(disable bool) RunOption {
 	return func(opts *RunOptions) {
-		opts.DisableGraphExecutorEvents = disable
+		cfg := getRunControlConfig(opts)
+		cfg.DisableGraphExecutorEvents = disable
+		setRunControlConfig(opts, cfg)
 	}
 }
 
@@ -338,7 +361,9 @@ func WithDisableGraphExecutorEvents(disable bool) RunOption {
 // When size <= 0, supported implementations use their configured default.
 func WithEventChannelBufferSize(size int) RunOption {
 	return func(opts *RunOptions) {
-		opts.EventChannelBufferSize = size
+		cfg := getRunControlConfig(opts)
+		cfg.EventChannelBufferSize = size
+		setRunControlConfig(opts, cfg)
 	}
 }
 
@@ -594,8 +619,15 @@ func WithA2ARequestOptions(opts ...any) RunOption {
 //   - The stored configuration should be treated as read-only. Do not modify it after retrieval.
 func WithCustomAgentConfigs(configs map[string]any) RunOption {
 	return func(opts *RunOptions) {
+		cfg, hasRunControlConfig := lookupRunControlConfig(opts.CustomAgentConfigs)
 		if configs == nil {
-			opts.CustomAgentConfigs = nil
+			if !hasRunControlConfig {
+				opts.CustomAgentConfigs = nil
+				return
+			}
+			opts.CustomAgentConfigs = map[string]any{
+				runControlConfigKey: cfg,
+			}
 			return
 		}
 		// Create a shallow copy to prevent external modifications
@@ -603,8 +635,50 @@ func WithCustomAgentConfigs(configs map[string]any) RunOption {
 		for k, v := range configs {
 			copied[k] = v
 		}
+		if hasRunControlConfig {
+			copied[runControlConfigKey] = cfg
+		}
 		opts.CustomAgentConfigs = copied
 	}
+}
+
+func lookupRunControlConfig(configs map[string]any) (runControlConfig, bool) {
+	if configs == nil {
+		return runControlConfig{}, false
+	}
+	raw, ok := configs[runControlConfigKey]
+	if !ok {
+		return runControlConfig{}, false
+	}
+	switch v := raw.(type) {
+	case runControlConfig:
+		return v, true
+	case *runControlConfig:
+		if v == nil {
+			return runControlConfig{}, false
+		}
+		return *v, true
+	default:
+		return runControlConfig{}, false
+	}
+}
+
+func getRunControlConfig(opts *RunOptions) runControlConfig {
+	if opts == nil {
+		return runControlConfig{}
+	}
+	cfg, _ := lookupRunControlConfig(opts.CustomAgentConfigs)
+	return cfg
+}
+
+func setRunControlConfig(opts *RunOptions, cfg runControlConfig) {
+	if opts == nil {
+		return
+	}
+	if opts.CustomAgentConfigs == nil {
+		opts.CustomAgentConfigs = make(map[string]any)
+	}
+	opts.CustomAgentConfigs[runControlConfigKey] = cfg
 }
 
 // RunOptions is the options for the Run method.
@@ -671,18 +745,6 @@ type RunOptions struct {
 	// When StreamModeEnabled is false, runners should not apply any stream
 	// filtering and preserve the existing behavior.
 	StreamModes []StreamMode
-
-	// DisableGraphCompletionEvent disables emitting the final graph completion event.
-	DisableGraphCompletionEvent bool
-
-	// DisableGraphExecutorEvents disables emitting graph executor lifecycle events.
-	DisableGraphExecutorEvents bool
-
-	// EventChannelBufferSize overrides the default event channel buffer size for
-	// this run on supported flow and agent implementations.
-	//
-	// When <= 0, supported implementations use their configured default size.
-	EventChannelBufferSize int
 
 	// DisableResponseUsageTracking disables attaching usage and timing info to streaming responses.
 	DisableResponseUsageTracking bool
@@ -796,6 +858,30 @@ type RunOptions struct {
 	// ToolCallArgumentsJSONRepairEnabled enables best-effort JSON repair for tool call arguments.
 	// When nil, JSON repair is disabled by default.
 	ToolCallArgumentsJSONRepairEnabled *bool
+}
+
+// IsGraphCompletionEventDisabled reports whether this invocation hides terminal graph completion events.
+func IsGraphCompletionEventDisabled(inv *Invocation) bool {
+	if inv == nil {
+		return false
+	}
+	return getRunControlConfig(&inv.RunOptions).DisableGraphCompletionEvent
+}
+
+// IsGraphExecutorEventsDisabled reports whether this invocation hides graph executor lifecycle events.
+func IsGraphExecutorEventsDisabled(inv *Invocation) bool {
+	if inv == nil {
+		return false
+	}
+	return getRunControlConfig(&inv.RunOptions).DisableGraphExecutorEvents
+}
+
+// GetEventChannelBufferSize returns the invocation-specific event channel buffer size override.
+func GetEventChannelBufferSize(inv *Invocation) int {
+	if inv == nil {
+		return 0
+	}
+	return getRunControlConfig(&inv.RunOptions).EventChannelBufferSize
 }
 
 // NewInvocation create a new invocation

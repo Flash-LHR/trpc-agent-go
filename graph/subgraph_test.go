@@ -181,7 +181,7 @@ func (a *completionOptionalAgent) Run(
 	ch := make(chan *event.Event, 1)
 	go func() {
 		if inv == nil ||
-			!inv.RunOptions.DisableGraphCompletionEvent ||
+			!agent.IsGraphCompletionEventDisabled(inv) ||
 			ShouldCaptureGraphCompletion(ctx) {
 			ch <- NewGraphCompletionEvent(
 				WithCompletionEventInvocationID(inv.InvocationID),
@@ -306,9 +306,9 @@ func TestSubgraph_DisableGraphCompletionEvent_DoesNotDropOutput(t *testing.T) {
 		}),
 	)
 	parentInvocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	out, err := fn(agent.NewInvocationContext(context.Background(), parentInvocation), state)
 	require.NoError(t, err)
@@ -340,9 +340,9 @@ func TestSubgraph_DisableGraphCompletionEvent_HidesChildCompletionFromParentStre
 		}),
 	)
 	parentInvocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 
 	_, err := fn(agent.NewInvocationContext(context.Background(), parentInvocation), state)
@@ -367,9 +367,9 @@ func TestSubgraph_DisableGraphExecutorEvents_SuppressesAgentLifecycleEvents(t *t
 		}
 		fn := NewAgentNodeFunc(testChildAgentName)
 		parentInvocation := agent.NewInvocation(
-			agent.WithInvocationRunOptions(agent.RunOptions{
-				DisableGraphExecutorEvents: true,
-			}),
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithDisableGraphExecutorEvents(true),
+			)),
 		)
 
 		_, err := fn(agent.NewInvocationContext(context.Background(), parentInvocation), state)
@@ -395,9 +395,9 @@ func TestSubgraph_DisableGraphExecutorEvents_SuppressesAgentLifecycleEvents(t *t
 		}
 		fn := NewAgentNodeFunc(testChildAgentName)
 		parentInvocation := agent.NewInvocation(
-			agent.WithInvocationRunOptions(agent.RunOptions{
-				DisableGraphExecutorEvents: true,
-			}),
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithDisableGraphExecutorEvents(true),
+			)),
 		)
 
 		_, err := fn(agent.NewInvocationContext(context.Background(), parentInvocation), state)

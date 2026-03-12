@@ -461,9 +461,9 @@ func TestChainAgentRun_UsesInvocationEventChannelBufferSize(t *testing.T) {
 		WithChannelBufferSize(1),
 	)
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			EventChannelBufferSize: 7,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithEventChannelBufferSize(7),
+		)),
 	)
 	events, err := chainAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -822,9 +822,9 @@ func TestChainAgent_DisableGraphCompletionEvent_PreservesAfterAgentResponse(t *t
 		WithAgentCallbacks(callbacks),
 	)
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := chainAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -850,9 +850,9 @@ func TestChainAgent_DisableGraphCompletionEvent_SuppressesChildCompletionWithCap
 		WithSubAgents([]agent.Agent{child}),
 	)
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := chainAgent.Run(graph.WithGraphCompletionCapture(context.Background()), invocation)
 	require.NoError(t, err)
@@ -877,9 +877,9 @@ func TestChainAgent_DisableGraphCompletionEvent_PreservesVisibleChildResponse(t 
 		WithSubAgents([]agent.Agent{child}),
 	)
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := chainAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -907,9 +907,9 @@ func TestChainAgent_DisableGraphCompletionEvent_DoesNotDedupVisibleChildAgainstR
 		WithSubAgents([]agent.Agent{child}),
 	)
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := chainAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -944,9 +944,9 @@ func TestChainAgent_DisableGraphCompletionEvent_PreservesStateOnlyChildCompletio
 		WithSubAgents([]agent.Agent{child}),
 	)
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := chainAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -971,9 +971,9 @@ func TestChainAgent_DisableGraphCompletionEvent_AddsVisibleCompletionMetadataFor
 		WithSubAgents([]agent.Agent{child}),
 	)
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := chainAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)

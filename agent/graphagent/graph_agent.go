@@ -114,8 +114,8 @@ func (ga *GraphAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-
 
 // eventChannelBufferSize returns the effective event channel buffer size for a run.
 func (ga *GraphAgent) eventChannelBufferSize(invocation *agent.Invocation) int {
-	if invocation != nil && invocation.RunOptions.EventChannelBufferSize > 0 {
-		return invocation.RunOptions.EventChannelBufferSize
+	if size := agent.GetEventChannelBufferSize(invocation); size > 0 {
+		return size
 	}
 	return ga.channelBufferSize
 }
@@ -274,7 +274,7 @@ func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.In
 	executeCtx := ctx
 	shouldWrapHiddenCompletion := false
 	if invocation != nil &&
-		invocation.RunOptions.DisableGraphCompletionEvent &&
+		agent.IsGraphCompletionEventDisabled(invocation) &&
 		!graph.ShouldCaptureGraphCompletion(ctx) {
 		executeCtx = graph.WithGraphCompletionCapture(ctx)
 		shouldWrapHiddenCompletion = true
@@ -525,7 +525,7 @@ func (ga *GraphAgent) forwardWrappedEvents(
 			fullRespEvent = evt
 		}
 		shouldWrapCallbackCompletion := invocation != nil &&
-			invocation.RunOptions.DisableGraphCompletionEvent &&
+			agent.IsGraphCompletionEventDisabled(invocation) &&
 			graph.IsGraphCompletionEvent(evt)
 		if shouldWrapCallbackCompletion {
 			visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwardingWithAuthor(

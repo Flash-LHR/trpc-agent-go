@@ -1416,9 +1416,9 @@ func TestWrappedAgents_DisableGraphCompletionEvent_AfterCallbackSeesVisibleCompl
 			ag := tt.build(child, callbacks)
 			inv := agent.NewInvocation(
 				agent.WithInvocationMessage(model.NewUserMessage("hi")),
-				agent.WithInvocationRunOptions(agent.RunOptions{
-					DisableGraphCompletionEvent: true,
-				}),
+				agent.WithInvocationRunOptions(agent.NewRunOptions(
+					agent.WithDisableGraphCompletionEvent(true),
+				)),
 			)
 			ch, err := ag.Run(context.Background(), inv)
 			require.NoError(t, err)
@@ -1489,10 +1489,10 @@ func TestWrappedAgents_DisableGraphCompletionEvent_GraphEmitFinalModelResponses_
 			ag := tt.build(child, callbacks)
 			inv := agent.NewInvocation(
 				agent.WithInvocationMessage(model.NewUserMessage("hi")),
-				agent.WithInvocationRunOptions(agent.RunOptions{
-					DisableGraphCompletionEvent:  true,
-					GraphEmitFinalModelResponses: true,
-				}),
+				agent.WithInvocationRunOptions(agent.NewRunOptions(
+					agent.WithDisableGraphCompletionEvent(true),
+					agent.WithGraphEmitFinalModelResponses(true),
+				)),
 			)
 			ch, err := ag.Run(context.Background(), inv)
 			require.NoError(t, err)
@@ -1885,7 +1885,8 @@ func TestRunner_GraphEmitFinalModelResponses_EmptyResponseIDDedupsRunnerCompleti
 
 	require.Equal(t, 1, chatCompletionCount)
 	require.NotNil(t, completion)
-	require.Empty(t, completion.Response.Choices)
+	require.Len(t, completion.Response.Choices, 1)
+	require.Equal(t, "empty-id-final", completion.Response.Choices[0].Message.Content)
 	assertSessionKeepsSingleFinalAssistantEvent(
 		t,
 		svc,
@@ -3433,6 +3434,11 @@ func TestShouldClearRunnerCompletionChoicesInSession_FallsBackToChoiceSignatureW
 	t *testing.T,
 ) {
 	loop := &eventLoopContext{
+		invocation: agent.NewInvocation(
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithDisableGraphCompletionEvent(true),
+			)),
+		),
 		filteredPersistedAssistantChoiceSignatures: map[string]struct{}{
 			assistantChoiceSignature([]model.Choice{{
 				Index:   0,

@@ -2839,6 +2839,30 @@ func clearAgentTerminalErrorOnTerminalSuccess(
 	res.terminalErr = nil
 }
 
+func populateMissingAgentEventInvocationFields(
+	invocation *agent.Invocation,
+	ev *event.Event,
+) {
+	if invocation == nil || ev == nil {
+		return
+	}
+	if ev.RequestID == "" {
+		ev.RequestID = invocation.RunOptions.RequestID
+	}
+	if ev.ParentInvocationID == "" && invocation.GetParentInvocation() != nil {
+		ev.ParentInvocationID = invocation.GetParentInvocation().InvocationID
+	}
+	if ev.InvocationID == "" {
+		ev.InvocationID = invocation.InvocationID
+	}
+	if ev.Branch == "" {
+		ev.Branch = invocation.Branch
+	}
+	if ev.FilterKey == "" {
+		ev.FilterKey = invocation.GetEventFilterKey()
+	}
+}
+
 func eventMatchesInvocationFilterKey(
 	ev *event.Event,
 	invocation *agent.Invocation,
@@ -2979,7 +3003,7 @@ func processAgentEventStream(
 	}
 	parentInvocation, _ := agent.InvocationFromContext(ctx)
 	suppressGraphCompletion := parentInvocation != nil &&
-		parentInvocation.RunOptions.DisableGraphCompletionEvent
+		agent.IsGraphCompletionEventDisabled(parentInvocation)
 	streamLastResponse := ""
 	tap, err := newAgentDeltaStreamTap(ctx, streamName, &streamLastResponse)
 	if err != nil {
@@ -2988,6 +3012,7 @@ func processAgentEventStream(
 	defer tap.Close(&err)
 
 	for agentEvent := range agentEventChan {
+		populateMissingAgentEventInvocationFields(invocation, agentEvent)
 		runAgentEventCallbacks(
 			ctx,
 			nodeCallbacks,
@@ -3488,7 +3513,7 @@ func emitModelStartEvent(
 		return
 	}
 	invocation, _ := agent.InvocationFromContext(ctx)
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if invocation != nil && agent.IsGraphExecutorEventsDisabled(invocation) {
 		return
 	}
 	modelStartEvent := NewModelExecutionEvent(
@@ -3523,7 +3548,7 @@ func emitModelCompleteEvent(
 		return
 	}
 	invocation, _ := agent.InvocationFromContext(ctx)
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if invocation != nil && agent.IsGraphExecutorEventsDisabled(invocation) {
 		return
 	}
 	modelCompleteEvent := NewModelExecutionEvent(
@@ -4645,7 +4670,7 @@ func emitToolStartEvent(
 	if eventChan == nil {
 		return
 	}
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if invocation != nil && agent.IsGraphExecutorEventsDisabled(invocation) {
 		return
 	}
 	toolStartEvent := NewToolExecutionEvent(
@@ -4684,7 +4709,7 @@ func emitToolCompleteEvent(
 	if config.EventChan == nil {
 		return nil
 	}
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if invocation != nil && agent.IsGraphExecutorEventsDisabled(invocation) {
 		return nil
 	}
 	endTime := time.Now()
@@ -4784,7 +4809,7 @@ func emitAgentStartEvent(
 		return
 	}
 	invocation, _ := agent.InvocationFromContext(ctx)
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if invocation != nil && agent.IsGraphExecutorEventsDisabled(invocation) {
 		return
 	}
 
@@ -4808,7 +4833,7 @@ func emitAgentCompleteEvent(
 		return
 	}
 	invocation, _ := agent.InvocationFromContext(ctx)
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if invocation != nil && agent.IsGraphExecutorEventsDisabled(invocation) {
 		return
 	}
 
@@ -4834,7 +4859,7 @@ func emitAgentErrorEvent(
 		return
 	}
 	invocation, _ := agent.InvocationFromContext(ctx)
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if agent.IsGraphExecutorEventsDisabled(invocation) {
 		return
 	}
 

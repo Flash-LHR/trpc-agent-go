@@ -542,9 +542,9 @@ func TestTool_Call_DisableGraphCompletionEvent_KeepsFinalText(t *testing.T) {
 	at := NewTool(ga, WithHistoryScope(HistoryScopeParentBranch))
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
@@ -563,10 +563,10 @@ func TestTool_Call_DisableGraphCompletionEvent_DedupsCapturedGraphCompletionAfte
 	at := NewTool(ga, WithHistoryScope(HistoryScopeParentBranch))
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent:  true,
-			GraphEmitFinalModelResponses: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+			agent.WithGraphEmitFinalModelResponses(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
@@ -591,9 +591,9 @@ func TestTool_Call_DisableGraphCompletionEvent_PrefersAfterCallbackCustomRespons
 	at := NewTool(ga, WithHistoryScope(HistoryScopeParentBranch))
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
@@ -615,9 +615,9 @@ func TestTool_Call_DisableGraphCompletionEvent_PreservesFinalTextInSharedSession
 	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
@@ -638,9 +638,9 @@ func TestTool_Call_DisableGraphCompletionEvent_PreservesConsecutiveVisibleComple
 	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
@@ -673,9 +673,9 @@ func TestTool_Call_DisableGraphCompletionEvent_SharedSessionPrefersAfterCallback
 	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
@@ -698,9 +698,9 @@ func TestTool_Call_DisableGraphCompletionEvent_FlushesVisibleCompletionBeforeBar
 	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	result, err := at.Call(ctx, []byte(`{"request":"ignored"}`))
@@ -723,9 +723,9 @@ func TestTool_Call_DisableGraphExecutorEvents_SuppressesBarrierEvents(t *testing
 	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphExecutorEvents: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
 	)
 	barrier.Enable(parent)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
@@ -1877,9 +1877,9 @@ func TestTool_StreamableCall_DefersCompletion_FlushesVisibleCompletionBeforeBarr
 	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	appender.Attach(parent, func(_ context.Context, evt *event.Event) error {
 		if evt == nil {
@@ -1939,9 +1939,9 @@ func TestTool_StreamableCall_DefersCompletion_PersistsStateOnlyCompletionToShare
 	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	appender.Attach(parent, func(_ context.Context, evt *event.Event) error {
 		if evt == nil {
@@ -1997,9 +1997,9 @@ func TestTool_StreamableCall_DefersCompletion_PreservesConsecutiveVisibleComplet
 	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	appender.Attach(parent, func(_ context.Context, evt *event.Event) error {
 		if evt == nil {
@@ -2055,10 +2055,10 @@ func TestTool_StreamableCall_DefersCompletion_SuppressesBarrierEventsWhenDisable
 	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-			DisableGraphExecutorEvents:  true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
 	)
 	barrier.Enable(parent)
 	appender.Attach(parent, func(_ context.Context, evt *event.Event) error {
@@ -2325,9 +2325,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_KeepsFinalResult(t *tes
 	at := NewTool(ga, WithStreamInner(true), WithHistoryScope(HistoryScopeParentBranch))
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
@@ -2363,9 +2363,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesFinalTextInSha
 	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
@@ -2392,9 +2392,9 @@ func TestTool_StreamableCall_FallbackRunnerPreservesDisableGraphCompletionEvent(
 	require.NoError(t, err)
 	at := NewTool(ga, WithStreamInner(true))
 	parent := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
@@ -2428,9 +2428,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistant
 	)
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
@@ -2476,9 +2476,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistant
 	)
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
@@ -2513,9 +2513,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_SuppressesStateOnlyComp
 	)
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
@@ -2559,9 +2559,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 	at := NewTool(ga, WithStreamInner(true), WithHistoryScope(HistoryScopeParentBranch))
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
@@ -2609,9 +2609,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 	at := NewTool(ga, WithStreamInner(true), WithHistoryScope(HistoryScopeParentBranch))
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
@@ -2645,9 +2645,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
@@ -2695,9 +2695,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_SuppressesVisibleComple
 	)
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
@@ -2737,9 +2737,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_DropsPendingFinalResult
 	sess := session.NewSession("app", "user", "session")
 	parent := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
 	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
@@ -2802,8 +2802,7 @@ func TestTool_StreamableCall_RunErrorReturnsStreamError(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "agent tool run error: boom", chunk.Content)
 	_, err = r.Recv()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "agent tool run error")
+	require.Equal(t, io.EOF, err)
 }
 
 func TestTool_StreamableCall_RunErrorWithToolCallIDReturnsStreamErrorOnly(t *testing.T) {
@@ -2816,9 +2815,15 @@ func TestTool_StreamableCall_RunErrorWithToolCallIDReturnsStreamErrorOnly(t *tes
 	r, err := at.StreamableCall(ctx, []byte(`{}`))
 	require.NoError(t, err)
 	defer r.Close()
+	chunk, err := r.Recv()
+	require.NoError(t, err)
+	ev, ok := chunk.Content.(*event.Event)
+	require.True(t, ok)
+	require.Equal(t, model.ObjectTypeError, ev.Object)
+	require.NotNil(t, ev.Error)
+	require.Contains(t, ev.Error.Message, "agent tool run error")
 	_, err = r.Recv()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "agent tool run error")
+	require.Equal(t, io.EOF, err)
 }
 
 // agentWithSchemaMock returns input/output schema maps in Info()
@@ -2949,8 +2954,7 @@ func TestTool_StreamableCall_WithParentInvocation_RunError(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "agent tool run error: boom", chunk.Content)
 	_, err = r.Recv()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "agent tool run error")
+	require.Equal(t, io.EOF, err)
 }
 
 func TestTool_StreamableCall_WithParentInvocation_FlushError(t *testing.T) {
@@ -2971,8 +2975,7 @@ func TestTool_StreamableCall_WithParentInvocation_FlushError(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, chunk.Content, "flush parent invocation session")
 	_, err = r.Recv()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "flush parent invocation session")
+	require.Equal(t, io.EOF, err)
 }
 
 func TestTool_StreamableCall_EmptyMessage(t *testing.T) {

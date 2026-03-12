@@ -213,9 +213,9 @@ func TestGraphAgentRun_UsesInvocationEventChannelBufferSize(t *testing.T) {
 	require.NoError(t, err)
 
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			EventChannelBufferSize: 7,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithEventChannelBufferSize(7),
+		)),
 	)
 
 	events, err := graphAgent.Run(context.Background(), invocation)
@@ -1600,9 +1600,9 @@ func TestGraphAgent_DisableGraphCompletionEvent_PreservesAfterAgentResponse(t *t
 	require.NoError(t, err)
 	inv := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("test")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := ga.Run(context.Background(), inv)
 	require.NoError(t, err)
@@ -1636,9 +1636,9 @@ func TestGraphAgent_DisableGraphCompletionEvent_PreservesOutputWithCaptureContex
 	require.NoError(t, err)
 	inv := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("test")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := ga.Run(graph.WithGraphCompletionCapture(context.Background()), inv)
 	require.NoError(t, err)
@@ -1676,9 +1676,9 @@ func TestGraphAgent_DisableGraphCompletionEvent_WithCaptureContext_AfterCallback
 	require.NoError(t, err)
 	inv := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("test")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := ga.Run(graph.WithGraphCompletionCapture(context.Background()), inv)
 	require.NoError(t, err)
@@ -1706,9 +1706,9 @@ func TestGraphAgent_DisableGraphCompletionEvent_PreservesVisibleResponseWithoutC
 	require.NoError(t, err)
 	inv := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("test")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := ga.Run(context.Background(), inv)
 	require.NoError(t, err)
@@ -1755,9 +1755,9 @@ func TestGraphAgent_DisableGraphCompletionEvent_PreservesStateOnlyVisibleRespons
 	require.NoError(t, err)
 	inv := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("test")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := ga.Run(context.Background(), inv)
 	require.NoError(t, err)
@@ -1789,10 +1789,10 @@ func TestGraphAgent_DisableGraphCompletionEvent_GraphEmitFinalModelResponses_Ded
 	require.NoError(t, err)
 	inv := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("test")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent:  true,
-			GraphEmitFinalModelResponses: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+			agent.WithGraphEmitFinalModelResponses(true),
+		)),
 	)
 	events, err := ga.Run(context.Background(), inv)
 	require.NoError(t, err)
@@ -1832,10 +1832,10 @@ func TestGraphAgent_DisableGraphCompletionEvent_GraphEmitFinalModelResponses_Ded
 	require.NoError(t, err)
 	inv := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("test")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent:  true,
-			GraphEmitFinalModelResponses: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+			agent.WithGraphEmitFinalModelResponses(true),
+		)),
 	)
 	events, err := ga.Run(context.Background(), inv)
 	require.NoError(t, err)
@@ -1888,10 +1888,10 @@ func TestGraphAgent_DisableGraphCompletionEvent_GraphEmitFinalModelResponses_Aft
 	require.NoError(t, err)
 	inv := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("test")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent:  true,
-			GraphEmitFinalModelResponses: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+			agent.WithGraphEmitFinalModelResponses(true),
+		)),
 	)
 	events, err := ga.Run(context.Background(), inv)
 	require.NoError(t, err)
@@ -1938,9 +1938,9 @@ func TestGraphAgent_DisableGraphCompletionEvent_WithAfterCallbackCustomResponse(
 	require.NoError(t, err)
 	inv := agent.NewInvocation(
 		agent.WithInvocationMessage(model.NewUserMessage("test")),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := ga.Run(context.Background(), inv)
 	require.NoError(t, err)

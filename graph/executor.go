@@ -268,14 +268,14 @@ func (e *Executor) Execute(
 	agent.GetOrCreateStreamHub(invocation)
 
 	eventChanSize := e.channelBufferSize
-	if invocation.RunOptions.EventChannelBufferSize > 0 {
-		eventChanSize = invocation.RunOptions.EventChannelBufferSize
+	if size := agent.GetEventChannelBufferSize(invocation); size > 0 {
+		eventChanSize = size
 	}
 	startTime := time.Now()
 	// Create the internal event channel used by graph execution.
 	eventChan := make(chan *event.Event, eventChanSize)
 	outputChan := (<-chan *event.Event)(eventChan)
-	if invocation.RunOptions.DisableGraphCompletionEvent &&
+	if agent.IsGraphCompletionEventDisabled(invocation) &&
 		!shouldCaptureGraphCompletion(ctx) {
 		filteredChan := make(chan *event.Event, eventChanSize)
 		outputChan = filteredChan
@@ -1680,7 +1680,7 @@ func shouldEmitCheckpointLifecycleEvents(
 		return false
 	}
 	ro := invocation.RunOptions
-	if ro.DisableGraphExecutorEvents {
+	if agent.IsGraphExecutorEventsDisabled(invocation) {
 		return false
 	}
 	if !ro.StreamModeEnabled {
@@ -1698,7 +1698,7 @@ func shouldEmitCheckpointLifecycleEvents(
 }
 
 func shouldEmitPregelStepEvents(invocation *agent.Invocation) bool {
-	return invocation == nil || !invocation.RunOptions.DisableGraphExecutorEvents
+	return invocation == nil || !agent.IsGraphExecutorEventsDisabled(invocation)
 }
 
 func emitTerminalGraphErrorEvent(
@@ -3337,7 +3337,7 @@ func (e *Executor) emitNodeStartEvent(
 	startTime time.Time,
 	extra ...NodeEventOption,
 ) {
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if invocation != nil && agent.IsGraphExecutorEventsDisabled(invocation) {
 		return
 	}
 	if execCtx.EventChan == nil {
@@ -3458,7 +3458,7 @@ func (e *Executor) emitNodeErrorEvent(
 	err error,
 	extra ...NodeEventOption,
 ) {
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if invocation != nil && agent.IsGraphExecutorEventsDisabled(invocation) {
 		return
 	}
 	if execCtx.EventChan == nil {
@@ -3832,7 +3832,7 @@ func (e *Executor) emitChannelUpdateEvent(
 	channelType channel.Behavior,
 	triggeredNodes []string,
 ) {
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if invocation != nil && agent.IsGraphExecutorEventsDisabled(invocation) {
 		return
 	}
 	if execCtx.EventChan == nil {
@@ -3860,7 +3860,7 @@ func (e *Executor) emitNodeCompleteEvent(
 	startTime time.Time,
 	cacheHit bool,
 ) {
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if invocation != nil && agent.IsGraphExecutorEventsDisabled(invocation) {
 		return
 	}
 	if execCtx.EventChan == nil {
@@ -3936,7 +3936,7 @@ func (e *Executor) emitUpdateStepEvent(ctx context.Context, invocation *agent.In
 
 // emitStateUpdateEvent emits the state update event.
 func (e *Executor) emitStateUpdateEvent(ctx context.Context, invocation *agent.Invocation, execCtx *ExecutionContext) {
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if invocation != nil && agent.IsGraphExecutorEventsDisabled(invocation) {
 		return
 	}
 	if execCtx.EventChan == nil {

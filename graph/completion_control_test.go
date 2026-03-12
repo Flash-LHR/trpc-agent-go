@@ -260,7 +260,7 @@ func TestShouldSuppressGraphCompletionEvent(t *testing.T) {
 	require.False(t, ShouldSuppressGraphCompletionEvent(context.Background(), nil, raw))
 	invocation := &agent.Invocation{}
 	require.False(t, ShouldSuppressGraphCompletionEvent(context.Background(), invocation, raw))
-	invocation.RunOptions.DisableGraphCompletionEvent = true
+	agent.WithDisableGraphCompletionEvent(true)(&invocation.RunOptions)
 	require.True(t, ShouldSuppressGraphCompletionEvent(context.Background(), invocation, raw))
 	require.False(t, ShouldSuppressGraphCompletionEvent(WithGraphCompletionCapture(context.Background()), invocation, raw))
 	require.False(t, ShouldSuppressGraphCompletionEvent(context.Background(), invocation, &event.Event{}))

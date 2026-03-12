@@ -69,9 +69,9 @@ func TestGraphAgent_BeforeCallback_CustomResponseUsesInvocationBufferSize(t *tes
 	require.NoError(t, err)
 	inv := &agent.Invocation{
 		Message: model.NewUserMessage("hi"),
-		RunOptions: agent.RunOptions{
-			EventChannelBufferSize: 7,
-		},
+		RunOptions: agent.NewRunOptions(
+			agent.WithEventChannelBufferSize(7),
+		),
 	}
 	ga.setupInvocation(inv)
 	ch, err := ga.runWithCallbacks(context.Background(), inv)
@@ -171,9 +171,9 @@ func TestGraphAgent_AfterCallbackWrapUsesInvocationBufferSize(t *testing.T) {
 	require.NoError(t, err)
 	inv := &agent.Invocation{
 		Message: model.NewUserMessage("go"),
-		RunOptions: agent.RunOptions{
-			EventChannelBufferSize: 7,
-		},
+		RunOptions: agent.NewRunOptions(
+			agent.WithEventChannelBufferSize(7),
+		),
 	}
 	ga.setupInvocation(inv)
 	ch, err := ga.runWithCallbacks(context.Background(), inv)
@@ -280,9 +280,9 @@ func TestGraphAgent_BeforeCallbackContextOverride_PreservesInvocationAndCapture(
 		InvocationID: "test-invocation",
 		AgentName:    "test-graph",
 		Message:      model.NewUserMessage("test"),
-		RunOptions: agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		},
+		RunOptions: agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		),
 	}
 	ctx := graph.WithGraphCompletionCapture(
 		agent.NewInvocationContext(context.Background(), invocation),
@@ -328,9 +328,9 @@ func TestGraphAgent_BeforeCallbackContextOverride_CannotForceCompletionCapture(t
 		InvocationID: "test-invocation",
 		AgentName:    "test-graph",
 		Message:      model.NewUserMessage("test"),
-		RunOptions: agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		},
+		RunOptions: agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		),
 	}
 	events, err := graphAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)

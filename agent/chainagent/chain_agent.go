@@ -81,8 +81,8 @@ func (a *ChainAgent) Run(ctx context.Context, invocation *agent.Invocation) (e <
 }
 
 func (a *ChainAgent) eventChannelBufferSize(invocation *agent.Invocation) int {
-	if invocation != nil && invocation.RunOptions.EventChannelBufferSize > 0 {
-		return invocation.RunOptions.EventChannelBufferSize
+	if size := agent.GetEventChannelBufferSize(invocation); size > 0 {
+		return size
 	}
 	return a.channelBufferSize
 }

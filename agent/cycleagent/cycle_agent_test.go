@@ -445,9 +445,9 @@ func TestCycleAgentRun_UsesInvocationEventChannelBufferSize(t *testing.T) {
 		ChannelBufferSize: 1,
 	})
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			EventChannelBufferSize: 7,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithEventChannelBufferSize(7),
+		)),
 	)
 	events, err := cycleAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -471,9 +471,9 @@ func TestCycleAgent_DisableGraphCompletionEvent_SuppressesChildCompletionWithCap
 		MaxIterations: &maxIterations,
 	})
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := cycleAgent.Run(graph.WithGraphCompletionCapture(context.Background()), invocation)
 	require.NoError(t, err)
@@ -500,9 +500,9 @@ func TestCycleAgent_DisableGraphCompletionEvent_PreservesVisibleChildResponse(t 
 		MaxIterations: &maxIterations,
 	})
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := cycleAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -538,9 +538,9 @@ func TestCycleAgent_DisableGraphCompletionEvent_PreservesStateOnlyChildCompletio
 		MaxIterations: &maxIterations,
 	})
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := cycleAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)
@@ -578,9 +578,9 @@ func TestCycleAgent_DisableGraphCompletionEvent_CustomEscalationSeesVisibleChild
 		},
 	})
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 	events, err := cycleAgent.Run(context.Background(), invocation)
 	require.NoError(t, err)

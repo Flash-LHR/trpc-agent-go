@@ -460,13 +460,16 @@ func TestGraphRunOptionSetters(t *testing.T) {
 	opts := &RunOptions{}
 
 	WithDisableGraphCompletionEvent(true)(opts)
-	require.True(t, opts.DisableGraphCompletionEvent)
+	invocation := NewInvocation(WithInvocationRunOptions(*opts))
+	require.True(t, IsGraphCompletionEventDisabled(invocation))
 
 	WithDisableGraphExecutorEvents(true)(opts)
-	require.True(t, opts.DisableGraphExecutorEvents)
+	invocation = NewInvocation(WithInvocationRunOptions(*opts))
+	require.True(t, IsGraphExecutorEventsDisabled(invocation))
 
 	WithEventChannelBufferSize(256)(opts)
-	require.Equal(t, 256, opts.EventChannelBufferSize)
+	invocation = NewInvocation(WithInvocationRunOptions(*opts))
+	require.Equal(t, 256, GetEventChannelBufferSize(invocation))
 }
 
 func TestModelResponseRunOptionSetters(t *testing.T) {

@@ -223,7 +223,7 @@ func ShouldSuppressGraphCompletionEvent(
 	invocation *agent.Invocation,
 	evt *event.Event,
 ) bool {
-	if invocation == nil || !invocation.RunOptions.DisableGraphCompletionEvent {
+	if invocation == nil || !agent.IsGraphCompletionEventDisabled(invocation) {
 		return false
 	}
 	if ShouldCaptureGraphCompletion(ctx) {

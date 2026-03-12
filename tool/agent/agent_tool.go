@@ -492,7 +492,7 @@ func shouldSuppressGraphExecutorBarrierEvent(
 	inv *agent.Invocation,
 	evt *event.Event,
 ) bool {
-	if inv == nil || evt == nil || !inv.RunOptions.DisableGraphExecutorEvents {
+	if inv == nil || evt == nil || !agent.IsGraphExecutorEventsDisabled(inv) {
 		return false
 	}
 	return evt.Object == graph.ObjectTypeGraphNodeBarrier ||
@@ -756,7 +756,7 @@ func (at *Tool) forwardSubInvocationStream(
 			at.completeSuppressedBarrierStreamEvent(ctx, subInv, ev, &state)
 			continue
 		}
-		if subInv.RunOptions.DisableGraphCompletionEvent &&
+		if agent.IsGraphCompletionEventDisabled(subInv) &&
 			isGraphCompletionSnapshotEvent(ev) {
 			at.capturePendingCompletionChunk(ev, &state)
 			if managePendingVisibleCompletion {
@@ -986,16 +986,33 @@ func sendStreamableCallError(
 	err error,
 ) {
 	streamErr := fmt.Errorf(format, err)
-	if shouldEmitStreamableCallErrorChunk(ctx) &&
-		writer.Send(tool.StreamChunk{Content: streamErr.Error()}, nil) {
+	if shouldEmitStreamableCallErrorChunk(ctx) {
+		if writer.Send(tool.StreamChunk{Content: streamErr.Error()}, nil) {
+			return
+		}
 		return
 	}
-	_ = writer.Send(tool.StreamChunk{}, streamErr)
+	if errorEvent := streamableCallErrorEvent(ctx, streamErr); errorEvent != nil {
+		_ = writer.Send(tool.StreamChunk{Content: errorEvent}, nil)
+		return
+	}
+	_ = writer.Send(tool.StreamChunk{Content: streamErr.Error()}, nil)
 }
 
 func shouldEmitStreamableCallErrorChunk(ctx context.Context) bool {
 	toolCallID, ok := tool.ToolCallIDFromContext(ctx)
 	return !ok || toolCallID == ""
+}
+
+func streamableCallErrorEvent(ctx context.Context, err error) *event.Event {
+	if err == nil {
+		return nil
+	}
+	evt := event.NewErrorEvent("", "", model.ErrorTypeFlowError, err.Error())
+	if inv, ok := agent.InvocationFromContext(ctx); ok && inv != nil {
+		agent.InjectIntoEvent(inv, evt)
+	}
+	return evt
 }
 
 func (at *Tool) fallbackRunnerRunOptions(ctx context.Context) []agent.RunOption {
@@ -1014,14 +1031,14 @@ func (at *Tool) fallbackRunnerRunOptions(ctx context.Context) []agent.RunOption 
 	} else if ro.GraphEmitFinalModelResponses {
 		opts = append(opts, agent.WithGraphEmitFinalModelResponses(true))
 	}
-	if ro.DisableGraphCompletionEvent {
+	if agent.IsGraphCompletionEventDisabled(parentInv) {
 		opts = append(opts, agent.WithDisableGraphCompletionEvent(true))
 	}
-	if ro.DisableGraphExecutorEvents {
+	if agent.IsGraphExecutorEventsDisabled(parentInv) {
 		opts = append(opts, agent.WithDisableGraphExecutorEvents(true))
 	}
-	if ro.EventChannelBufferSize > 0 {
-		opts = append(opts, agent.WithEventChannelBufferSize(ro.EventChannelBufferSize))
+	if size := agent.GetEventChannelBufferSize(parentInv); size > 0 {
+		opts = append(opts, agent.WithEventChannelBufferSize(size))
 	}
 	return opts
 }

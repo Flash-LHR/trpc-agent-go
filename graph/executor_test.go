@@ -325,9 +325,9 @@ func TestExecutor_DisableGraphExecutorEvents_SuppressesEventHelpers(t *testing.T
 		State:        State{"answer": "ok"},
 	}
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphExecutorEvents: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), invocation)
 
@@ -367,9 +367,9 @@ func TestExecutor_DisableGraphExecutorEvents_PreservesTerminalError(t *testing.T
 	require.NoError(t, err)
 	invocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-disable-events-error"),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphExecutorEvents: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
 	)
 	ch, err := exec.Execute(context.Background(), State{}, invocation)
 	require.NoError(t, err)
@@ -401,9 +401,9 @@ func TestExecuteSingleToolCall_DisableGraphExecutorEvents_FallsBackToOriginalInv
 	})
 	invocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-tool-disable-events"),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphExecutorEvents: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), invocation)
 	eventCh := make(chan *event.Event, 4)
@@ -439,9 +439,9 @@ func TestExecuteSingleToolCall_UsesInvocationFromCallbackContext(t *testing.T) {
 		callbackInvocation := agent.NewInvocation(
 			agent.WithInvocationID("inv-tool-callback-context"),
 			agent.WithInvocationEventFilterKey("tool-callback"),
-			agent.WithInvocationRunOptions(agent.RunOptions{
-				DisableGraphExecutorEvents: false,
-			}),
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithDisableGraphExecutorEvents(false),
+			)),
 		)
 		return &tool.BeforeToolResult{
 			Context: agent.NewInvocationContext(context.Background(), callbackInvocation),
@@ -450,9 +450,9 @@ func TestExecuteSingleToolCall_UsesInvocationFromCallbackContext(t *testing.T) {
 	invocation := agent.NewInvocation(
 		agent.WithInvocationID("inv-tool-disable-events"),
 		agent.WithInvocationEventFilterKey("tool-original"),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphExecutorEvents: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), invocation)
 	eventCh := make(chan *event.Event, 4)
@@ -750,9 +750,9 @@ func TestExecutor_CompletionEmitErrorDoesNotFailExecution(t *testing.T) {
 	exec, err := NewExecutor(g)
 	require.NoError(t, err)
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphExecutorEvents: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -776,9 +776,9 @@ func TestExecutor_DisableGraphCompletionEvent_SuppressesOutput(t *testing.T) {
 	exec, err := NewExecutor(g)
 	require.NoError(t, err)
 	invocation := agent.NewInvocation(
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphCompletionEvent: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
 	)
 
 	eventCh, err := exec.Execute(context.Background(), State{}, invocation)
@@ -885,9 +885,9 @@ func TestHandleInterrupt_DisableGraphExecutorEvents_SuppressesInterruptEvent(t *
 	ch := make(chan *event.Event, 1)
 	inv := agent.NewInvocation(
 		agent.WithInvocationID("inv-int-disabled"),
-		agent.WithInvocationRunOptions(agent.RunOptions{
-			DisableGraphExecutorEvents: true,
-		}),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
 	)
 	execCtx := &ExecutionContext{InvocationID: "inv-int-disabled", EventChan: ch}
 	intr := &InterruptError{NodeID: "N1", Value: "ask"}
