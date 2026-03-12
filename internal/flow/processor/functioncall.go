@@ -773,36 +773,9 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 	index int,
 	eventChan chan<- *event.Event,
 ) (context.Context, []model.Choice, []byte, bool, error) {
-	// Check if tool exists.
-	tl, exists := tools[toolCall.Function.Name]
-	if !exists {
-		// Compatibility: map sub-agent name calls to transfer_to_agent if present.
-		if mapped := findCompatibleTool(toolCall.Function.Name, tools, invocation); mapped != nil {
-			tl = mapped
-			if newArgs := convertToolArguments(
-				toolCall.Function.Name, toolCall.Function.Arguments,
-				mapped.Declaration().Name,
-			); newArgs != nil {
-				toolCall.Function.Name = mapped.Declaration().Name
-				toolCall.Function.Arguments = newArgs
-			}
-		} else {
-			log.ErrorfContext(
-				ctx,
-				"CallableTool %s not found (agent=%s, model=%s)",
-				toolCall.Function.Name,
-				invocation.AgentName,
-				invocation.Model.Info().Name,
-			)
-			return ctx, nil, toolCall.Function.Arguments, true,
-				fmt.Errorf("executeToolCall: %s", ErrorToolNotFound)
-		}
-	}
-
-	if invocation != nil && invocation.RunOptions.ToolExecutionFilter != nil {
-		if !invocation.RunOptions.ToolExecutionFilter(ctx, tl) {
-			return ctx, nil, toolCall.Function.Arguments, true, nil
-		}
+	toolCall, tl, shouldIgnoreError, err := p.resolveToolCallTarget(ctx, invocation, toolCall, tools)
+	if err != nil || tl == nil {
+		return ctx, nil, toolCall.Function.Arguments, shouldIgnoreError, err
 	}
 
 	log.DebugfContext(
@@ -913,6 +886,45 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 	)
 
 	return ctx, choices, modifiedArgs, true, nil
+}
+
+// resolveToolCallTarget resolves the callable tool, applies compatibility remapping,
+// and evaluates the optional tool execution filter.
+func (p *FunctionCallResponseProcessor) resolveToolCallTarget(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	toolCall model.ToolCall,
+	tools map[string]tool.Tool,
+) (model.ToolCall, tool.Tool, bool, error) {
+	tl, exists := tools[toolCall.Function.Name]
+	if !exists {
+		// Compatibility: map sub-agent name calls to transfer_to_agent if present.
+		if mapped := findCompatibleTool(toolCall.Function.Name, tools, invocation); mapped != nil {
+			tl = mapped
+			if newArgs := convertToolArguments(
+				toolCall.Function.Name, toolCall.Function.Arguments,
+				mapped.Declaration().Name,
+			); newArgs != nil {
+				toolCall.Function.Name = mapped.Declaration().Name
+				toolCall.Function.Arguments = newArgs
+			}
+		} else {
+			log.ErrorfContext(
+				ctx,
+				"CallableTool %s not found (agent=%s, model=%s)",
+				toolCall.Function.Name,
+				invocation.AgentName,
+				invocation.Model.Info().Name,
+			)
+			return toolCall, nil, true, fmt.Errorf("executeToolCall: %s", ErrorToolNotFound)
+		}
+	}
+	if invocation != nil && invocation.RunOptions.ToolExecutionFilter != nil {
+		if !invocation.RunOptions.ToolExecutionFilter(ctx, tl) {
+			return toolCall, nil, true, nil
+		}
+	}
+	return toolCall, tl, false, nil
 }
 
 // applyToolResultMessagesCallback invokes the optional ToolResultMessages callback and
