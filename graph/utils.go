@@ -109,11 +109,11 @@ func deepCopyFastPathWithVisited(value any, visited visitedMap) (any, bool) {
 	case []any:
 		return deepCopySliceAnyWithVisited(v, visited), true
 	case []string:
-		return cloneSlice(v), true
+		return cloneFastPathSlice(v), true
 	case []int:
-		return cloneSlice(v), true
+		return cloneFastPathSlice(v), true
 	case []float64:
-		return cloneSlice(v), true
+		return cloneFastPathSlice(v), true
 	case []byte:
 		return deepCopyBytesWithVisited(v, visited), true
 	case []model.Message:
@@ -206,7 +206,7 @@ func deepCopyMapStringAnyWithVisited(
 	visited visitedMap,
 ) map[string]any {
 	if in == nil {
-		return nil
+		return map[string]any{}
 	}
 	key := mapVisitKey(reflect.ValueOf(in).Pointer(), mapStringAnyType)
 	if cached, ok := visited[key]; ok {
@@ -251,7 +251,7 @@ func deepCopySliceAny(in []any) []any {
 
 func deepCopySliceAnyWithVisited(in []any, visited visitedMap) []any {
 	if in == nil {
-		return nil
+		return []any{}
 	}
 	if len(in) == 0 {
 		return []any{}
@@ -280,6 +280,12 @@ func cloneSlice[T any](in []T) []T {
 	if in == nil {
 		return nil
 	}
+	out := make([]T, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneFastPathSlice[T any](in []T) []T {
 	out := make([]T, len(in))
 	copy(out, in)
 	return out

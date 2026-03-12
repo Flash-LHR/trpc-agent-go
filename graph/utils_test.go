@@ -630,9 +630,17 @@ func TestDeepCopyAny_PreservesNilFastPathValues(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected map[string]any, got %T", deepCopyAny(map[string]any(nil)))
 		}
-		if copied != nil {
-			t.Fatalf("expected nil map copy, got %#v", copied)
+		require.NotNil(t, copied)
+		assert.Empty(t, copied)
+	})
+
+	t.Run("nil []any", func(t *testing.T) {
+		copied, ok := deepCopyAny([]any(nil)).([]any)
+		if !ok {
+			t.Fatalf("expected []any, got %T", deepCopyAny([]any(nil)))
 		}
+		require.NotNil(t, copied)
+		assert.Empty(t, copied)
 	})
 
 	t.Run("nil []string", func(t *testing.T) {
@@ -640,9 +648,8 @@ func TestDeepCopyAny_PreservesNilFastPathValues(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected []string, got %T", deepCopyAny([]string(nil)))
 		}
-		if copied != nil {
-			t.Fatalf("expected nil slice copy, got %#v", copied)
-		}
+		require.NotNil(t, copied)
+		assert.Empty(t, copied)
 	})
 
 	t.Run("nil []model.Message", func(t *testing.T) {
@@ -662,7 +669,8 @@ func TestDeepCopyAny_PreservesNilFastPathValues(t *testing.T) {
 		require.True(t, ok)
 		nested, ok := copied["nested"].(map[string]any)
 		require.True(t, ok)
-		assert.Nil(t, nested)
+		require.NotNil(t, nested)
+		assert.Empty(t, nested)
 	})
 }
 
@@ -962,7 +970,7 @@ func TestDeepCopyVisitedHelperBranchCoverage(t *testing.T) {
 	})
 
 	t.Run("nil branches", func(t *testing.T) {
-		assert.Nil(t, deepCopySliceAnyWithVisited(nil, newVisitedMap()))
+		assert.Empty(t, deepCopySliceAnyWithVisited(nil, newVisitedMap()))
 		assert.Nil(t, deepCopyModelMessagesWithVisited(nil, newVisitedMap()))
 		assert.Nil(t, deepCopyModelContentPartsWithVisited(nil, newVisitedMap()))
 		assert.Nil(t, deepCopyModelToolCallsWithVisited(nil, newVisitedMap()))
