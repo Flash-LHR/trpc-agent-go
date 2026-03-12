@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph/internal/channel"
@@ -285,11 +286,23 @@ func (e *Executor) Execute(
 	// Start execution in a goroutine.
 	runCtx := agent.CloneContext(ctx)
 	go func(ctx context.Context) {
-		ctx, span := trace.Tracer.Start(ctx, itelemetry.NewWorkflowSpanName(fmt.Sprintf("execute_graph %s", invocation.AgentName)))
-		workflow := &itelemetry.Workflow{
-			Name:    fmt.Sprintf("execute_graph %s", invocation.AgentName),
-			ID:      invocation.AgentName,
-			Request: initialState.safeClone(),
+		var span oteltrace.Span
+		var workflow *itelemetry.Workflow
+		startedSpan := false
+		if !invocation.RunOptions.DisableTracing {
+			workflowName := "execute_graph " + invocation.AgentName
+			ctx, span = trace.Tracer.Start(
+				ctx,
+				itelemetry.NewWorkflowSpanName(workflowName),
+			)
+			startedSpan = true
+			if span != nil && span.IsRecording() {
+				workflow = &itelemetry.Workflow{
+					Name:    workflowName,
+					ID:      invocation.AgentName,
+					Request: initialState.safeClone(),
+				}
+			}
 		}
 		defer func() {
 			if r := recover(); r != nil {
@@ -300,18 +313,20 @@ func (e *Executor) Execute(
 					r,
 					string(stack),
 				)
-				workflow.Error = fmt.Errorf("executor panic: %v", r)
-				emitTerminalGraphErrorEvent(
-					ctx,
-					invocation,
-					eventChan,
-					workflow.Error,
-				)
+				panicErr := fmt.Errorf("executor panic: %v", r)
+				if workflow != nil {
+					workflow.Error = panicErr
+				}
+				emitTerminalGraphErrorEvent(ctx, invocation, eventChan, panicErr)
 			}
 			agent.GetOrCreateStreamHub(invocation).CloseAll(ctx.Err())
 			close(eventChan)
-			itelemetry.TraceWorkflow(span, workflow)
-			span.End()
+			if workflow != nil {
+				itelemetry.TraceWorkflow(span, workflow)
+			}
+			if startedSpan && span != nil {
+				span.End()
+			}
 		}()
 		if err := e.executeGraph(ctx, initialState, invocation, eventChan, startTime); err != nil {
 			// Check if this is an interrupt error.
@@ -320,14 +335,11 @@ func (e *Executor) Execute(
 				// The interrupt will be handled by the caller.
 				return
 			}
-			workflow.Error = err
-			// Emit terminal error for other failures.
-			emitTerminalGraphErrorEvent(
-				ctx,
-				invocation,
-				eventChan,
-				err,
-			)
+			if workflow != nil {
+				workflow.Error = err
+			}
+			// Emit error event for other errors.
+			emitTerminalGraphErrorEvent(ctx, invocation, eventChan, err)
 		}
 	}(runCtx)
 	return outputChan, nil

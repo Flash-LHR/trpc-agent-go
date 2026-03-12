@@ -472,6 +472,16 @@ func TestGraphRunOptionSetters(t *testing.T) {
 	require.Equal(t, 256, GetEventChannelBufferSize(invocation))
 }
 
+func TestWithDisableTracing(t *testing.T) {
+	opts := &RunOptions{}
+
+	WithDisableTracing(true)(opts)
+	require.True(t, opts.DisableTracing)
+
+	WithDisableTracing(false)(opts)
+	require.False(t, opts.DisableTracing)
+}
+
 func TestModelResponseRunOptionSetters(t *testing.T) {
 	opts := &RunOptions{}
 
