@@ -2546,8 +2546,11 @@ func eventMatchesInvocationFilterKey(
 		return true
 	}
 	filterKey := invocation.GetEventFilterKey()
-	if filterKey == "" || ev.FilterKey == "" {
+	if filterKey == "" {
 		return true
+	}
+	if ev.FilterKey == "" {
+		return false
 	}
 	return ev.FilterKey == filterKey
 }

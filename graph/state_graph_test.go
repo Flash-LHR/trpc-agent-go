@@ -12,6 +12,7 @@ package graph
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"reflect"
 	"strings"
@@ -644,6 +645,33 @@ func TestAgentDeltaFromEvent(t *testing.T) {
 			}},
 		},
 	}))
+}
+
+func TestClearAgentTerminalErrorOnTerminalSuccess_RequiresScopedFilterKeyMatch(
+	t *testing.T,
+) {
+	inv := agent.NewInvocation(
+		agent.WithInvocationEventFilterKey("parent/child"),
+	)
+	res := agentEventStreamResult{
+		terminalErr: errors.New("boom"),
+	}
+	successWithoutFilterKey := event.NewResponseEvent(
+		inv.InvocationID,
+		"child",
+		&model.Response{
+			Done: true,
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("ok"),
+			}},
+		},
+	)
+	clearAgentTerminalErrorOnTerminalSuccess(&res, successWithoutFilterKey, inv)
+	require.Error(t, res.terminalErr)
+	successWithFilterKey := successWithoutFilterKey.Clone()
+	successWithFilterKey.FilterKey = inv.GetEventFilterKey()
+	clearAgentTerminalErrorOnTerminalSuccess(&res, successWithFilterKey, inv)
+	require.NoError(t, res.terminalErr)
 }
 
 func TestProcessAgentEventStream_CapturesStructuredOutput(t *testing.T) {
