@@ -1059,7 +1059,7 @@ func (p *FunctionCallResponseProcessor) runBeforeToolPluginCallbacks(
 			fmt.Errorf("tool callback error: %w", err)
 	}
 	if result != nil && result.Context != nil {
-		ctx = result.Context
+		ctx = ensureToolCallIDContext(result.Context, toolCall.ID)
 	}
 	if result != nil && result.CustomResult != nil {
 		return ctx, toolCall, result.CustomResult, nil
@@ -1098,7 +1098,7 @@ func (p *FunctionCallResponseProcessor) runBeforeToolCallbacks(
 	}
 
 	if result != nil && result.Context != nil {
-		ctx = result.Context
+		ctx = ensureToolCallIDContext(result.Context, toolCall.ID)
 	}
 	if result != nil && result.CustomResult != nil {
 		return ctx, toolCall, result.CustomResult, nil
@@ -1299,6 +1299,17 @@ func (p *FunctionCallResponseProcessor) executeToolWithCallbacks(
 		suppressDefaultToolMessage = false
 	}
 	return ctx, toolResult, toolCall.Function.Arguments, suppressDefaultToolMessage, toolErr
+}
+
+func ensureToolCallIDContext(ctx context.Context, toolCallID string) context.Context {
+	if ctx == nil || toolCallID == "" {
+		return ctx
+	}
+	if existingToolCallID, ok := tool.ToolCallIDFromContext(ctx); ok &&
+		existingToolCallID == toolCallID {
+		return ctx
+	}
+	return context.WithValue(ctx, tool.ContextKeyToolCallID{}, toolCallID)
 }
 
 // isStreamable returns true if the tool supports streaming and its stream

@@ -4596,6 +4596,32 @@ func TestExecuteStreamableTool_AgentToolRunErrorDoesNotEmitPartial(t *testing.T)
 	}
 }
 
+func TestExecuteToolWithCallbacks_AgentToolRunErrorAfterBeforeToolContextReplacementDoesNotEmitPartial(t *testing.T) {
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		return &tool.BeforeToolResult{
+			Context: context.Background(),
+		}, nil
+	})
+	f := NewFunctionCallResponseProcessor(false, callbacks)
+	ctx := context.Background()
+	inv := &agent.Invocation{InvocationID: "inv-agent-tool-before", AgentName: "tester", Branch: "b", Model: &mockModel{}}
+	tc := model.ToolCall{ID: "call-1", Function: model.FunctionDefinitionParam{Name: "agent-tool"}}
+	st := agenttool.NewTool(&runErrorSubAgent{name: "err-agent"}, agenttool.WithStreamInner(true))
+	ch := make(chan *event.Event, 1)
+	_, res, _, _, err := f.executeToolWithCallbacks(ctx, inv, tc, st, ch)
+	require.Error(t, err)
+	require.Nil(t, res)
+	select {
+	case ev := <-ch:
+		require.Failf(t, "unexpected tool response event", "%#v", ev)
+	default:
+	}
+}
+
 func TestMarshalChunkToText_MarshalError(t *testing.T) {
 	// Passing a function is not JSON-serializable, forcing fmt.Sprintf path.
 	text := marshalChunkToText(func() {})
