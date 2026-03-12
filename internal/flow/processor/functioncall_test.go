@@ -2667,7 +2667,7 @@ func TestProcessStreamChunk_ForwardsEvent(t *testing.T) {
 	var innerEventState streamInnerEventState
 	err := f.processStreamChunk(ctx, inv,
 		model.ToolCall{ID: "x"},
-		tool.StreamChunk{Content: ev}, ch, &contents, &finalResult, &innerEventState,
+		tool.StreamChunk{Content: ev}, ch, &contents, &finalResult, &innerEventState, false,
 	)
 	require.NoError(t, err)
 	select {
@@ -3193,6 +3193,8 @@ func (s *errorThenFinalResultStreamTool) Declaration() *tool.Declaration {
 	return &tool.Declaration{Name: s.name}
 }
 
+func (s *errorThenFinalResultStreamTool) StructuredStreamErrors() bool { return true }
+
 func (s *errorThenFinalResultStreamTool) StreamableCall(
 	ctx context.Context,
 	_ []byte,
@@ -3222,6 +3224,10 @@ type retryingNodeErrorThenFinalResultStreamTool struct{ name string }
 
 func (s *retryingNodeErrorThenFinalResultStreamTool) Declaration() *tool.Declaration {
 	return &tool.Declaration{Name: s.name}
+}
+
+func (s *retryingNodeErrorThenFinalResultStreamTool) StructuredStreamErrors() bool {
+	return true
 }
 
 func (s *retryingNodeErrorThenFinalResultStreamTool) StreamableCall(
@@ -3254,6 +3260,10 @@ type retryingToolResponseErrorThenFinalResultStreamTool struct{ name string }
 
 func (s *retryingToolResponseErrorThenFinalResultStreamTool) Declaration() *tool.Declaration {
 	return &tool.Declaration{Name: s.name}
+}
+
+func (s *retryingToolResponseErrorThenFinalResultStreamTool) StructuredStreamErrors() bool {
+	return true
 }
 
 func (s *retryingToolResponseErrorThenFinalResultStreamTool) StreamableCall(
@@ -3572,6 +3582,8 @@ func (s *terminalToolResponseErrorStreamTool) Declaration() *tool.Declaration {
 	return &tool.Declaration{Name: s.name}
 }
 
+func (s *terminalToolResponseErrorStreamTool) StructuredStreamErrors() bool { return true }
+
 func (s *terminalToolResponseErrorStreamTool) StreamableCall(
 	ctx context.Context,
 	_ []byte,
@@ -3651,6 +3663,7 @@ func TestProcessStreamChunk_PointerFinalResultChunkMarksSeen(t *testing.T) {
 		&contents,
 		&finalResult,
 		&innerEventState,
+		false,
 	)
 	require.NoError(t, err)
 	require.True(t, finalResult.seen)
@@ -3681,12 +3694,112 @@ func TestProcessStreamChunk_NilPointerFinalResultChunkDoesNotMarkSeen(t *testing
 		&contents,
 		&finalResult,
 		&innerEventState,
+		false,
 	)
 	require.NoError(t, err)
 	require.False(t, finalResult.seen)
 	require.Nil(t, finalResult.value)
 	require.Empty(t, contents)
 	require.Len(t, ch, 0)
+}
+
+type structuredErrorPreferenceStreamTool struct {
+	name        string
+	structured  bool
+	sawFlag     bool
+	streamChunk tool.StreamChunk
+}
+
+func (s *structuredErrorPreferenceStreamTool) Declaration() *tool.Declaration {
+	return &tool.Declaration{Name: s.name}
+}
+
+func (s *structuredErrorPreferenceStreamTool) StructuredStreamErrors() bool {
+	return s.structured
+}
+
+func (s *structuredErrorPreferenceStreamTool) StreamableCall(
+	ctx context.Context,
+	_ []byte,
+) (*tool.StreamReader, error) {
+	s.sawFlag = tool.StructuredStreamErrorsFromContext(ctx)
+	st := tool.NewStream(1)
+	go func() {
+		defer st.Writer.Close()
+		st.Writer.Send(s.streamChunk, nil)
+	}()
+	return st.Reader, nil
+}
+
+func TestExecuteStreamableTool_DefaultDoesNotEnableStructuredStreamErrors(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{
+		InvocationID: "inv-unstructured-default",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID:       "c1",
+		Function: model.FunctionDefinitionParam{Name: "plain"},
+	}
+	st := &structuredErrorPreferenceStreamTool{
+		name: "plain",
+		streamChunk: tool.StreamChunk{
+			Content: event.NewErrorEvent(
+				"inv-unstructured-default",
+				"child",
+				model.ErrorTypeFlowError,
+				"boom",
+			),
+		},
+	}
+	ch := make(chan *event.Event, 2)
+	_, res, _, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.NoError(t, err)
+	require.False(t, st.sawFlag)
+	require.Nil(t, res)
+
+	evt := <-ch
+	require.NotNil(t, evt)
+	require.Equal(t, model.ObjectTypeError, evt.Object)
+}
+
+func TestExecuteStreamableTool_OptInEnablesStructuredStreamErrors(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{
+		InvocationID: "inv-structured-optin",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID:       "c1",
+		Function: model.FunctionDefinitionParam{Name: "plain"},
+	}
+	st := &structuredErrorPreferenceStreamTool{
+		name:       "plain",
+		structured: true,
+		streamChunk: tool.StreamChunk{
+			Content: event.NewErrorEvent(
+				"inv-structured-optin",
+				"child",
+				model.ErrorTypeFlowError,
+				"boom",
+			),
+		},
+	}
+	ch := make(chan *event.Event, 2)
+	_, res, _, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.Error(t, err)
+	require.True(t, st.sawFlag)
+	require.Nil(t, res)
+
+	evt := <-ch
+	require.NotNil(t, evt)
+	require.Equal(t, model.ObjectTypeError, evt.Object)
 }
 
 // stream tool forwarding inner *event.Event
@@ -4184,6 +4297,7 @@ func TestProcessStreamChunk_EmptyText_NoEvent(t *testing.T) {
 		&out,
 		&finalResult,
 		&innerEventState,
+		false,
 	)
 	require.NoError(t, err)
 	require.Empty(t, out)
@@ -4209,6 +4323,7 @@ func TestProcessStreamChunk_TextWithoutEventChannel_AppendsContent(t *testing.T)
 		&out,
 		&finalResult,
 		&innerEventState,
+		false,
 	)
 	require.NoError(t, err)
 	require.Equal(t, []any{"partial"}, out)

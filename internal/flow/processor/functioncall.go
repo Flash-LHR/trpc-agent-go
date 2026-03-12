@@ -1386,6 +1386,32 @@ func (p *FunctionCallResponseProcessor) executeCallableTool(
 	return ctx, result, nil
 }
 
+type structuredStreamErrorPreference interface {
+	StructuredStreamErrors() bool
+}
+
+func streamableToolCallContext(
+	ctx context.Context,
+	tl tool.StreamableTool,
+) context.Context {
+	if !shouldRequestStructuredStreamErrors(tl) {
+		return ctx
+	}
+	return tool.WithStructuredStreamErrors(ctx)
+}
+
+func shouldRequestStructuredStreamErrors(tl tool.StreamableTool) bool {
+	if tl == nil {
+		return false
+	}
+	candidate := any(tl)
+	if namedTool, ok := tl.(*itool.NamedTool); ok {
+		candidate = namedTool.Original()
+	}
+	pref, ok := candidate.(structuredStreamErrorPreference)
+	return ok && pref.StructuredStreamErrors()
+}
+
 // executeStreamableTool executes a streamable tool.
 func (f *FunctionCallResponseProcessor) executeStreamableTool(
 	ctx context.Context,
@@ -1395,7 +1421,7 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 	eventChan chan<- *event.Event,
 ) (context.Context, any, bool, error) {
 	reader, err := tl.StreamableCall(
-		tool.WithStructuredStreamErrors(ctx),
+		streamableToolCallContext(ctx, tl),
 		toolCall.Function.Arguments,
 	)
 	if err != nil {
@@ -1418,6 +1444,7 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 		toolCall,
 		reader,
 		eventChan,
+		shouldRequestStructuredStreamErrors(tl),
 	)
 	if err != nil {
 		return ctx, nil, false, err
@@ -1469,6 +1496,7 @@ func (f *FunctionCallResponseProcessor) consumeStream(
 	toolCall model.ToolCall,
 	reader *tool.StreamReader,
 	eventChan chan<- *event.Event,
+	structuredErrors bool,
 ) ([]any, streamFinalResult, error) {
 	var contents []any
 	var finalResult streamFinalResult
@@ -1499,11 +1527,12 @@ func (f *FunctionCallResponseProcessor) consumeStream(
 			&contents,
 			&finalResult,
 			&innerEventState,
+			structuredErrors,
 		); err != nil {
 			return contents, finalResult, err
 		}
 	}
-	if innerEventState.pendingGraphToolErrorEvent != nil {
+	if structuredErrors && innerEventState.pendingGraphToolErrorEvent != nil {
 		return contents, finalResult, streamToolEventError(
 			innerEventState.pendingGraphToolErrorEvent,
 		)
@@ -1880,6 +1909,7 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 	contents *[]any,
 	finalResult *streamFinalResult,
 	innerEventState *streamInnerEventState,
+	structuredErrors bool,
 ) error {
 	if finalChunk, ok := normalizeFinalResultChunk(chunk.Content); ok {
 		return f.handleFinalResultChunk(
@@ -1890,6 +1920,7 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 			finalResult,
 			innerEventState,
 			finalChunk,
+			structuredErrors,
 		)
 	}
 	if ev, ok := chunk.Content.(*event.Event); ok {
@@ -1899,6 +1930,7 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 			contents,
 			innerEventState,
 			ev,
+			structuredErrors,
 		)
 	}
 	return f.handlePlainStreamChunk(
@@ -1909,6 +1941,7 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 		contents,
 		innerEventState,
 		chunk.Content,
+		structuredErrors,
 	)
 }
 
@@ -1953,8 +1986,9 @@ func (f *FunctionCallResponseProcessor) handleFinalResultChunk(
 	finalResult *streamFinalResult,
 	innerEventState *streamInnerEventState,
 	finalChunk *normalizedFinalResultChunk,
+	structuredErrors bool,
 ) error {
-	if err := flushPendingGraphToolError(innerEventState, nil); err != nil {
+	if err := flushPendingGraphToolError(innerEventState, nil, structuredErrors); err != nil {
 		return err
 	}
 	if finalChunk != nil && finalResult != nil {
@@ -1974,14 +2008,18 @@ func (f *FunctionCallResponseProcessor) handleStreamInnerEvent(
 	contents *[]any,
 	innerEventState *streamInnerEventState,
 	ev *event.Event,
+	structuredErrors bool,
 ) error {
-	if err := flushPendingGraphToolError(innerEventState, ev); err != nil {
+	if err := flushPendingGraphToolError(innerEventState, ev, structuredErrors); err != nil {
 		return err
 	}
 	if err := event.EmitEvent(ctx, eventChan, ev); err != nil {
 		return err
 	}
 	f.appendInnerEventContent(ev, contents, innerEventState)
+	if !structuredErrors {
+		return nil
+	}
 	if isGraphToolExecutionErrorEvent(ev) {
 		if innerEventState != nil {
 			innerEventState.pendingGraphToolErrorEvent = ev
@@ -1999,8 +2037,9 @@ func (f *FunctionCallResponseProcessor) handlePlainStreamChunk(
 	contents *[]any,
 	innerEventState *streamInnerEventState,
 	content any,
+	structuredErrors bool,
 ) error {
-	if err := flushPendingGraphToolError(innerEventState, nil); err != nil {
+	if err := flushPendingGraphToolError(innerEventState, nil, structuredErrors); err != nil {
 		return err
 	}
 	text := marshalChunkToText(content)
@@ -2018,7 +2057,11 @@ func (f *FunctionCallResponseProcessor) handlePlainStreamChunk(
 func flushPendingGraphToolError(
 	state *streamInnerEventState,
 	nextEvent *event.Event,
+	structuredErrors bool,
 ) error {
+	if !structuredErrors {
+		return nil
+	}
 	if state == nil || state.pendingGraphToolErrorEvent == nil {
 		return nil
 	}

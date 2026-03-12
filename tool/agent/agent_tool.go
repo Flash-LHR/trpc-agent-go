@@ -1066,6 +1066,9 @@ func (at *Tool) fallbackRunnerRunOptions(ctx context.Context) []agent.RunOption 
 // outer-agent summarization after its tool.response.
 func (at *Tool) SkipSummarization() bool { return at.skipSummarization }
 
+// StructuredStreamErrors reports that AgentTool expects structured error chunks.
+func (at *Tool) StructuredStreamErrors() bool { return true }
+
 // StreamInner exposes whether this AgentTool prefers the flow to treat it as
 // streamable (forwarding inner deltas) versus callable-only.
 func (at *Tool) StreamInner() bool { return at.streamInner }

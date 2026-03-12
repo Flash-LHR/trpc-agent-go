@@ -460,16 +460,29 @@ func TestGraphRunOptionSetters(t *testing.T) {
 	opts := &RunOptions{}
 
 	WithDisableGraphCompletionEvent(true)(opts)
+	require.Nil(t, opts.CustomAgentConfigs)
 	invocation := NewInvocation(WithInvocationRunOptions(*opts))
 	require.True(t, IsGraphCompletionEventDisabled(invocation))
+	require.Nil(t, invocation.RunOptions.CustomAgentConfigs)
 
 	WithDisableGraphExecutorEvents(true)(opts)
+	require.Nil(t, opts.CustomAgentConfigs)
 	invocation = NewInvocation(WithInvocationRunOptions(*opts))
 	require.True(t, IsGraphExecutorEventsDisabled(invocation))
+	require.Nil(t, invocation.RunOptions.CustomAgentConfigs)
 
 	WithEventChannelBufferSize(256)(opts)
+	require.Nil(t, opts.CustomAgentConfigs)
 	invocation = NewInvocation(WithInvocationRunOptions(*opts))
 	require.Equal(t, 256, GetEventChannelBufferSize(invocation))
+	require.Nil(t, invocation.RunOptions.CustomAgentConfigs)
+
+	WithCustomAgentConfigs(nil)(opts)
+	invocation = NewInvocation(WithInvocationRunOptions(*opts))
+	require.True(t, IsGraphCompletionEventDisabled(invocation))
+	require.True(t, IsGraphExecutorEventsDisabled(invocation))
+	require.Equal(t, 256, GetEventChannelBufferSize(invocation))
+	require.Nil(t, invocation.RunOptions.CustomAgentConfigs)
 }
 
 func TestWithDisableTracing(t *testing.T) {

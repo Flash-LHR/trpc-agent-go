@@ -188,8 +188,6 @@ func NewWaitNoticeTimeoutError(message string) *WaitNoticeTimeoutError {
 // RunOption is a function that configures a RunOptions.
 type RunOption func(*RunOptions)
 
-const runControlConfigKey = "__agent_internal_run_control__"
-
 type runControlConfig struct {
 	DisableGraphCompletionEvent bool
 	DisableGraphExecutorEvents  bool
@@ -627,15 +625,8 @@ func WithA2ARequestOptions(opts ...any) RunOption {
 //   - The stored configuration should be treated as read-only. Do not modify it after retrieval.
 func WithCustomAgentConfigs(configs map[string]any) RunOption {
 	return func(opts *RunOptions) {
-		cfg, hasRunControlConfig := lookupRunControlConfig(opts.CustomAgentConfigs)
 		if configs == nil {
-			if !hasRunControlConfig {
-				opts.CustomAgentConfigs = nil
-				return
-			}
-			opts.CustomAgentConfigs = map[string]any{
-				runControlConfigKey: cfg,
-			}
+			opts.CustomAgentConfigs = nil
 			return
 		}
 		// Create a shallow copy to prevent external modifications
@@ -643,31 +634,7 @@ func WithCustomAgentConfigs(configs map[string]any) RunOption {
 		for k, v := range configs {
 			copied[k] = v
 		}
-		if hasRunControlConfig {
-			copied[runControlConfigKey] = cfg
-		}
 		opts.CustomAgentConfigs = copied
-	}
-}
-
-func lookupRunControlConfig(configs map[string]any) (runControlConfig, bool) {
-	if configs == nil {
-		return runControlConfig{}, false
-	}
-	raw, ok := configs[runControlConfigKey]
-	if !ok {
-		return runControlConfig{}, false
-	}
-	switch v := raw.(type) {
-	case runControlConfig:
-		return v, true
-	case *runControlConfig:
-		if v == nil {
-			return runControlConfig{}, false
-		}
-		return *v, true
-	default:
-		return runControlConfig{}, false
 	}
 }
 
@@ -675,18 +642,14 @@ func getRunControlConfig(opts *RunOptions) runControlConfig {
 	if opts == nil {
 		return runControlConfig{}
 	}
-	cfg, _ := lookupRunControlConfig(opts.CustomAgentConfigs)
-	return cfg
+	return opts.runControlConfig
 }
 
 func setRunControlConfig(opts *RunOptions, cfg runControlConfig) {
 	if opts == nil {
 		return
 	}
-	if opts.CustomAgentConfigs == nil {
-		opts.CustomAgentConfigs = make(map[string]any)
-	}
-	opts.CustomAgentConfigs[runControlConfigKey] = cfg
+	opts.runControlConfig = cfg
 }
 
 // RunOptions is the options for the Run method.
@@ -870,6 +833,9 @@ type RunOptions struct {
 	// ToolCallArgumentsJSONRepairEnabled enables best-effort JSON repair for tool call arguments.
 	// When nil, JSON repair is disabled by default.
 	ToolCallArgumentsJSONRepairEnabled *bool
+
+	// runControlConfig stores internal event and buffering controls.
+	runControlConfig runControlConfig
 }
 
 // IsGraphCompletionEventDisabled reports whether this invocation hides terminal graph completion events.
