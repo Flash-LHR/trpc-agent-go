@@ -1395,7 +1395,9 @@ func shouldClearRunnerCompletionChoicesInSession(
 	finalChoices []model.Choice,
 	finalStateDelta map[string][]byte,
 ) bool {
-	if loop == nil {
+	if loop == nil ||
+		loop.invocation == nil ||
+		!agent.IsGraphCompletionEventDisabled(loop.invocation) {
 		return false
 	}
 	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)

@@ -136,7 +136,12 @@ func (ga *GraphAgent) singleEventChannelBufferSize(invocation *agent.Invocation)
 
 func (ga *GraphAgent) runWithoutBarrier(ctx context.Context, invocation *agent.Invocation, out chan<- *event.Event) {
 	initialState := ga.createInitialState(ctx, invocation)
-	innerChan, err := ga.executor.Execute(ctx, initialState, invocation)
+	executeCtx := ctx
+	suppressHiddenCompletion := shouldSuppressHiddenCompletion(ctx, invocation)
+	if suppressHiddenCompletion {
+		executeCtx = graph.WithGraphCompletionCapture(ctx)
+	}
+	innerChan, err := ga.executor.Execute(executeCtx, initialState, invocation)
 	if err != nil {
 		evt := event.NewErrorEvent(invocation.InvocationID, invocation.AgentName,
 			model.ErrorTypeFlowError, err.Error())
@@ -146,7 +151,14 @@ func (ga *GraphAgent) runWithoutBarrier(ctx context.Context, invocation *agent.I
 		}
 		return
 	}
-	ga.forwardEventStream(ctx, innerChan, out)
+	defer close(out)
+	_, _ = ga.forwardWrappedEvents(
+		ctx,
+		invocation,
+		innerChan,
+		out,
+		suppressHiddenCompletion,
+	)
 }
 
 func (ga *GraphAgent) forwardEventStream(ctx context.Context, innerChan <-chan *event.Event, out chan<- *event.Event) {
@@ -287,7 +299,6 @@ func (ga *GraphAgent) emitStartBarrierAndWait(ctx context.Context, invocation *a
 func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
 	// Execute the graph.
 	if ga.agentCallbacks != nil {
-		callbackBaseCtx := ctx
 		result, err := ga.agentCallbacks.RunBeforeAgent(ctx, &agent.BeforeAgentArgs{
 			Invocation: invocation,
 		})
@@ -296,11 +307,7 @@ func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.In
 		}
 		// Use the context from result if provided.
 		if result != nil && result.Context != nil {
-			ctx = restoreGraphAgentRunContext(
-				callbackBaseCtx,
-				result.Context,
-				invocation,
-			)
+			ctx = result.Context
 		}
 		if result != nil && result.CustomResponse != nil {
 			// Create a channel that returns the custom response and then closes.
@@ -320,12 +327,9 @@ func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.In
 
 	// Execute the graph.
 	executeCtx := ctx
-	shouldWrapHiddenCompletion := false
-	if invocation != nil &&
-		agent.IsGraphCompletionEventDisabled(invocation) &&
-		!graph.ShouldCaptureGraphCompletion(ctx) {
+	shouldWrapHiddenCompletion := shouldSuppressHiddenCompletion(ctx, invocation)
+	if shouldWrapHiddenCompletion {
 		executeCtx = graph.WithGraphCompletionCapture(ctx)
-		shouldWrapHiddenCompletion = true
 	}
 	eventChan, err := ga.executor.Execute(executeCtx, initialState, invocation)
 	if err != nil {
@@ -340,31 +344,6 @@ func (ga *GraphAgent) runWithCallbacks(ctx context.Context, invocation *agent.In
 		), nil
 	}
 	return eventChan, nil
-}
-
-func restoreGraphAgentRunContext(
-	baseCtx context.Context,
-	callbackCtx context.Context,
-	invocation *agent.Invocation,
-) context.Context {
-	if callbackCtx == nil {
-		return baseCtx
-	}
-	restoredCtx := callbackCtx
-	if invocation != nil {
-		restoredCtx = agent.NewInvocationContext(restoredCtx, invocation)
-	}
-	if graph.ShouldCaptureGraphCompletion(baseCtx) {
-		restoredCtx = graph.WithGraphCompletionCapture(restoredCtx)
-	} else {
-		restoredCtx = graph.WithoutGraphCompletionCapture(restoredCtx)
-	}
-	if toolCallID, ok := tool.ToolCallIDFromContext(baseCtx); ok && toolCallID != "" {
-		if _, ok := tool.ToolCallIDFromContext(restoredCtx); !ok {
-			restoredCtx = context.WithValue(restoredCtx, tool.ContextKeyToolCallID{}, toolCallID)
-		}
-	}
-	return restoredCtx
 }
 
 func (ga *GraphAgent) createInitialState(ctx context.Context, invocation *agent.Invocation) graph.State {
@@ -442,6 +421,15 @@ func (ga *GraphAgent) createInitialState(ctx context.Context, invocation *agent.
 	}
 
 	return initialState
+}
+
+func shouldSuppressHiddenCompletion(
+	ctx context.Context,
+	invocation *agent.Invocation,
+) bool {
+	return invocation != nil &&
+		agent.IsGraphCompletionEventDisabled(invocation) &&
+		!graph.ShouldCaptureGraphCompletion(ctx)
 }
 
 func (ga *GraphAgent) setupInvocation(invocation *agent.Invocation) {

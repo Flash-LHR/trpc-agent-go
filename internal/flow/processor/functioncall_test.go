@@ -4764,6 +4764,46 @@ func TestExecuteToolWithCallbacks_AgentToolRunErrorAfterBeforeToolContextReplace
 	}
 }
 
+func TestExecuteToolWithCallbacks_BeforeToolContextReplacementDoesNotReinjectToolCallID(
+	t *testing.T,
+) {
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		return &tool.BeforeToolResult{
+			Context: context.Background(),
+		}, nil
+	})
+	var sawToolCallID bool
+	f := NewFunctionCallResponseProcessor(false, callbacks)
+	inv := &agent.Invocation{
+		InvocationID: "inv-tool-call-context",
+		AgentName:    "tester",
+		Branch:       "b",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID: "call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "callable",
+			Arguments: []byte(`{}`),
+		},
+	}
+	tl := &mockCallableTool{
+		declaration: &tool.Declaration{Name: "callable"},
+		callFn: func(ctx context.Context, args []byte) (any, error) {
+			_, sawToolCallID = tool.ToolCallIDFromContext(ctx)
+			return map[string]any{"ok": true}, nil
+		},
+	}
+	_, res, _, _, err := f.executeToolWithCallbacks(context.Background(), inv, tc, tl, nil)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.False(t, sawToolCallID)
+}
+
 func TestMarshalChunkToText_MarshalError(t *testing.T) {
 	// Passing a function is not JSON-serializable, forcing fmt.Sprintf path.
 	text := marshalChunkToText(func() {})

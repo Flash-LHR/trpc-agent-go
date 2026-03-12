@@ -195,7 +195,7 @@ func (at *Tool) callWithParentInvocation(
 	if err != nil {
 		return "", fmt.Errorf("failed to run agent: %w", err)
 	}
-	return at.collectResponse(at.wrapWithCallSemantics(subCtx, subInv, evCh))
+	return at.collectResponse(subInv, at.wrapWithCallSemantics(subCtx, subInv, evCh))
 }
 
 // wrapWithCompletion consumes events, notifies completion when required, and forwards to a new channel.
@@ -596,7 +596,8 @@ func (at *Tool) callWithIsolatedRunner(
 	if err != nil {
 		return "", fmt.Errorf("failed to run agent: %w", err)
 	}
-	return at.collectResponse(evCh)
+	parentInv, _ := agent.InvocationFromContext(ctx)
+	return at.collectResponse(parentInv, evCh)
 }
 
 // buildChildFilterKey constructs a child filter key based on the history scope
@@ -614,7 +615,10 @@ func (at *Tool) buildChildFilterKey(parentInv *agent.Invocation) string {
 
 // collectResponse collects and concatenates assistant messages from the event
 // channel, returning the complete response text.
-func (at *Tool) collectResponse(evCh <-chan *event.Event) (string, error) {
+func (at *Tool) collectResponse(inv *agent.Invocation, evCh <-chan *event.Event) (string, error) {
+	if !shouldRewriteCallableCompletion(inv) {
+		return collectLegacyResponse(evCh)
+	}
 	var response strings.Builder
 	var lastAssistantMessage string
 	var sawGraphCompletionSnapshot bool
@@ -652,6 +656,26 @@ func (at *Tool) collectResponse(evCh <-chan *event.Event) (string, error) {
 		}
 	}
 	return response.String(), nil
+}
+
+func collectLegacyResponse(evCh <-chan *event.Event) (string, error) {
+	var response strings.Builder
+	for ev := range evCh {
+		if ev.Error != nil {
+			return "", fmt.Errorf("agent error: %s", ev.Error.Message)
+		}
+		if ev.Response != nil && len(ev.Response.Choices) > 0 {
+			choice := ev.Response.Choices[0]
+			if choice.Message.Role == model.RoleAssistant && choice.Message.Content != "" {
+				response.WriteString(choice.Message.Content)
+			}
+		}
+	}
+	return response.String(), nil
+}
+
+func shouldRewriteCallableCompletion(inv *agent.Invocation) bool {
+	return inv != nil && agent.IsGraphCompletionEventDisabled(inv)
 }
 
 // StreamableCall executes the agent tool with streaming support and returns a stream reader.
@@ -986,7 +1010,7 @@ func sendStreamableCallError(
 	err error,
 ) {
 	streamErr := fmt.Errorf(format, err)
-	if shouldEmitStreamableCallErrorChunk(ctx) {
+	if !tool.StructuredStreamErrorsFromContext(ctx) {
 		if writer.Send(tool.StreamChunk{Content: streamErr.Error()}, nil) {
 			return
 		}
@@ -997,11 +1021,6 @@ func sendStreamableCallError(
 		return
 	}
 	_ = writer.Send(tool.StreamChunk{Content: streamErr.Error()}, nil)
-}
-
-func shouldEmitStreamableCallErrorChunk(ctx context.Context) bool {
-	toolCallID, ok := tool.ToolCallIDFromContext(ctx)
-	return !ok || toolCallID == ""
 }
 
 func streamableCallErrorEvent(ctx context.Context, err error) *event.Event {

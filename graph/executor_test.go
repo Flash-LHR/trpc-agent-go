@@ -605,7 +605,7 @@ func TestExecuteSingleToolCall_CompleteEventFallsBackToBeforeToolInvocation(t *t
 	require.Equal(t, completeEvent.InvocationID, requireToolExecutionMetadata(t, completeEvent).InvocationID)
 }
 
-func TestExecuteSingleToolCall_PreservesPluginInvocationAcrossBareLocalCallbacks(t *testing.T) {
+func TestExecuteSingleToolCall_UsesLatestBareCallbackContextAsIs(t *testing.T) {
 	pluginCallbacks := tool.NewCallbacks()
 	pluginManager := &toolCallbacksPluginManager{callbacks: pluginCallbacks}
 	pluginCallbacks.RegisterBeforeTool(func(
@@ -681,10 +681,10 @@ func TestExecuteSingleToolCall_PreservesPluginInvocationAcrossBareLocalCallbacks
 	startEvent := <-eventCh
 	completeEvent := <-eventCh
 	require.Equal(t, "tool-plugin-before", startEvent.FilterKey)
-	require.Equal(t, "tool-plugin-after", completeEvent.FilterKey)
+	require.Equal(t, "tool-plugin-before", completeEvent.FilterKey)
 }
 
-func TestExecuteSingleToolCall_PreservesToolCallIDAcrossBareCallbackContexts(t *testing.T) {
+func TestExecuteSingleToolCall_BareCallbackContextsCanClearToolCallID(t *testing.T) {
 	pluginCallbacks := tool.NewCallbacks()
 	pluginManager := &toolCallbacksPluginManager{callbacks: pluginCallbacks}
 	pluginCallbacks.RegisterBeforeTool(func(
@@ -737,7 +737,7 @@ func TestExecuteSingleToolCall_PreservesToolCallIDAcrossBareCallbackContexts(t *
 	})
 	require.NoError(t, err)
 	require.Equal(t, model.RoleTool, msg.Role)
-	require.Equal(t, "tool-call-1", tl.toolCallID)
+	require.Empty(t, tl.toolCallID)
 }
 
 func TestExecutor_CompletionEmitErrorDoesNotFailExecution(t *testing.T) {

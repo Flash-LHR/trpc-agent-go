@@ -256,7 +256,7 @@ func TestGraphAgent_CallbackContextPropagation(t *testing.T) {
 	require.Equal(t, testValue, capturedValue, "context value should be propagated from BeforeAgent to AfterAgent")
 }
 
-func TestGraphAgent_BeforeCallbackContextOverride_PreservesInvocationAndCapture(t *testing.T) {
+func TestGraphAgent_BeforeCallbackContextOverride_CanClearCompletionCapture(t *testing.T) {
 	schema := graph.MessagesStateSchema()
 	sg := graph.NewStateGraph(schema)
 	var sawInvocation bool
@@ -302,11 +302,11 @@ func TestGraphAgent_BeforeCallbackContextOverride_PreservesInvocationAndCapture(
 	}
 
 	require.True(t, sawInvocation)
-	require.True(t, sawRawCompletion)
-	require.False(t, sawVisibleCompletion)
+	require.False(t, sawRawCompletion)
+	require.True(t, sawVisibleCompletion)
 }
 
-func TestGraphAgent_BeforeCallbackContextOverride_CannotForceCompletionCapture(t *testing.T) {
+func TestGraphAgent_BeforeCallbackContextOverride_CanForceCompletionCapture(t *testing.T) {
 	schema := graph.MessagesStateSchema()
 	sg := graph.NewStateGraph(schema)
 	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
@@ -346,6 +346,6 @@ func TestGraphAgent_BeforeCallbackContextOverride_CannotForceCompletionCapture(t
 		}
 	}
 
-	require.False(t, sawRawCompletion)
-	require.True(t, sawVisibleCompletion)
+	require.True(t, sawRawCompletion)
+	require.False(t, sawVisibleCompletion)
 }

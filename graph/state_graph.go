@@ -2699,6 +2699,12 @@ type agentEventStreamResult struct {
 	tokenUsage       *itelemetry.TokenUsage
 	interrupt        *InterruptError
 	terminalErr      error
+	terminalErrMeta  agentTerminalErrorMeta
+}
+
+type agentTerminalErrorMeta struct {
+	InvocationID string
+	FilterKey    string
 }
 
 type agentDeltaStreamTap struct {
@@ -2790,7 +2796,6 @@ func updateAgentStreamResultFromEvent(
 	ctx context.Context,
 	res *agentEventStreamResult,
 	ev *event.Event,
-	invocation *agent.Invocation,
 	tracker *itelemetry.InvokeAgentTracker,
 ) {
 	updateAgentLastResponse(res, ev)
@@ -2799,7 +2804,7 @@ func updateAgentStreamResultFromEvent(
 	updateAgentInterrupt(res, ev)
 	updateAgentFinalState(ctx, res, ev)
 	clearAgentSuccessResultOnError(res, ev)
-	clearAgentTerminalErrorOnTerminalSuccess(res, ev, invocation)
+	clearAgentTerminalErrorOnContinuedOutput(res, ev)
 	updateAgentTerminalError(res, ev)
 }
 
@@ -2878,18 +2883,61 @@ func clearAgentSuccessResultOnError(res *agentEventStreamResult, ev *event.Event
 	res.structuredOutput = nil
 }
 
-func clearAgentTerminalErrorOnTerminalSuccess(
+func clearAgentTerminalErrorOnContinuedOutput(
 	res *agentEventStreamResult,
 	ev *event.Event,
-	invocation *agent.Invocation,
 ) {
 	if res == nil ||
 		res.terminalErr == nil ||
-		!isTerminalAgentSuccessEvent(ev) ||
-		!eventMatchesInvocationFilterKey(ev, invocation) {
+		!matchesAgentTerminalErrorSource(res.terminalErrMeta, ev) ||
+		!isAgentRecoveryEvent(ev) {
 		return
 	}
 	res.terminalErr = nil
+	res.terminalErrMeta = agentTerminalErrorMeta{}
+}
+
+func isAgentRecoveryEvent(ev *event.Event) bool {
+	if isTerminalAgentSuccessEvent(ev) ||
+		isGraphCompletionEvent(ev) ||
+		IsVisibleGraphCompletionEvent(ev) {
+		return true
+	}
+	if ev == nil || ev.Response == nil || ev.Response.Error != nil {
+		return false
+	}
+	if agentDeltaFromEvent(ev) != "" {
+		return true
+	}
+	if ev.StructuredOutput != nil {
+		return true
+	}
+	for _, choice := range ev.Response.Choices {
+		if choice.Message.Role == model.RoleAssistant &&
+			choice.Message.Content != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAgentTerminalErrorSource(
+	meta agentTerminalErrorMeta,
+	ev *event.Event,
+) bool {
+	if ev == nil {
+		return false
+	}
+	if meta.InvocationID != "" && ev.InvocationID != "" {
+		return ev.InvocationID == meta.InvocationID
+	}
+	if meta.FilterKey == "" {
+		return true
+	}
+	if ev.FilterKey == "" {
+		return true
+	}
+	return ev.FilterKey == meta.FilterKey
 }
 
 func populateMissingAgentEventInvocationFields(
@@ -2916,33 +2964,24 @@ func populateMissingAgentEventInvocationFields(
 	}
 }
 
-func eventMatchesInvocationFilterKey(
-	ev *event.Event,
-	invocation *agent.Invocation,
-) bool {
-	if ev == nil || invocation == nil {
-		return true
-	}
-	filterKey := invocation.GetEventFilterKey()
-	if filterKey == "" {
-		return true
-	}
-	if ev.FilterKey == "" {
-		return false
-	}
-	return ev.FilterKey == filterKey
-}
-
 func updateAgentTerminalError(res *agentEventStreamResult, ev *event.Event) {
 	if res == nil || res.terminalErr != nil || !isTerminalAgentErrorEvent(ev) {
 		return
 	}
 	if ev.Error != nil && ev.Error.Type == agent.ErrorTypeStopAgentError {
 		res.terminalErr = agent.NewStopError(ev.Error.Message)
+		res.terminalErrMeta = agentTerminalErrorMeta{
+			InvocationID: ev.InvocationID,
+			FilterKey:    ev.FilterKey,
+		}
 		return
 	}
 	if ev.Error != nil {
 		res.terminalErr = errors.New(ev.Error.Message)
+		res.terminalErrMeta = agentTerminalErrorMeta{
+			InvocationID: ev.InvocationID,
+			FilterKey:    ev.FilterKey,
+		}
 	}
 }
 
@@ -3080,7 +3119,6 @@ func processAgentEventStream(
 				ctx,
 				&res,
 				agentEvent,
-				invocation,
 				tracker,
 			)
 			updateAgentLastResponseValue(&streamLastResponse, agentEvent)
@@ -3095,7 +3133,6 @@ func processAgentEventStream(
 			ctx,
 			&res,
 			agentEvent,
-			invocation,
 			tracker,
 		)
 		updateAgentLastResponseValue(&streamLastResponse, agentEvent)
@@ -3242,7 +3279,7 @@ func runBeforeToolPluginCallbacks(
 	}
 	result, err := callbacks.RunBeforeTool(ctx, args)
 	if result != nil && result.Context != nil {
-		ctx = restoreToolCallbackContext(ctx, result.Context)
+		ctx = result.Context
 	}
 	if result != nil && result.ModifiedArguments != nil {
 		toolCall.Function.Arguments = result.ModifiedArguments
@@ -3284,7 +3321,7 @@ func runBeforeToolCallbacks(
 	}
 	result, err := toolCallbacks.RunBeforeTool(ctx, args)
 	if result != nil && result.Context != nil {
-		ctx = restoreToolCallbackContext(ctx, result.Context)
+		ctx = result.Context
 	}
 	if result != nil && result.ModifiedArguments != nil {
 		toolCall.Function.Arguments = result.ModifiedArguments
@@ -3342,7 +3379,7 @@ func runAfterToolPluginCallbacks(
 	}
 	afterResult, err := callbacks.RunAfterTool(ctx, args)
 	if afterResult != nil && afterResult.Context != nil {
-		ctx = restoreToolCallbackContext(ctx, afterResult.Context)
+		ctx = afterResult.Context
 	}
 	if afterResult != nil && afterResult.CustomResult != nil {
 		if err != nil {
@@ -3379,7 +3416,7 @@ func runAfterToolCallbacks(
 	}
 	afterResult, err := toolCallbacks.RunAfterTool(ctx, args)
 	if afterResult != nil && afterResult.Context != nil {
-		ctx = restoreToolCallbackContext(ctx, afterResult.Context)
+		ctx = afterResult.Context
 	}
 	if afterResult != nil && afterResult.CustomResult != nil {
 		if err != nil {
@@ -4692,29 +4729,6 @@ func invocationIDOrFallback(invocation *agent.Invocation, fallback string) strin
 		return invocation.InvocationID
 	}
 	return fallback
-}
-
-func restoreToolCallbackContext(baseCtx context.Context, callbackCtx context.Context) context.Context {
-	if callbackCtx == nil {
-		return baseCtx
-	}
-	restoredCtx := callbackCtx
-	if invocation, ok := agent.InvocationFromContext(callbackCtx); !ok || invocation == nil {
-		if invocation, ok := agent.InvocationFromContext(baseCtx); ok && invocation != nil {
-			restoredCtx = agent.NewInvocationContext(restoredCtx, invocation)
-		}
-	}
-	if ShouldCaptureGraphCompletion(baseCtx) {
-		restoredCtx = WithGraphCompletionCapture(restoredCtx)
-	} else {
-		restoredCtx = WithoutGraphCompletionCapture(restoredCtx)
-	}
-	if toolCallID, ok := tool.ToolCallIDFromContext(baseCtx); ok && toolCallID != "" {
-		if _, ok := tool.ToolCallIDFromContext(restoredCtx); !ok {
-			restoredCtx = context.WithValue(restoredCtx, tool.ContextKeyToolCallID{}, toolCallID)
-		}
-	}
-	return restoredCtx
 }
 
 // emitToolStartEvent emits a tool execution start event.

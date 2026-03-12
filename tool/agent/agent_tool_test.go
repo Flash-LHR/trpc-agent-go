@@ -736,13 +736,13 @@ func TestTool_Call_DisableGraphExecutorEvents_SuppressesBarrierEvents(t *testing
 	require.Equal(t, "child-final", resultText)
 }
 
-func TestTool_Call_VisibleCompletionSnapshotReplacesPriorAssistantText(t *testing.T) {
+func TestTool_Call_VisibleCompletionSnapshot_PreservesLegacyConcatenation(t *testing.T) {
 	at := NewTool(&assistantThenVisibleCompletionAgent{name: "visible-agent"})
 	result, err := at.Call(context.Background(), []byte(`{"request":"ignored"}`))
 	require.NoError(t, err)
 	resultText, ok := result.(string)
 	require.True(t, ok)
-	require.Equal(t, "child-final", resultText)
+	require.Equal(t, "draftchild-finalchild-final", resultText)
 }
 
 func TestTool_DefaultSkipSummarization(t *testing.T) {
@@ -2805,10 +2805,27 @@ func TestTool_StreamableCall_RunErrorReturnsStreamError(t *testing.T) {
 	require.Equal(t, io.EOF, err)
 }
 
-func TestTool_StreamableCall_RunErrorWithToolCallIDReturnsStreamErrorOnly(t *testing.T) {
+func TestTool_StreamableCall_RunErrorWithToolCallIDReturnsPlainTextByDefault(t *testing.T) {
 	at := NewTool(&errorMockAgent{name: "err-agent"}, WithStreamInner(true))
 	ctx := context.WithValue(
 		context.Background(),
+		tool.ContextKeyToolCallID{},
+		"call-1",
+	)
+	r, err := at.StreamableCall(ctx, []byte(`{}`))
+	require.NoError(t, err)
+	defer r.Close()
+	chunk, err := r.Recv()
+	require.NoError(t, err)
+	require.Equal(t, "agent tool run error: boom", chunk.Content)
+	_, err = r.Recv()
+	require.Equal(t, io.EOF, err)
+}
+
+func TestTool_StreamableCall_RunErrorWithStructuredStreamErrorsReturnsErrorEvent(t *testing.T) {
+	at := NewTool(&errorMockAgent{name: "err-agent"}, WithStreamInner(true))
+	ctx := context.WithValue(
+		tool.WithStructuredStreamErrors(context.Background()),
 		tool.ContextKeyToolCallID{},
 		"call-1",
 	)

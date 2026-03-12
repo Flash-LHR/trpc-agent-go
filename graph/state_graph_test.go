@@ -647,49 +647,79 @@ func TestAgentDeltaFromEvent(t *testing.T) {
 	}))
 }
 
-func TestClearAgentTerminalErrorOnTerminalSuccess_RequiresScopedFilterKeyMatch(
+func TestClearAgentTerminalErrorOnContinuedOutput_ClearsOnRecoveredAssistantMessage(
 	t *testing.T,
 ) {
-	inv := agent.NewInvocation(
-		agent.WithInvocationEventFilterKey("parent/child"),
-	)
 	res := agentEventStreamResult{
 		terminalErr: errors.New("boom"),
 	}
-	successWithoutFilterKey := event.NewResponseEvent(
-		inv.InvocationID,
+	recoveredEvent := event.NewResponseEvent(
+		"",
 		"child",
 		&model.Response{
-			Done: true,
 			Choices: []model.Choice{{
 				Message: model.NewAssistantMessage("ok"),
 			}},
 		},
 	)
-	clearAgentTerminalErrorOnTerminalSuccess(&res, successWithoutFilterKey, inv)
-	require.Error(t, res.terminalErr)
-	successWithFilterKey := successWithoutFilterKey.Clone()
-	successWithFilterKey.FilterKey = inv.GetEventFilterKey()
-	clearAgentTerminalErrorOnTerminalSuccess(&res, successWithFilterKey, inv)
+	clearAgentTerminalErrorOnContinuedOutput(&res, recoveredEvent)
 	require.NoError(t, res.terminalErr)
 }
 
-func TestRestoreToolCallbackContext_PreservesInvocationCaptureAndToolCallID(
+func TestProcessAgentEventStream_RecoveredErrorDoesNotFail(t *testing.T) {
+	ctx := context.Background()
+	inv := agent.NewInvocation(
+		agent.WithInvocationID("inv-recovered-error"),
+		agent.WithInvocationEventFilterKey("parent/child/grandchild"),
+	)
+	agentEvents := make(chan *event.Event, 2)
+	parentEventChan := make(chan *event.Event, 2)
+	agentEvents <- event.NewErrorEvent(
+		inv.InvocationID,
+		"child",
+		model.ErrorTypeFlowError,
+		"recoverable",
+	)
+	agentEvents <- event.NewResponseEvent(
+		inv.InvocationID,
+		"child",
+		&model.Response{
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("recovered"),
+			}},
+		},
+	)
+	close(agentEvents)
+	res, err := processAgentEventStream(
+		agent.NewInvocationContext(ctx, inv),
+		inv,
+		agentEvents,
+		nil,
+		"node",
+		State{},
+		parentEventChan,
+		"agent",
+		"",
+		&itelemetry.InvokeAgentTracker{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "recovered", res.lastResponse)
+}
+
+func TestClearAgentTerminalErrorOnContinuedOutput_IgnoresLifecycleOnlyEvents(
 	t *testing.T,
 ) {
-	inv := agent.NewInvocation(agent.WithInvocationID("inv-tool-callback"))
-	var baseCtx context.Context = agent.NewInvocationContext(context.Background(), inv)
-	baseCtx = WithGraphCompletionCapture(baseCtx)
-	baseCtx = context.WithValue(baseCtx, tool.ContextKeyToolCallID{}, "call-123")
-	restoredCtx := restoreToolCallbackContext(baseCtx, context.Background())
-	restoredInvocation, ok := agent.InvocationFromContext(restoredCtx)
-	require.True(t, ok)
-	require.NotNil(t, restoredInvocation)
-	require.Equal(t, inv.InvocationID, restoredInvocation.InvocationID)
-	require.True(t, ShouldCaptureGraphCompletion(restoredCtx))
-	toolCallID, ok := tool.ToolCallIDFromContext(restoredCtx)
-	require.True(t, ok)
-	require.Equal(t, "call-123", toolCallID)
+	res := agentEventStreamResult{
+		terminalErr: errors.New("boom"),
+	}
+	lifecycleEvent := NewNodeStartEvent(
+		WithNodeEventInvocationID("inv"),
+		WithNodeEventNodeID("node"),
+		WithNodeEventNodeType(NodeTypeAgent),
+		WithNodeEventStartTime(time.Now()),
+	)
+	clearAgentTerminalErrorOnContinuedOutput(&res, lifecycleEvent)
+	require.Error(t, res.terminalErr)
 }
 
 func TestProcessAgentEventStream_CapturesStructuredOutput(t *testing.T) {

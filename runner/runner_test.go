@@ -1704,6 +1704,39 @@ func assertSessionKeepsSingleFinalAssistantEvent(
 	require.Equal(t, 1, assistantTextCount)
 }
 
+func assertSessionPreservesRunnerCompletionText(
+	t *testing.T,
+	svc *sessioninmemory.SessionService,
+	sessionID string,
+	finalText string,
+) {
+	t.Helper()
+	sess, err := svc.GetSession(context.Background(), session.Key{
+		AppName:   "app",
+		UserID:    "u",
+		SessionID: sessionID,
+	})
+	require.NoError(t, err)
+	var assistantTextCount int
+	var sawRunnerCompletionText bool
+	for _, evt := range sess.Events {
+		if evt.Response == nil || len(evt.Response.Choices) == 0 {
+			continue
+		}
+		if evt.IsRunnerCompletion() &&
+			evt.Response.Choices[0].Message.Content == finalText {
+			sawRunnerCompletionText = true
+		}
+		for _, choice := range evt.Response.Choices {
+			if choice.Message.Content == finalText {
+				assistantTextCount++
+			}
+		}
+	}
+	require.True(t, sawRunnerCompletionText)
+	require.Equal(t, 2, assistantTextCount)
+}
+
 func TestRunner_GraphCompletion_DedupFinalChoices(t *testing.T) {
 	const (
 		appName       = "test-app"
@@ -1819,7 +1852,7 @@ func TestRunner_DisableGraphCompletionEvent_KeepsTopLevelFinalChoicesAfterChildV
 	)
 }
 
-func TestRunner_StreamModeUpdates_WithFinalModelResponses_EmptyResponseIDDedupsSessionText(
+func TestRunner_StreamModeUpdates_WithFinalModelResponses_EmptyResponseIDPreservesRunnerCompletionText(
 	t *testing.T,
 ) {
 	child := newWrappedGraphLLMEmptyIDChildAgent(t)
@@ -1846,7 +1879,7 @@ func TestRunner_StreamModeUpdates_WithFinalModelResponses_EmptyResponseIDDedupsS
 	require.NotNil(t, completion)
 	require.Len(t, completion.Response.Choices, 1)
 	require.Equal(t, "empty-id-final", completion.Response.Choices[0].Message.Content)
-	assertSessionKeepsSingleFinalAssistantEvent(
+	assertSessionPreservesRunnerCompletionText(
 		t,
 		svc,
 		"updates-mode-empty-id",
@@ -1854,7 +1887,7 @@ func TestRunner_StreamModeUpdates_WithFinalModelResponses_EmptyResponseIDDedupsS
 	)
 }
 
-func TestRunner_GraphEmitFinalModelResponses_EmptyResponseIDDedupsRunnerCompletion(
+func TestRunner_GraphEmitFinalModelResponses_EmptyResponseIDPreservesRunnerCompletionText(
 	t *testing.T,
 ) {
 	child := newWrappedGraphLLMEmptyIDChildAgent(t)
@@ -1887,7 +1920,7 @@ func TestRunner_GraphEmitFinalModelResponses_EmptyResponseIDDedupsRunnerCompleti
 	require.NotNil(t, completion)
 	require.Len(t, completion.Response.Choices, 1)
 	require.Equal(t, "empty-id-final", completion.Response.Choices[0].Message.Content)
-	assertSessionKeepsSingleFinalAssistantEvent(
+	assertSessionPreservesRunnerCompletionText(
 		t,
 		svc,
 		"messages-mode-empty-id",
@@ -3451,6 +3484,33 @@ func TestShouldClearRunnerCompletionChoicesInSession_FallsBackToChoiceSignatureW
 		Message: model.NewAssistantMessage("wrapped-final"),
 	}}
 	require.True(t, shouldClearRunnerCompletionChoicesInSession(
+		loop,
+		finalChoices,
+		nil,
+	))
+}
+
+func TestShouldClearRunnerCompletionChoicesInSession_PreservesLegacyChoicesWithoutHiddenCompletion(
+	t *testing.T,
+) {
+	loop := &eventLoopContext{
+		invocation: agent.NewInvocation(
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithGraphEmitFinalModelResponses(true),
+			)),
+		),
+		filteredPersistedAssistantChoiceSignatures: map[string]struct{}{
+			assistantChoiceSignature([]model.Choice{{
+				Index:   0,
+				Message: model.NewAssistantMessage("wrapped-final"),
+			}}): {},
+		},
+	}
+	finalChoices := []model.Choice{{
+		Index:   0,
+		Message: model.NewAssistantMessage("wrapped-final"),
+	}}
+	require.False(t, shouldClearRunnerCompletionChoicesInSession(
 		loop,
 		finalChoices,
 		nil,

@@ -317,6 +317,43 @@ func TestGraphAgentRun_DisableTracingFastPathKeepsOuterBufferSize(t *testing.T) 
 	}
 }
 
+func TestGraphAgentRun_DisableTracingFastPath_PreservesVisibleCompletion(t *testing.T) {
+	stateGraph := graph.NewStateGraph(graph.MessagesStateSchema())
+	stateGraph.AddNode("done", func(context.Context, graph.State) (any, error) {
+		return graph.State{
+			graph.StateKeyLastResponse: "ok",
+		}, nil
+	})
+	stateGraph.SetEntryPoint("done")
+	stateGraph.SetFinishPoint("done")
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+	graphAgent, err := New("test-agent", g)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-tracing-hidden"),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableTracing(true),
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
+	)
+	events, err := graphAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	var sawRawCompletion bool
+	var sawVisibleCompletion bool
+	for evt := range events {
+		if evt != nil && evt.Done && evt.Object == graph.ObjectTypeGraphExecution {
+			sawRawCompletion = true
+		}
+		if evt != nil && evt.Done && evt.Object == model.ObjectTypeChatCompletion &&
+			len(evt.StateDelta) > 0 {
+			sawVisibleCompletion = true
+		}
+	}
+	require.False(t, sawRawCompletion)
+	require.True(t, sawVisibleCompletion)
+}
+
 func TestGraphAgentRun_DisableTracingWithCallbacksSkipsSpanCreation(t *testing.T) {
 	recorder := useSpanRecorder(t)
 	stateGraph := graph.NewStateGraph(graph.MessagesStateSchema())
@@ -1881,18 +1918,6 @@ func TestGraphAgent_DisableGraphCompletionEvent_PreservesVisibleResponseWithoutC
 	require.Equal(t, "child-final", visibleEvent.Response.Choices[0].Message.Content)
 	require.Equal(t, []byte(`"child-final"`), visibleEvent.StateDelta[graph.StateKeyLastResponse])
 	require.Equal(t, []byte(`"child-state"`), visibleEvent.StateDelta["child_state"])
-}
-
-func TestRestoreGraphAgentRunContext_PreservesToolCallID(t *testing.T) {
-	inv := agent.NewInvocation(agent.WithInvocationID("inv-tool-call"))
-	var baseCtx context.Context = agent.NewInvocationContext(context.Background(), inv)
-	baseCtx = graph.WithGraphCompletionCapture(baseCtx)
-	baseCtx = context.WithValue(baseCtx, tool.ContextKeyToolCallID{}, "call-123")
-	restoredCtx := restoreGraphAgentRunContext(baseCtx, context.Background(), inv)
-	toolCallID, ok := tool.ToolCallIDFromContext(restoredCtx)
-	require.True(t, ok)
-	require.Equal(t, "call-123", toolCallID)
-	require.True(t, graph.ShouldCaptureGraphCompletion(restoredCtx))
 }
 
 func TestGraphAgent_DisableGraphCompletionEvent_PreservesStateOnlyVisibleResponse(t *testing.T) {
