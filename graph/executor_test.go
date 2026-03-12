@@ -338,8 +338,8 @@ func TestExecutor_DisableGraphExecutorEvents_SuppressesEventHelpers(t *testing.T
 	exec.emitNodeCompleteEvent(ctx, invocation, execCtx, "node-a", NodeTypeFunction, 1, time.Now(), false)
 	exec.emitUpdateStepEvent(ctx, invocation, execCtx, 1)
 	exec.emitStateUpdateEvent(ctx, invocation, execCtx)
-	emitModelStartEvent(ctx, eventCh, "inv-disable-events", "test-model", "node-a", "input", time.Now())
-	emitModelCompleteEvent(ctx, eventCh, "inv-disable-events", "test-model", "node-a", "input", "output", "resp-id", time.Now(), time.Now(), nil)
+	emitModelStartEvent(ctx, invocation, invocation, eventCh, "inv-disable-events", "test-model", "node-a", "input", time.Now())
+	emitModelCompleteEvent(ctx, invocation, invocation, eventCh, "inv-disable-events", "test-model", "node-a", "input", "output", "resp-id", time.Now(), time.Now(), nil)
 	emitToolStartEvent(ctx, invocation, eventCh, "inv-disable-events", "test-tool", "tool-id", "node-a", time.Now(), []byte(`{"x":1}`), "resp-id")
 	completeEvent := emitToolCompleteEvent(ctx, invocation, toolCompleteEventConfig{
 		EventChan:    eventCh,

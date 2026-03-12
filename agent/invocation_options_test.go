@@ -468,3 +468,19 @@ func TestGraphRunOptionSetters(t *testing.T) {
 	WithEventChannelBufferSize(256)(opts)
 	require.Equal(t, 256, opts.EventChannelBufferSize)
 }
+
+func TestModelResponseRunOptionSetters(t *testing.T) {
+	opts := &RunOptions{}
+
+	WithDisableResponseUsageTracking(true)(opts)
+	require.True(t, opts.DisableResponseUsageTracking)
+
+	WithDisableModelExecutionEvents(true)(opts)
+	require.True(t, opts.DisableModelExecutionEvents)
+
+	WithDisablePartialEventIDs(true)(opts)
+	require.True(t, opts.DisablePartialEventIDs)
+
+	WithDisablePartialEventTimestamps(true)(opts)
+	require.True(t, opts.DisablePartialEventTimestamps)
+}
