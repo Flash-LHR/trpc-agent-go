@@ -811,7 +811,7 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 	)
 
 	// Execute the tool with callbacks.
-	ctx, result, modifiedArgs, err := p.executeToolWithCallbacks(ctx, invocation, toolCall, tl, eventChan)
+	ctx, result, modifiedArgs, suppressDefaultToolMessage, err := p.executeToolWithCallbacks(ctx, invocation, toolCall, tl, eventChan)
 	// Only return error when it's a stop error
 	if err != nil {
 		if _, ok := agent.AsStopError(err); ok {
@@ -825,7 +825,29 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 			return ctx, nil, modifiedArgs, true, nil
 		}
 	}
-	if shouldSuppressDefaultToolMessage(ctx, result) {
+	if suppressDefaultToolMessage {
+		if p.toolCallbacks == nil || p.toolCallbacks.ToolResultMessages == nil {
+			return ctx, nil, modifiedArgs, true, nil
+		}
+		defaultMsg := model.Message{
+			Role:   model.RoleTool,
+			ToolID: toolCall.ID,
+		}
+		customChoices, overridden, cbErr := p.applyToolResultMessagesCallback(
+			ctx,
+			toolCall,
+			tl,
+			result,
+			modifiedArgs,
+			index,
+			defaultMsg,
+		)
+		if cbErr != nil {
+			return ctx, nil, modifiedArgs, true, cbErr
+		}
+		if overridden {
+			return ctx, customChoices, modifiedArgs, true, nil
+		}
 		return ctx, nil, modifiedArgs, true, nil
 	}
 
@@ -1182,14 +1204,14 @@ func extractMetaFromResult(result any) map[string]any {
 }
 
 // executeToolWithCallbacks executes a tool with before/after callbacks.
-// Returns (context, result, modifiedArguments, error).
+// Returns (context, result, modifiedArguments, suppressDefaultToolMessage, error).
 func (p *FunctionCallResponseProcessor) executeToolWithCallbacks(
 	ctx context.Context,
 	invocation *agent.Invocation,
 	toolCall model.ToolCall,
 	tl tool.Tool,
 	eventChan chan<- *event.Event,
-) (context.Context, any, []byte, error) {
+) (context.Context, any, []byte, bool, error) {
 	// Inject tool call ID into context for callbacks to use.
 	ctx = context.WithValue(ctx, tool.ContextKeyToolCallID{}, toolCall.ID)
 	// Repair tool call arguments in place when needed.
@@ -1197,7 +1219,6 @@ func (p *FunctionCallResponseProcessor) executeToolWithCallbacks(
 		jsonrepair.RepairToolCallArgumentsInPlace(ctx, &toolCall)
 	}
 	toolDeclaration := tl.Declaration()
-
 	ctx, toolCall, customResult, err := p.runBeforeToolPluginCallbacks(
 		ctx,
 		invocation,
@@ -1205,26 +1226,24 @@ func (p *FunctionCallResponseProcessor) executeToolWithCallbacks(
 		toolDeclaration,
 	)
 	if err != nil {
-		return ctx, nil, toolCall.Function.Arguments, err
+		return ctx, nil, toolCall.Function.Arguments, false, err
 	}
 	if customResult != nil {
-		return ctx, customResult, toolCall.Function.Arguments, nil
+		return ctx, customResult, toolCall.Function.Arguments, false, nil
 	}
-
 	ctx, toolCall, customResult, err = p.runBeforeToolCallbacks(
 		ctx,
 		toolCall,
 		toolDeclaration,
 	)
 	if err != nil {
-		return ctx, nil, toolCall.Function.Arguments, err
+		return ctx, nil, toolCall.Function.Arguments, false, err
 	}
 	if customResult != nil {
-		return ctx, customResult, toolCall.Function.Arguments, nil
+		return ctx, customResult, toolCall.Function.Arguments, false, nil
 	}
-
 	// Execute the actual tool.
-	ctx, toolResult, toolErr := p.executeTool(
+	ctx, toolResult, suppressDefaultToolMessage, toolErr := p.executeTool(
 		ctx,
 		invocation,
 		toolCall,
@@ -1242,7 +1261,6 @@ func (p *FunctionCallResponseProcessor) executeToolWithCallbacks(
 			toolErr,
 		)
 	}
-
 	ctx, toolResult, pluginOverride, err := p.runAfterToolPluginCallbacks(
 		ctx,
 		invocation,
@@ -1252,13 +1270,14 @@ func (p *FunctionCallResponseProcessor) executeToolWithCallbacks(
 		toolErr,
 	)
 	if err != nil {
-		return ctx, toolResult, toolCall.Function.Arguments, err
+		return ctx, toolResult, toolCall.Function.Arguments, suppressDefaultToolMessage, err
 	}
-
 	if pluginOverride {
-		return ctx, toolResult, toolCall.Function.Arguments, toolErr
+		if toolResult != nil {
+			suppressDefaultToolMessage = false
+		}
+		return ctx, toolResult, toolCall.Function.Arguments, suppressDefaultToolMessage, toolErr
 	}
-
 	ctx, toolResult, err = p.runAfterToolCallbacks(
 		ctx,
 		toolCall,
@@ -1267,10 +1286,12 @@ func (p *FunctionCallResponseProcessor) executeToolWithCallbacks(
 		toolErr,
 	)
 	if err != nil {
-		return ctx, toolResult, toolCall.Function.Arguments, err
+		return ctx, toolResult, toolCall.Function.Arguments, suppressDefaultToolMessage, err
 	}
-
-	return ctx, toolResult, toolCall.Function.Arguments, toolErr
+	if toolResult != nil {
+		suppressDefaultToolMessage = false
+	}
+	return ctx, toolResult, toolCall.Function.Arguments, suppressDefaultToolMessage, toolErr
 }
 
 // isStreamable returns true if the tool supports streaming and its stream
@@ -1291,7 +1312,7 @@ func (f *FunctionCallResponseProcessor) executeTool(
 	toolCall model.ToolCall,
 	tl tool.Tool,
 	eventChan chan<- *event.Event,
-) (context.Context, any, error) {
+) (context.Context, any, bool, error) {
 	// originalTool refers to the actual underlying tool used to determine
 	// whether streaming is supported. If tl is a NamedTool, use its
 	// inner original tool instead of the wrapper itself.
@@ -1308,9 +1329,10 @@ func (f *FunctionCallResponseProcessor) executeTool(
 	}
 	// Fallback to callable tool execution if supported.
 	if callable, ok := tl.(tool.CallableTool); ok {
-		return f.executeCallableTool(ctx, toolCall, callable)
+		ctx, result, err := f.executeCallableTool(ctx, toolCall, callable)
+		return ctx, result, false, err
 	}
-	return ctx, nil, fmt.Errorf("unsupported tool type: %T", tl)
+	return ctx, nil, false, fmt.Errorf("unsupported tool type: %T", tl)
 }
 
 // executeCallableTool executes a callable tool.
@@ -1339,7 +1361,7 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 	toolCall model.ToolCall,
 	tl tool.StreamableTool,
 	eventChan chan<- *event.Event,
-) (context.Context, any, error) {
+) (context.Context, any, bool, error) {
 	reader, err := tl.StreamableCall(ctx, toolCall.Function.Arguments)
 	if err != nil {
 		log.ErrorfContext(
@@ -1348,7 +1370,7 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 			toolCall.Function.Name,
 			err,
 		)
-		return ctx, nil, fmt.Errorf("%s: %w", ErrorStreamableToolExecution, err)
+		return ctx, nil, false, fmt.Errorf("%s: %w", ErrorStreamableToolExecution, err)
 	}
 	defer reader.Close()
 
@@ -1363,32 +1385,17 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 		eventChan,
 	)
 	if err != nil {
-		return ctx, nil, err
+		return ctx, nil, false, err
 	}
 	if finalResult.seen {
-		if finalResult.value == nil {
-			ctx = context.WithValue(
-				ctx,
-				suppressDefaultToolMessageKey{},
-				true,
-			)
-		}
-		return ctx, finalResult.value, nil
+		return ctx, finalResult.value, finalResult.value == nil, nil
 	}
 	// If we forwarded inner events, still return the merged content as the tool
 	// result so it can be recorded in the tool response message for the next LLM
 	// turn (to satisfy providers that require tool messages). The UI example
 	// suppresses printing these aggregated strings to avoid duplication; they are
 	// primarily for model consumption.
-	return ctx, tool.Merge(contents), nil
-}
-
-func shouldSuppressDefaultToolMessage(ctx context.Context, result any) bool {
-	if result != nil || ctx == nil {
-		return false
-	}
-	suppress, _ := ctx.Value(suppressDefaultToolMessageKey{}).(bool)
-	return suppress
+	return ctx, tool.Merge(contents), false, nil
 }
 
 type streamFinalResult struct {
@@ -1405,8 +1412,6 @@ type normalizedFinalResultChunk struct {
 	result     any
 	stateDelta map[string][]byte
 }
-
-type suppressDefaultToolMessageKey struct{}
 
 // consumeStream reads all chunks from the reader and processes them.
 func (f *FunctionCallResponseProcessor) consumeStream(
