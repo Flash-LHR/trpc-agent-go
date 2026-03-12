@@ -3404,7 +3404,9 @@ func TestShouldEchoFinalChoicesInCompletion_Cases(t *testing.T) {
 	})
 }
 
-func TestShouldClearRunnerCompletionChoicesInSession_FallsBackToChoiceSignature(t *testing.T) {
+func TestShouldClearRunnerCompletionChoicesInSession_DoesNotDedupMismatchedResponseID(
+	t *testing.T,
+) {
 	loop := &eventLoopContext{
 		filteredPersistedAssistantChoiceSignatures: map[string]struct{}{
 			assistantChoiceSignature([]model.Choice{{
@@ -3420,10 +3422,32 @@ func TestShouldClearRunnerCompletionChoicesInSession_FallsBackToChoiceSignature(
 	finalStateDelta := map[string][]byte{
 		graph.StateKeyLastResponseID: []byte(`"response-from-state"`),
 	}
-	require.True(t, shouldClearRunnerCompletionChoicesInSession(
+	require.False(t, shouldClearRunnerCompletionChoicesInSession(
 		loop,
 		finalChoices,
 		finalStateDelta,
+	))
+}
+
+func TestShouldClearRunnerCompletionChoicesInSession_FallsBackToChoiceSignatureWhenResponseIDMissing(
+	t *testing.T,
+) {
+	loop := &eventLoopContext{
+		filteredPersistedAssistantChoiceSignatures: map[string]struct{}{
+			assistantChoiceSignature([]model.Choice{{
+				Index:   0,
+				Message: model.NewAssistantMessage("wrapped-final"),
+			}}): {},
+		},
+	}
+	finalChoices := []model.Choice{{
+		Index:   0,
+		Message: model.NewAssistantMessage("wrapped-final"),
+	}}
+	require.True(t, shouldClearRunnerCompletionChoicesInSession(
+		loop,
+		finalChoices,
+		nil,
 	))
 }
 

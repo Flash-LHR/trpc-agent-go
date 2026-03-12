@@ -848,6 +848,11 @@ func (r *runner) recordFilteredPersistedAssistantEvent(
 	if agentEvent.Response.ID != "" {
 		loop.filteredPersistedAssistantResponseIDs[agentEvent.Response.ID] = struct{}{}
 	}
+	if graph.IsVisibleGraphCompletionEvent(agentEvent) {
+		if responseID := finalResponseIDFromStateDelta(agentEvent.StateDelta); responseID != "" {
+			loop.filteredPersistedAssistantResponseIDs[responseID] = struct{}{}
+		}
+	}
 	signature := assistantChoiceSignature(agentEvent.Response.Choices)
 	if signature == "" {
 		return
@@ -1395,9 +1400,8 @@ func shouldClearRunnerCompletionChoicesInSession(
 	}
 	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)
 	if finalResponseID != "" {
-		if _, ok := loop.filteredPersistedAssistantResponseIDs[finalResponseID]; ok {
-			return true
-		}
+		_, ok := loop.filteredPersistedAssistantResponseIDs[finalResponseID]
+		return ok
 	}
 	signature := assistantChoiceSignature(finalChoices)
 	if signature == "" {
