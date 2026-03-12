@@ -876,7 +876,11 @@ func sendStreamableCallError(
 	format string,
 	err error,
 ) {
-	_ = writer.Send(tool.StreamChunk{}, fmt.Errorf(format, err))
+	streamErr := fmt.Errorf(format, err)
+	if writer.Send(tool.StreamChunk{Content: streamErr.Error()}, nil) {
+		return
+	}
+	_ = writer.Send(tool.StreamChunk{}, streamErr)
 }
 
 // SkipSummarization exposes whether the AgentTool prefers skipping
