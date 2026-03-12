@@ -674,6 +674,24 @@ func TestClearAgentTerminalErrorOnTerminalSuccess_RequiresScopedFilterKeyMatch(
 	require.NoError(t, res.terminalErr)
 }
 
+func TestRestoreToolCallbackContext_PreservesInvocationCaptureAndToolCallID(
+	t *testing.T,
+) {
+	inv := agent.NewInvocation(agent.WithInvocationID("inv-tool-callback"))
+	var baseCtx context.Context = agent.NewInvocationContext(context.Background(), inv)
+	baseCtx = WithGraphCompletionCapture(baseCtx)
+	baseCtx = context.WithValue(baseCtx, tool.ContextKeyToolCallID{}, "call-123")
+	restoredCtx := restoreToolCallbackContext(baseCtx, context.Background())
+	restoredInvocation, ok := agent.InvocationFromContext(restoredCtx)
+	require.True(t, ok)
+	require.NotNil(t, restoredInvocation)
+	require.Equal(t, inv.InvocationID, restoredInvocation.InvocationID)
+	require.True(t, ShouldCaptureGraphCompletion(restoredCtx))
+	toolCallID, ok := tool.ToolCallIDFromContext(restoredCtx)
+	require.True(t, ok)
+	require.Equal(t, "call-123", toolCallID)
+}
+
 func TestProcessAgentEventStream_CapturesStructuredOutput(t *testing.T) {
 	ctx := context.Background()
 	agentEvents := make(chan *event.Event, 2)

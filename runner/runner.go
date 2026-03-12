@@ -1526,21 +1526,25 @@ func assistantChoiceSignature(choices []model.Choice) string {
 		Role    model.Role `json:"role"`
 		Content string     `json:"content"`
 	}
+	var signatureChoices []signatureChoice
 	for _, choice := range choices {
 		if choice.Message.Role != model.RoleAssistant ||
 			choice.Message.Content == "" {
 			continue
 		}
-		b, err := json.Marshal(signatureChoice{
+		signatureChoices = append(signatureChoices, signatureChoice{
 			Role:    choice.Message.Role,
 			Content: choice.Message.Content,
 		})
-		if err != nil {
-			return ""
-		}
-		return string(b)
 	}
-	return ""
+	if len(signatureChoices) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(signatureChoices)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 func finalResponseIDFromStateDelta(finalStateDelta map[string][]byte) string {

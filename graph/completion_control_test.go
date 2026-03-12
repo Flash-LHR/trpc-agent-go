@@ -85,17 +85,11 @@ func TestVisibleGraphCompletionEventWithDedup_DedupsByAssistantChoicesWhenRespon
 			ID:     "",
 			Object: model.ObjectTypeChatCompletion,
 			Done:   true,
-			Choices: []model.Choice{
-				{
-					Index:        1,
-					Message:      model.NewAssistantMessage("answer"),
-					FinishReason: &finishReason,
-				},
-				{
-					Index:   2,
-					Message: model.NewAssistantMessage("other"),
-				},
-			},
+			Choices: []model.Choice{{
+				Index:        1,
+				Message:      model.NewAssistantMessage("answer"),
+				FinishReason: &finishReason,
+			}},
 		},
 	})
 	raw := NewGraphCompletionEvent(
@@ -109,6 +103,38 @@ func TestVisibleGraphCompletionEventWithDedup_DedupsByAssistantChoicesWhenRespon
 	require.True(t, IsVisibleGraphCompletionEvent(visible))
 	require.Empty(t, visible.Response.Choices)
 	require.Equal(t, []byte(`"answer"`), visible.StateDelta[StateKeyLastResponse])
+}
+
+func TestVisibleGraphCompletionEventWithDedup_DoesNotDedupWhenLaterChoicesDiffer(
+	t *testing.T,
+) {
+	emitted := RecordAssistantResponseID(nil, &event.Event{
+		Response: &model.Response{
+			ID:     "",
+			Object: model.ObjectTypeChatCompletion,
+			Done:   true,
+			Choices: []model.Choice{
+				{
+					Index:   0,
+					Message: model.NewAssistantMessage("answer"),
+				},
+				{
+					Index:   1,
+					Message: model.NewAssistantMessage("other"),
+				},
+			},
+		},
+	})
+	raw := NewGraphCompletionEvent(
+		WithCompletionEventFinalState(State{
+			StateKeyLastResponse: "answer",
+		}),
+	)
+
+	visible, ok := VisibleGraphCompletionEventWithDedup(raw, emitted)
+	require.True(t, ok)
+	require.Len(t, visible.Response.Choices, 1)
+	require.Equal(t, "answer", visible.Response.Choices[0].Message.Content)
 }
 
 func TestVisibleGraphCompletionEventWithDedup_DedupsByResponseID(t *testing.T) {
@@ -257,9 +283,17 @@ func TestAssistantChoiceSignature(t *testing.T) {
 	}}))
 	require.Equal(
 		t,
-		`{"role":"assistant","content":"answer"}`,
+		`[{"role":"assistant","content":"answer"}]`,
 		assistantChoiceSignature([]model.Choice{{
 			Message: model.NewAssistantMessage("answer"),
 		}}),
+	)
+	require.Equal(
+		t,
+		`[{"role":"assistant","content":"answer"},{"role":"assistant","content":"alt"}]`,
+		assistantChoiceSignature([]model.Choice{
+			{Message: model.NewAssistantMessage("answer")},
+			{Message: model.NewAssistantMessage("alt")},
+		}),
 	)
 }

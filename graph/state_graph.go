@@ -3758,6 +3758,11 @@ func restoreToolCallbackContext(baseCtx context.Context, callbackCtx context.Con
 			restoredCtx = agent.NewInvocationContext(restoredCtx, invocation)
 		}
 	}
+	if ShouldCaptureGraphCompletion(baseCtx) {
+		restoredCtx = WithGraphCompletionCapture(restoredCtx)
+	} else {
+		restoredCtx = WithoutGraphCompletionCapture(restoredCtx)
+	}
 	if toolCallID, ok := tool.ToolCallIDFromContext(baseCtx); ok && toolCallID != "" {
 		if _, ok := tool.ToolCallIDFromContext(restoredCtx); !ok {
 			restoredCtx = context.WithValue(restoredCtx, tool.ContextKeyToolCallID{}, toolCallID)

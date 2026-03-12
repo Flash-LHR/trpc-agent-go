@@ -1651,6 +1651,45 @@ func TestGraphAgent_DisableGraphCompletionEvent_PreservesOutputWithCaptureContex
 	require.True(t, sawGraphCompletion)
 }
 
+func TestGraphAgent_DisableGraphCompletionEvent_WithCaptureContext_AfterCallbackSeesVisibleCompletion(
+	t *testing.T,
+) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+			return graph.State{graph.StateKeyLastResponse: "child-final"}, nil
+		}).
+		SetEntryPoint("done").
+		SetFinishPoint("done").
+		Compile()
+	require.NoError(t, err)
+	callbacks := agent.NewCallbacks()
+	var fullRespEvent *event.Event
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		fullRespEvent = args.FullResponseEvent
+		return nil, nil
+	})
+	ga, err := New(
+		"test-after-hidden-completion-capture-visible",
+		g,
+		WithAgentCallbacks(callbacks),
+	)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	events, err := ga.Run(graph.WithGraphCompletionCapture(context.Background()), inv)
+	require.NoError(t, err)
+	for range events {
+	}
+	require.NotNil(t, fullRespEvent)
+	require.True(t, graph.IsVisibleGraphCompletionEvent(fullRespEvent))
+	require.Len(t, fullRespEvent.Response.Choices, 1)
+	require.Equal(t, "child-final", fullRespEvent.Response.Choices[0].Message.Content)
+}
+
 func TestGraphAgent_DisableGraphCompletionEvent_PreservesVisibleResponseWithoutCallbacks(t *testing.T) {
 	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
 		AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
@@ -1687,6 +1726,18 @@ func TestGraphAgent_DisableGraphCompletionEvent_PreservesVisibleResponseWithoutC
 	require.Equal(t, "child-final", visibleEvent.Response.Choices[0].Message.Content)
 	require.Equal(t, []byte(`"child-final"`), visibleEvent.StateDelta[graph.StateKeyLastResponse])
 	require.Equal(t, []byte(`"child-state"`), visibleEvent.StateDelta["child_state"])
+}
+
+func TestRestoreGraphAgentRunContext_PreservesToolCallID(t *testing.T) {
+	inv := agent.NewInvocation(agent.WithInvocationID("inv-tool-call"))
+	var baseCtx context.Context = agent.NewInvocationContext(context.Background(), inv)
+	baseCtx = graph.WithGraphCompletionCapture(baseCtx)
+	baseCtx = context.WithValue(baseCtx, tool.ContextKeyToolCallID{}, "call-123")
+	restoredCtx := restoreGraphAgentRunContext(baseCtx, context.Background(), inv)
+	toolCallID, ok := tool.ToolCallIDFromContext(restoredCtx)
+	require.True(t, ok)
+	require.Equal(t, "call-123", toolCallID)
+	require.True(t, graph.ShouldCaptureGraphCompletion(restoredCtx))
 }
 
 func TestGraphAgent_DisableGraphCompletionEvent_PreservesStateOnlyVisibleResponse(t *testing.T) {

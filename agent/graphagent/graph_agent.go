@@ -272,6 +272,11 @@ func restoreGraphAgentRunContext(
 	} else {
 		restoredCtx = graph.WithoutGraphCompletionCapture(restoredCtx)
 	}
+	if toolCallID, ok := tool.ToolCallIDFromContext(baseCtx); ok && toolCallID != "" {
+		if _, ok := tool.ToolCallIDFromContext(restoredCtx); !ok {
+			restoredCtx = context.WithValue(restoredCtx, tool.ContextKeyToolCallID{}, toolCallID)
+		}
+	}
 	return restoredCtx
 }
 
@@ -480,12 +485,10 @@ func (ga *GraphAgent) forwardWrappedEvents(
 		if evt != nil && evt.Response != nil && !evt.Response.IsPartial {
 			fullRespEvent = evt
 		}
-		if suppressHiddenCompletion &&
-			graph.ShouldSuppressGraphCompletionEvent(
-				visibleCtx,
-				invocation,
-				evt,
-			) {
+		shouldWrapCallbackCompletion := invocation != nil &&
+			invocation.RunOptions.DisableGraphCompletionEvent &&
+			graph.IsGraphCompletionEvent(evt)
+		if shouldWrapCallbackCompletion {
 			visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwardingWithAuthor(
 				evt,
 				emittedAssistantResponseIDs,
@@ -494,11 +497,18 @@ func (ga *GraphAgent) forwardWrappedEvents(
 			if !ok {
 				continue
 			}
-			outEvt = visibleEvent
 			if callbackFullRespEvent != nil &&
 				callbackFullRespEvent.Response != nil &&
 				!callbackFullRespEvent.Response.IsPartial {
 				fullRespEvent = callbackFullRespEvent
+			}
+			if suppressHiddenCompletion &&
+				graph.ShouldSuppressGraphCompletionEvent(
+					visibleCtx,
+					invocation,
+					evt,
+				) {
+				outEvt = visibleEvent
 			}
 		}
 		if err := event.EmitEvent(ctx, wrappedChan, outEvt); err != nil {

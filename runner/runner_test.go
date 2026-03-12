@@ -3451,6 +3451,23 @@ func TestShouldClearRunnerCompletionChoicesInSession_FallsBackToChoiceSignatureW
 	))
 }
 
+func TestAssistantChoiceSignature_UsesAllAssistantChoices(t *testing.T) {
+	require.Equal(
+		t,
+		`[{"role":"assistant","content":"wrapped-final"},{"role":"assistant","content":"alt"}]`,
+		assistantChoiceSignature([]model.Choice{
+			{
+				Index:   0,
+				Message: model.NewAssistantMessage("wrapped-final"),
+			},
+			{
+				Index:   1,
+				Message: model.NewAssistantMessage("alt"),
+			},
+		}),
+	)
+}
+
 func TestRecordEmittedAssistantResponseID_Cases(t *testing.T) {
 	const (
 		appName        = "app"
