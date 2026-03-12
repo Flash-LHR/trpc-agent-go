@@ -224,9 +224,10 @@ func (a *ChainAgent) executeSubAgents(
 				}
 			}
 			if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, subEvent) {
-				if visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwarding(
+				if visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwardingWithAuthor(
 					subEvent,
 					emittedAssistantResponseIDs,
+					subInvocation.AgentName,
 				); ok {
 					if err := event.EmitEvent(ctx, eventChan, visibleEvent); err != nil {
 						return nil, tokenUsage

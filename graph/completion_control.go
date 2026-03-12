@@ -85,6 +85,16 @@ func isVisibleGraphCompletionEvent(evt *event.Event) bool {
 // VisibleGraphCompletionEvent rewrites a terminal graph completion event into a
 // caller-visible response event while preserving the final state delta.
 func VisibleGraphCompletionEvent(evt *event.Event) (*event.Event, bool) {
+	return VisibleGraphCompletionEventForAuthor(evt, "")
+}
+
+// VisibleGraphCompletionEventForAuthor rewrites a terminal graph completion
+// event into a caller-visible response event while restoring the caller-visible
+// author when one is provided.
+func VisibleGraphCompletionEventForAuthor(
+	evt *event.Event,
+	author string,
+) (*event.Event, bool) {
 	if !IsGraphCompletionEvent(evt) {
 		return nil, false
 	}
@@ -100,6 +110,9 @@ func VisibleGraphCompletionEvent(evt *event.Event) (*event.Event, bool) {
 	}
 	visible.Object = model.ObjectTypeChatCompletion
 	visible.Response.Object = model.ObjectTypeChatCompletion
+	if author != "" {
+		visible.Author = author
+	}
 	return visible, true
 }
 
@@ -139,7 +152,22 @@ func VisibleGraphCompletionEventWithDedup(
 	evt *event.Event,
 	emittedAssistantResponseIDs map[string]struct{},
 ) (*event.Event, bool) {
-	visible, ok := VisibleGraphCompletionEvent(evt)
+	return VisibleGraphCompletionEventWithDedupForAuthor(
+		evt,
+		emittedAssistantResponseIDs,
+		"",
+	)
+}
+
+// VisibleGraphCompletionEventWithDedupForAuthor rewrites a terminal graph
+// completion event into a caller-visible response event and clears duplicated
+// final choices when the corresponding assistant response was already emitted.
+func VisibleGraphCompletionEventWithDedupForAuthor(
+	evt *event.Event,
+	emittedAssistantResponseIDs map[string]struct{},
+	author string,
+) (*event.Event, bool) {
+	visible, ok := VisibleGraphCompletionEventForAuthor(evt, author)
 	if !ok {
 		return nil, false
 	}
@@ -159,16 +187,31 @@ func VisibleGraphCompletionEventsForForwarding(
 	evt *event.Event,
 	emittedAssistantResponseIDs map[string]struct{},
 ) (*event.Event, *event.Event, bool) {
-	visible, ok := VisibleGraphCompletionEventWithDedup(
+	return VisibleGraphCompletionEventsForForwardingWithAuthor(
 		evt,
 		emittedAssistantResponseIDs,
+		"",
+	)
+}
+
+// VisibleGraphCompletionEventsForForwardingWithAuthor returns the caller-visible
+// event to emit and the full completion snapshot to preserve for callbacks.
+func VisibleGraphCompletionEventsForForwardingWithAuthor(
+	evt *event.Event,
+	emittedAssistantResponseIDs map[string]struct{},
+	author string,
+) (*event.Event, *event.Event, bool) {
+	visible, ok := VisibleGraphCompletionEventWithDedupForAuthor(
+		evt,
+		emittedAssistantResponseIDs,
+		author,
 	)
 	if !ok {
 		return nil, nil, false
 	}
 	fullRespEvent := visible
 	if visibleGraphCompletionNeedsFullResponseSnapshot(evt, visible) {
-		fullRespEvent, _ = VisibleGraphCompletionEvent(evt)
+		fullRespEvent, _ = VisibleGraphCompletionEventForAuthor(evt, author)
 	}
 	return visible, fullRespEvent, true
 }

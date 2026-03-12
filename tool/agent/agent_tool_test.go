@@ -1327,6 +1327,21 @@ func TestTool_shouldMirrorEventToSession_Cases(t *testing.T) {
 	})
 }
 
+func TestTool_visibleCompletionSessionEvent_RestoresAgentAuthor(t *testing.T) {
+	rawCompletion := graph.NewGraphCompletionEvent(
+		graph.WithCompletionEventInvocationID("inv"),
+		graph.WithCompletionEventFinalState(graph.State{
+			graph.StateKeyLastResponse: "answer",
+		}),
+	)
+
+	visible := visibleCompletionSessionEvent(rawCompletion, "child-agent")
+
+	require.NotNil(t, visible)
+	require.Equal(t, "child-agent", visible.Author)
+	require.Equal(t, model.ObjectTypeChatCompletion, visible.Object)
+}
+
 func TestTool_sessionHasEventID_Cases(t *testing.T) {
 	require.False(t, sessionHasEventID(nil, "id"))
 

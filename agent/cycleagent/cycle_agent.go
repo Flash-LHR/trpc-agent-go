@@ -203,9 +203,10 @@ func (a *CycleAgent) runSubAgent(
 		}
 		escalationEvent := subEvent
 		if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, subEvent) {
-			if visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwarding(
+			if visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwardingWithAuthor(
 				subEvent,
 				emittedAssistantResponseIDs,
+				subInvocation.AgentName,
 			); ok {
 				escalationEvent = visibleEvent
 				if err := event.EmitEvent(ctx, eventChan, visibleEvent); err != nil {

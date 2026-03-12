@@ -1682,6 +1682,7 @@ func TestGraphAgent_DisableGraphCompletionEvent_PreservesVisibleResponseWithoutC
 	}
 	require.NotNil(t, visibleEvent)
 	require.Equal(t, model.ObjectTypeChatCompletion, visibleEvent.Object)
+	require.Equal(t, "test-hidden-completion-visible-response", visibleEvent.Author)
 	require.Len(t, visibleEvent.Response.Choices, 1)
 	require.Equal(t, "child-final", visibleEvent.Response.Choices[0].Message.Content)
 	require.Equal(t, []byte(`"child-final"`), visibleEvent.StateDelta[graph.StateKeyLastResponse])

@@ -207,6 +207,28 @@ func TestVisibleGraphCompletionEventsForForwarding_UsesVisibleEventWhenChoicesRe
 	require.Same(t, visible, fullRespEvent)
 }
 
+func TestVisibleGraphCompletionEventsForForwardingWithAuthor_RestoresAuthor(
+	t *testing.T,
+) {
+	raw := NewGraphCompletionEvent(
+		WithCompletionEventInvocationID("inv-1"),
+		WithCompletionEventFinalState(State{
+			StateKeyLastResponse: "answer",
+		}),
+	)
+
+	visible, fullRespEvent, ok := VisibleGraphCompletionEventsForForwardingWithAuthor(
+		raw,
+		nil,
+		"child-agent",
+	)
+	require.True(t, ok)
+	require.NotNil(t, visible)
+	require.Equal(t, "child-agent", visible.Author)
+	require.NotNil(t, fullRespEvent)
+	require.Equal(t, "child-agent", fullRespEvent.Author)
+}
+
 func TestShouldSuppressGraphCompletionEvent(t *testing.T) {
 	raw := NewGraphCompletionEvent()
 	require.False(t, ShouldSuppressGraphCompletionEvent(context.Background(), nil, raw))

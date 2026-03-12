@@ -318,9 +318,10 @@ func (a *ParallelAgent) mergeEventStreams(
 					mu.Unlock()
 				}
 				if graph.ShouldSuppressGraphCompletionEvent(visibleCtx, invocation, evt) {
-					if visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwarding(
+					if visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwardingWithAuthor(
 						evt,
 						emittedAssistantResponseIDs,
+						invocation.AgentName,
 					); ok {
 						if err := event.EmitEvent(ctx, outputChan, visibleEvent); err != nil {
 							return

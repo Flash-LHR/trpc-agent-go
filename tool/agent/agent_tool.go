@@ -801,7 +801,7 @@ func (at *Tool) capturePendingVisibleCompletion(
 	if state == nil {
 		return
 	}
-	sessionEvent := visibleCompletionSessionEvent(ev)
+	sessionEvent := visibleCompletionSessionEvent(ev, inv.AgentName)
 	if sessionEvent == nil {
 		return
 	}
@@ -909,13 +909,13 @@ func (at *Tool) updateStreamCompletionState(
 	}
 }
 
-func visibleCompletionSessionEvent(evt *event.Event) *event.Event {
+func visibleCompletionSessionEvent(evt *event.Event, author string) *event.Event {
 	if evt == nil {
 		return nil
 	}
 	visible := evt
 	if isGraphCompletionEvent(evt) {
-		rewritten, ok := graph.VisibleGraphCompletionEvent(evt)
+		rewritten, ok := graph.VisibleGraphCompletionEventForAuthor(evt, author)
 		if !ok {
 			return nil
 		}

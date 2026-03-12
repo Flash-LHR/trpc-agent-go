@@ -486,9 +486,10 @@ func (ga *GraphAgent) forwardWrappedEvents(
 				invocation,
 				evt,
 			) {
-			visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwarding(
+			visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwardingWithAuthor(
 				evt,
 				emittedAssistantResponseIDs,
+				invocation.AgentName,
 			)
 			if !ok {
 				continue

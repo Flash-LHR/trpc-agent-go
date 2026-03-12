@@ -2545,8 +2545,17 @@ func updateAgentTerminalError(res *agentEventStreamResult, ev *event.Event) {
 func isTerminalAgentErrorEvent(ev *event.Event) bool {
 	if ev == nil ||
 		ev.Response == nil ||
-		ev.Response.Error == nil ||
-		ev.Object != model.ObjectTypeError {
+		ev.Response.Error == nil {
+		return false
+	}
+	if ev.Object == ObjectTypeGraphPregelStep {
+		var metadata PregelStepMetadata
+		if err := json.Unmarshal(ev.StateDelta[MetadataKeyPregel], &metadata); err != nil {
+			return true
+		}
+		return metadata.StepNumber < 0
+	}
+	if ev.Object != model.ObjectTypeError {
 		return false
 	}
 	if len(ev.StateDelta) == 0 {
