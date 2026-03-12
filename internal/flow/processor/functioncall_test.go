@@ -2269,6 +2269,21 @@ func (e *errorDeltaTool) StateDelta(_ string, _ []byte, _ []byte) map[string][]b
 	return map[string][]byte{"x": []byte("y")}
 }
 
+type stateOnlyPlaceholderDeltaTool struct {
+	finalResultStreamTool
+	lastResultJSON []byte
+}
+
+func (t *stateOnlyPlaceholderDeltaTool) StateDeltaForInvocation(
+	_ *agent.Invocation,
+	_ string,
+	_ []byte,
+	resultJSON []byte,
+) map[string][]byte {
+	t.lastResultJSON = append([]byte(nil), resultJSON...)
+	return map[string][]byte{"provider": append([]byte(nil), resultJSON...)}
+}
+
 func TestExecuteSingleToolCallSequential_AttachesStateDelta(t *testing.T) {
 	p := NewFunctionCallResponseProcessor(false, nil)
 	inv := &agent.Invocation{AgentName: "a", Model: &mockModel{}}
@@ -2312,6 +2327,40 @@ func TestExecuteSingleToolCallSequential_SkipsStateDeltaOnError(
 	require.NoError(t, err)
 	require.NotNil(t, ev)
 	require.Empty(t, ev.StateDelta)
+}
+
+func TestExecuteSingleToolCallSequential_StateOnlyPlaceholderSkipsStateDeltaProvider(t *testing.T) {
+	p := NewFunctionCallResponseProcessor(false, nil)
+	inv := &agent.Invocation{
+		AgentName:    "a",
+		InvocationID: "inv-state-only-provider",
+		Model:        &mockModel{},
+	}
+	rsp := &model.Response{Choices: []model.Choice{{}}}
+	tc := model.ToolCall{
+		ID: "c1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "state-only",
+			Arguments: []byte(`{}`),
+		},
+	}
+	tl := &stateOnlyPlaceholderDeltaTool{
+		finalResultStreamTool: finalResultStreamTool{
+			name:       "state-only",
+			stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
+		},
+	}
+	tools := map[string]tool.Tool{"state-only": tl}
+	ch := make(chan *event.Event, 4)
+	ev, err := p.executeSingleToolCallSequential(
+		context.Background(), inv, rsp, tools, ch, 0, tc,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, ev)
+	require.Len(t, ev.Choices, 1)
+	require.Equal(t, "{}", ev.Choices[0].Message.Content)
+	require.Nil(t, tl.lastResultJSON)
+	require.NotContains(t, ev.StateDelta, "provider")
 }
 
 func TestSubAgentCall(t *testing.T) {

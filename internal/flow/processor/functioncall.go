@@ -383,7 +383,7 @@ func (p *FunctionCallResponseProcessor) executeSingleToolCallSequential(
 		agentName string
 	)
 	// Attach state delta if the tool provides it.
-	if err == nil {
+	if err == nil && !hasSyntheticStateOnlyToolChoice(ctx) {
 		if tl, ok := tools[toolCall.Function.Name]; ok {
 			// Use the first choice as the canonical tool result for state
 			// delta.
@@ -835,6 +835,7 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 		defaultChoices := []model.Choice{
 			{Index: index, Message: defaultToolChoiceMsg},
 		}
+		ctx = markSyntheticStateOnlyToolChoice(ctx)
 		if p.toolCallbacks == nil || p.toolCallbacks.ToolResultMessages == nil {
 			return ctx, defaultChoices, modifiedArgs, true, nil
 		}
@@ -1416,6 +1417,20 @@ type streamInnerEventState struct {
 type normalizedFinalResultChunk struct {
 	result     any
 	stateDelta map[string][]byte
+}
+
+type syntheticStateOnlyToolChoiceKey struct{}
+
+func markSyntheticStateOnlyToolChoice(ctx context.Context) context.Context {
+	return context.WithValue(ctx, syntheticStateOnlyToolChoiceKey{}, true)
+}
+
+func hasSyntheticStateOnlyToolChoice(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	synthetic, _ := ctx.Value(syntheticStateOnlyToolChoiceKey{}).(bool)
+	return synthetic
 }
 
 // consumeStream reads all chunks from the reader and processes them.
