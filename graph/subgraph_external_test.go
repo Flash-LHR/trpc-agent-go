@@ -15,12 +15,14 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/chainagent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/cycleagent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/graphagent"
+	"trpc.group/trpc-go/trpc-agent-go/agent/parallelagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -376,6 +378,78 @@ func TestSubgraph_DisableGraphCompletionEvent_ChildFailureStopsParentGraph(
 		"parent",
 		parentCompiled,
 		graphagent.WithSubAgents([]agent.Agent{childAgent}),
+	)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("hello")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	eventCh, err := parentAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	var sawChildError bool
+	var sawAfterResponse bool
+	for evt := range eventCh {
+		if evt != nil &&
+			evt.Error != nil &&
+			strings.Contains(evt.Error.Message, "child boom") {
+			sawChildError = true
+		}
+		if evt != nil &&
+			evt.Response != nil &&
+			len(evt.Response.Choices) > 0 &&
+			evt.Response.Choices[0].Message.Content == "after-ran" {
+			sawAfterResponse = true
+		}
+	}
+	require.True(t, sawChildError)
+	require.False(t, sawAfterResponse)
+}
+
+func TestSubgraph_DisableGraphCompletionEvent_ParallelChildFailureStopsParentGraph(
+	t *testing.T,
+) {
+	const (
+		childNodeName = "child"
+		afterNodeName = "after"
+	)
+	failingSchema := graph.NewStateSchema().
+		AddField(graph.StateKeyLastResponse, graph.StateField{Type: reflect.TypeOf("")})
+	failingGraph := graph.NewStateGraph(failingSchema)
+	failingGraph.AddNode("boom", func(context.Context, graph.State) (any, error) {
+		return nil, errors.New("child boom")
+	})
+	failingCompiled := failingGraph.SetEntryPoint("boom").SetFinishPoint("boom").MustCompile()
+	failingChild, err := graphagent.New("failing-child", failingCompiled)
+	require.NoError(t, err)
+	successSchema := graph.NewStateSchema().
+		AddField(graph.StateKeyLastResponse, graph.StateField{Type: reflect.TypeOf("")})
+	successGraph := graph.NewStateGraph(successSchema)
+	successGraph.AddNode("done", func(context.Context, graph.State) (any, error) {
+		time.Sleep(50 * time.Millisecond)
+		return graph.State{graph.StateKeyLastResponse: "ok"}, nil
+	})
+	successCompiled := successGraph.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	successChild, err := graphagent.New("success-child", successCompiled)
+	require.NoError(t, err)
+	parallelChild := parallelagent.New(
+		childNodeName,
+		parallelagent.WithSubAgents([]agent.Agent{failingChild, successChild}),
+	)
+	parentSchema := graph.NewStateSchema().
+		AddField(graph.StateKeyLastResponse, graph.StateField{Type: reflect.TypeOf("")})
+	parentGraph := graph.NewStateGraph(parentSchema)
+	parentGraph.AddAgentNode(childNodeName)
+	parentGraph.AddNode(afterNodeName, func(context.Context, graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "after-ran"}, nil
+	})
+	parentGraph.AddEdge(childNodeName, afterNodeName)
+	parentCompiled := parentGraph.SetEntryPoint(childNodeName).SetFinishPoint(afterNodeName).MustCompile()
+	parentAgent, err := graphagent.New(
+		"parent",
+		parentCompiled,
+		graphagent.WithSubAgents([]agent.Agent{parallelChild}),
 	)
 	require.NoError(t, err)
 	invocation := agent.NewInvocation(

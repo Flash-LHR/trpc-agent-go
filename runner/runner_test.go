@@ -1774,6 +1774,51 @@ func TestRunner_GraphCompletion_DifferentResponseIDDoesNotDedupBySignature(t *te
 	require.Equal(t, "answer", completion.Response.Choices[0].Message.Content)
 }
 
+func TestRunner_DisableGraphCompletionEvent_KeepsTopLevelFinalChoicesAfterChildVisibleCompletion(
+	t *testing.T,
+) {
+	const sessionID = "session-child-visible-top-final"
+	sessionService := sessioninmemory.NewSessionService()
+	ag := &childVisibleThenTopGraphCompletionAgent{name: "root-agent"}
+	r := NewRunner("app", ag, WithSessionService(sessionService))
+	ch, err := r.Run(
+		context.Background(),
+		"user",
+		sessionID,
+		model.NewUserMessage(""),
+		agent.WithDisableGraphCompletionEvent(true),
+	)
+	require.NoError(t, err)
+
+	var childVisibleCount int
+	var completion *event.Event
+	for e := range ch {
+		if graph.IsVisibleGraphCompletionEvent(e) &&
+			e.Response != nil &&
+			len(e.Response.Choices) > 0 &&
+			e.Response.Choices[0].Message.Content == "child:hello" {
+			childVisibleCount++
+		}
+		if e.Object == model.ObjectTypeRunnerCompletion {
+			completion = e
+		}
+	}
+	require.Equal(t, 1, childVisibleCount)
+	require.NotNil(t, completion)
+	require.NotNil(t, completion.StateDelta)
+	require.Equal(
+		t,
+		`"top:child:hello"`,
+		string(completion.StateDelta[graph.StateKeyLastResponse]),
+	)
+	require.Len(t, completion.Response.Choices, 1)
+	require.Equal(
+		t,
+		"top:child:hello",
+		completion.Response.Choices[0].Message.Content,
+	)
+}
+
 func TestRunner_StreamModeUpdates_WithFinalModelResponses_EmptyResponseIDDedupsSessionText(
 	t *testing.T,
 ) {
@@ -2172,6 +2217,10 @@ type mismatchedIDGraphCompletionAgent struct {
 	assistantText string
 }
 
+type childVisibleThenTopGraphCompletionAgent struct {
+	name string
+}
+
 func (m *dedupGraphCompletionAgent) Info() agent.Info {
 	return agent.Info{
 		Name:        m.name,
@@ -2260,6 +2309,21 @@ func (m *mismatchedIDGraphCompletionAgent) FindSubAgent(name string) agent.Agent
 
 func (m *mismatchedIDGraphCompletionAgent) Tools() []tool.Tool { return nil }
 
+func (m *childVisibleThenTopGraphCompletionAgent) Info() agent.Info {
+	return agent.Info{
+		Name:        m.name,
+		Description: "Mock agent for child visible completion followed by top graph completion",
+	}
+}
+
+func (m *childVisibleThenTopGraphCompletionAgent) SubAgents() []agent.Agent { return nil }
+
+func (m *childVisibleThenTopGraphCompletionAgent) FindSubAgent(name string) agent.Agent {
+	return nil
+}
+
+func (m *childVisibleThenTopGraphCompletionAgent) Tools() []tool.Tool { return nil }
+
 func (m *mismatchedIDGraphCompletionAgent) Run(
 	ctx context.Context,
 	invocation *agent.Invocation,
@@ -2300,6 +2364,39 @@ func (m *mismatchedIDGraphCompletionAgent) Run(
 	}
 	eventCh <- assistantEvent
 	eventCh <- graphCompletionEvent
+	close(eventCh)
+	return eventCh, nil
+}
+
+func (m *childVisibleThenTopGraphCompletionAgent) Run(
+	ctx context.Context,
+	invocation *agent.Invocation,
+) (<-chan *event.Event, error) {
+	eventCh := make(chan *event.Event, 2)
+	childRaw := graph.NewGraphCompletionEvent(
+		graph.WithCompletionEventInvocationID(invocation.InvocationID),
+		graph.WithCompletionEventFinalState(graph.State{
+			graph.StateKeyLastResponse:   "child:hello",
+			graph.StateKeyLastResponseID: "child-visible",
+		}),
+	)
+	childVisible, ok := graph.VisibleGraphCompletionEventForAuthor(
+		childRaw,
+		"graph-child",
+	)
+	if !ok {
+		close(eventCh)
+		return eventCh, nil
+	}
+	topRaw := graph.NewGraphCompletionEvent(
+		graph.WithCompletionEventInvocationID(invocation.InvocationID),
+		graph.WithCompletionEventFinalState(graph.State{
+			graph.StateKeyLastResponse:   "top:child:hello",
+			graph.StateKeyLastResponseID: "top-final",
+		}),
+	)
+	eventCh <- childVisible
+	eventCh <- topRaw
 	close(eventCh)
 	return eventCh, nil
 }

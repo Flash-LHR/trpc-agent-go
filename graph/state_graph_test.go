@@ -362,6 +362,7 @@ func TestProcessAgentEventStream_UnmarshalErrorLogged(t *testing.T) {
 
 	res, err := processAgentEventStream(
 		ctx,
+		nil,
 		agentEvents,
 		nil,
 		"node",
@@ -411,6 +412,7 @@ func TestProcessAgentEventStream_AccumulatesTokenUsage(t *testing.T) {
 
 	res, err := processAgentEventStream(
 		ctx,
+		nil,
 		agentEvents,
 		nil,
 		"node",
@@ -474,6 +476,7 @@ func TestProcessAgentEventStream_StreamOutputWritesDeltas(t *testing.T) {
 
 	_, err = processAgentEventStream(
 		ctx,
+		inv,
 		agentEvents,
 		nil,
 		"node",
@@ -516,6 +519,7 @@ func TestProcessAgentEventStream_StreamOutputWritesFinalWhenNoDeltas(
 
 	_, err = processAgentEventStream(
 		ctx,
+		inv,
 		agentEvents,
 		nil,
 		"node",
@@ -532,7 +536,7 @@ func TestProcessAgentEventStream_StreamOutputWritesFinalWhenNoDeltas(
 	require.Equal(t, "final", string(b))
 }
 
-func TestProcessAgentEventStream_StreamOutputSkipsHiddenGraphCompletionFinal(
+func TestProcessAgentEventStream_StreamOutputWritesHiddenGraphCompletionFinal(
 	t *testing.T,
 ) {
 	inv := agent.NewInvocation(
@@ -558,6 +562,7 @@ func TestProcessAgentEventStream_StreamOutputSkipsHiddenGraphCompletionFinal(
 	close(agentEvents)
 	res, err := processAgentEventStream(
 		ctx,
+		inv,
 		agentEvents,
 		nil,
 		"node",
@@ -571,7 +576,7 @@ func TestProcessAgentEventStream_StreamOutputSkipsHiddenGraphCompletionFinal(
 	require.Equal(t, "hidden-final", res.lastResponse)
 	b, err := io.ReadAll(r)
 	require.NoError(t, err)
-	require.Empty(t, string(b))
+	require.Equal(t, "hidden-final", string(b))
 }
 
 func TestProcessAgentEventStream_StreamOutputCloseWithError(
@@ -603,6 +608,7 @@ func TestProcessAgentEventStream_StreamOutputCloseWithError(
 
 	_, err = processAgentEventStream(
 		ctx,
+		inv,
 		agentEvents,
 		nil,
 		"node",
@@ -670,6 +676,7 @@ func TestProcessAgentEventStream_CapturesStructuredOutput(t *testing.T) {
 
 	res, err := processAgentEventStream(
 		ctx,
+		nil,
 		agentEvents,
 		nil,
 		"node",

@@ -2269,6 +2269,7 @@ func NewAgentNodeFunc(agentName string, opts ...Option) NodeFunc {
 		// Process agent event stream and capture completion state.
 		streamRes, err := processAgentEventStream(
 			ctx,
+			invocation,
 			agentEventChan,
 			cfg.callbacks,
 			nodeID,
@@ -2435,6 +2436,7 @@ func updateAgentStreamResultFromEvent(
 	ctx context.Context,
 	res *agentEventStreamResult,
 	ev *event.Event,
+	invocation *agent.Invocation,
 	tracker *itelemetry.InvokeAgentTracker,
 ) {
 	updateAgentLastResponse(res, ev)
@@ -2443,7 +2445,7 @@ func updateAgentStreamResultFromEvent(
 	updateAgentInterrupt(res, ev)
 	updateAgentFinalState(ctx, res, ev)
 	clearAgentSuccessResultOnError(res, ev)
-	clearAgentTerminalErrorOnTerminalSuccess(res, ev)
+	clearAgentTerminalErrorOnTerminalSuccess(res, ev, invocation)
 	updateAgentTerminalError(res, ev)
 }
 
@@ -2522,11 +2524,32 @@ func clearAgentSuccessResultOnError(res *agentEventStreamResult, ev *event.Event
 	res.structuredOutput = nil
 }
 
-func clearAgentTerminalErrorOnTerminalSuccess(res *agentEventStreamResult, ev *event.Event) {
-	if res == nil || res.terminalErr == nil || !isTerminalAgentSuccessEvent(ev) {
+func clearAgentTerminalErrorOnTerminalSuccess(
+	res *agentEventStreamResult,
+	ev *event.Event,
+	invocation *agent.Invocation,
+) {
+	if res == nil ||
+		res.terminalErr == nil ||
+		!isTerminalAgentSuccessEvent(ev) ||
+		!eventMatchesInvocationFilterKey(ev, invocation) {
 		return
 	}
 	res.terminalErr = nil
+}
+
+func eventMatchesInvocationFilterKey(
+	ev *event.Event,
+	invocation *agent.Invocation,
+) bool {
+	if ev == nil || invocation == nil {
+		return true
+	}
+	filterKey := invocation.GetEventFilterKey()
+	if filterKey == "" || ev.FilterKey == "" {
+		return true
+	}
+	return ev.FilterKey == filterKey
 }
 
 func updateAgentTerminalError(res *agentEventStreamResult, ev *event.Event) {
@@ -2637,6 +2660,7 @@ func extractSubgraphFinalState(
 // This function handles forwarding events and capturing completion state.
 func processAgentEventStream(
 	ctx context.Context,
+	invocation *agent.Invocation,
 	agentEventChan <-chan *event.Event,
 	nodeCallbacks *NodeCallbacks,
 	nodeID string,
@@ -2670,7 +2694,14 @@ func processAgentEventStream(
 		)
 		if suppressGraphCompletion && isGraphCompletionEvent(agentEvent) {
 			tap.WriteDelta(agentEvent)
-			updateAgentStreamResultFromEvent(ctx, &res, agentEvent, tracker)
+			updateAgentStreamResultFromEvent(
+				ctx,
+				&res,
+				agentEvent,
+				invocation,
+				tracker,
+			)
+			updateAgentLastResponseValue(&streamLastResponse, agentEvent)
 			continue
 		}
 		// Forward the event to the parent event channel.
@@ -2678,7 +2709,13 @@ func processAgentEventStream(
 			return res, err
 		}
 		tap.WriteDelta(agentEvent)
-		updateAgentStreamResultFromEvent(ctx, &res, agentEvent, tracker)
+		updateAgentStreamResultFromEvent(
+			ctx,
+			&res,
+			agentEvent,
+			invocation,
+			tracker,
+		)
 		updateAgentLastResponseValue(&streamLastResponse, agentEvent)
 	}
 	if res.terminalErr != nil {

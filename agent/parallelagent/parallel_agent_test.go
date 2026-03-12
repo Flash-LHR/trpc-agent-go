@@ -298,6 +298,7 @@ func TestParallelAgent_DisableGraphCompletionEvent_PreservesVisibleChildResponse
 	}
 	require.NotNil(t, visibleEvent)
 	require.Equal(t, model.ObjectTypeChatCompletion, visibleEvent.Object)
+	require.Equal(t, "graph-child", visibleEvent.Author)
 	require.Len(t, visibleEvent.Response.Choices, 1)
 	require.Equal(t, "child-final", visibleEvent.Response.Choices[0].Message.Content)
 	require.Equal(t, []byte(`"child-final"`), visibleEvent.StateDelta[graph.StateKeyLastResponse])

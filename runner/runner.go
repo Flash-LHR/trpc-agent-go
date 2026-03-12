@@ -676,13 +676,9 @@ type eventLoopContext struct {
 	filteredPersistedAssistantResponseIDs      map[string]struct{}
 	filteredPersistedAssistantChoiceSignatures map[string]struct{}
 	emittedAssistantChoiceSignatures           map[string]struct{}
-	// visibleCompletionChoicesEmitted tracks whether this run already emitted a
-	// caller-visible completion snapshot with assistant text.
-	//
-	// When true, runner.completion should preserve state handoff but not echo
-	// the same final assistant text again.
-	visibleCompletionChoicesEmitted bool
-	streamFilter                    graph.StreamModeFilter
+	visibleCompletionResponseIDs               map[string]struct{}
+	visibleCompletionChoiceSignatures          map[string]struct{}
+	streamFilter                               graph.StreamModeFilter
 	// emittedAssistantResponseIDs tracks response IDs that already produced a
 	// non-partial assistant message event during this run.
 	//
@@ -818,10 +814,7 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 	}
 
 	r.recordEmittedAssistantResponseID(loop, agentEvent)
-	if graph.IsVisibleGraphCompletionEvent(agentEvent) &&
-		eventHasAssistantMessageContent(agentEvent) {
-		loop.visibleCompletionChoicesEmitted = true
-	}
+	r.recordVisibleCompletionEmission(loop, agentEvent)
 
 	// Emit event to output channel.
 	if err := event.EmitEvent(ctx, loop.processedEventCh, agentEvent); err != nil {
@@ -863,6 +856,32 @@ func (r *runner) recordFilteredPersistedAssistantEvent(
 		loop.filteredPersistedAssistantChoiceSignatures = make(map[string]struct{})
 	}
 	loop.filteredPersistedAssistantChoiceSignatures[signature] = struct{}{}
+}
+
+func (r *runner) recordVisibleCompletionEmission(
+	loop *eventLoopContext,
+	agentEvent *event.Event,
+) {
+	if loop == nil ||
+		agentEvent == nil ||
+		!graph.IsVisibleGraphCompletionEvent(agentEvent) ||
+		!eventHasAssistantMessageContent(agentEvent) {
+		return
+	}
+	if responseID := finalResponseIDFromStateDelta(agentEvent.StateDelta); responseID != "" {
+		if loop.visibleCompletionResponseIDs == nil {
+			loop.visibleCompletionResponseIDs = make(map[string]struct{})
+		}
+		loop.visibleCompletionResponseIDs[responseID] = struct{}{}
+	}
+	signature := assistantChoiceSignature(agentEvent.Response.Choices)
+	if signature == "" {
+		return
+	}
+	if loop.visibleCompletionChoiceSignatures == nil {
+		loop.visibleCompletionChoiceSignatures = make(map[string]struct{})
+	}
+	loop.visibleCompletionChoiceSignatures[signature] = struct{}{}
 }
 
 func (r *runner) recordRunEvent(loop *eventLoopContext) {
@@ -1440,7 +1459,7 @@ func (r *runner) shouldEchoFinalChoicesInCompletion(
 	if len(finalChoices) == 0 {
 		return false
 	}
-	if loop.visibleCompletionChoicesEmitted {
+	if visibleCompletionAlreadyEmitted(loop, finalChoices, finalStateDelta) {
 		return false
 	}
 	if loop.invocation == nil {
@@ -1462,6 +1481,27 @@ func (r *runner) shouldEchoFinalChoicesInCompletion(
 	}
 	_, alreadyEmitted := loop.emittedAssistantChoiceSignatures[signature]
 	return !alreadyEmitted
+}
+
+func visibleCompletionAlreadyEmitted(
+	loop *eventLoopContext,
+	finalChoices []model.Choice,
+	finalStateDelta map[string][]byte,
+) bool {
+	if loop == nil {
+		return false
+	}
+	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)
+	if finalResponseID != "" {
+		_, alreadyVisible := loop.visibleCompletionResponseIDs[finalResponseID]
+		return alreadyVisible
+	}
+	signature := assistantChoiceSignature(finalChoices)
+	if signature == "" {
+		return false
+	}
+	_, alreadyVisible := loop.visibleCompletionChoiceSignatures[signature]
+	return alreadyVisible
 }
 
 func cloneChoices(choices []model.Choice) []model.Choice {

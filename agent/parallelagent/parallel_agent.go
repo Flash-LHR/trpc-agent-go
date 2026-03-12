@@ -36,6 +36,11 @@ type ParallelAgent struct {
 	agentCallbacks    *agent.Callbacks
 }
 
+type subAgentEventStream struct {
+	author string
+	ch     <-chan *event.Event
+}
+
 // New creates a new ParallelAgent with the given name and options.
 // ParallelAgent executes all its sub-agents simultaneously and merges
 // their event streams into a single output channel.
@@ -129,10 +134,10 @@ func (a *ParallelAgent) startSubAgents(
 	ctx context.Context,
 	invocation *agent.Invocation,
 	eventChan chan<- *event.Event,
-) []<-chan *event.Event {
+) []subAgentEventStream {
 	// Start all sub-agents in parallel.
 	var wg sync.WaitGroup
-	eventChans := make([]<-chan *event.Event, len(a.subAgents))
+	eventStreams := make([]subAgentEventStream, len(a.subAgents))
 
 	for i, subAgent := range a.subAgents {
 		wg.Add(1)
@@ -182,13 +187,16 @@ func (a *ParallelAgent) startSubAgents(
 				return
 			}
 
-			eventChans[idx] = subEventChan
+			eventStreams[idx] = subAgentEventStream{
+				author: branchInvocation.AgentName,
+				ch:     subEventChan,
+			}
 		}(runCtx, i, subAgent)
 	}
 
 	// Wait for all sub-agents to start.
 	wg.Wait()
-	return eventChans
+	return eventStreams
 }
 
 // handleAfterAgentCallbacks handles post-execution callbacks.
@@ -269,11 +277,11 @@ func (a *ParallelAgent) executeParallelRun(
 	}
 
 	// Start sub-agents.
-	eventChans := a.startSubAgents(ctx, invocation, eventChan)
+	eventStreams := a.startSubAgents(ctx, invocation, eventChan)
 
 	// Merge events from all sub-agents and collect full response event.
 	var fullRespEvent *event.Event
-	a.mergeEventStreams(ctx, invocation, eventChans, eventChan, &fullRespEvent)
+	a.mergeEventStreams(ctx, invocation, eventStreams, eventChan, &fullRespEvent)
 
 	// Handle after agent callbacks.
 	a.handleAfterAgentCallbacks(ctx, invocation, eventChan, fullRespEvent)
@@ -284,7 +292,7 @@ func (a *ParallelAgent) executeParallelRun(
 func (a *ParallelAgent) mergeEventStreams(
 	ctx context.Context,
 	invocation *agent.Invocation,
-	eventChans []<-chan *event.Event,
+	eventStreams []subAgentEventStream,
 	outputChan chan<- *event.Event,
 	fullRespEvent **event.Event,
 ) {
@@ -293,14 +301,14 @@ func (a *ParallelAgent) mergeEventStreams(
 	visibleCtx := graph.WithoutGraphCompletionCapture(ctx)
 
 	// Start a goroutine for each input channel.
-	for _, ch := range eventChans {
-		if ch == nil {
+	for _, stream := range eventStreams {
+		if stream.ch == nil {
 			continue
 		}
 
 		runCtx := agent.CloneContext(ctx)
 		wg.Add(1)
-		go func(ctx context.Context, inputChan <-chan *event.Event) {
+		go func(ctx context.Context, stream subAgentEventStream) {
 			defer wg.Done()
 			var emittedAssistantResponseIDs map[string]struct{}
 			// Recover from potential panics during event merging.
@@ -311,7 +319,7 @@ func (a *ParallelAgent) mergeEventStreams(
 					log.Errorf("Event merging panic in parallel agent %s: %v", a.name, r)
 				}
 			}()
-			for evt := range inputChan {
+			for evt := range stream.ch {
 				if evt != nil && evt.Response != nil && !evt.Response.IsPartial {
 					mu.Lock()
 					*fullRespEvent = evt
@@ -321,7 +329,7 @@ func (a *ParallelAgent) mergeEventStreams(
 					if visibleEvent, callbackFullRespEvent, ok := graph.VisibleGraphCompletionEventsForForwardingWithAuthor(
 						evt,
 						emittedAssistantResponseIDs,
-						invocation.AgentName,
+						stream.author,
 					); ok {
 						if err := event.EmitEvent(ctx, outputChan, visibleEvent); err != nil {
 							return
@@ -348,7 +356,7 @@ func (a *ParallelAgent) mergeEventStreams(
 					evt,
 				)
 			}
-		}(runCtx, ch)
+		}(runCtx, stream)
 	}
 
 	// Wait for all goroutines to finish.
