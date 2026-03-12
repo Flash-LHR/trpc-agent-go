@@ -277,6 +277,31 @@ func TestEmitEventWithTimeout_TraceEnabled(t *testing.T) {
 	require.Same(t, evt, <-buffered)
 }
 
+func TestTryEmitReadyEvent(t *testing.T) {
+	evt := New("invocationID", "author")
+	t.Run("ready send", func(t *testing.T) {
+		ch := make(chan *Event, 1)
+		handled, err := tryEmitReadyEvent(context.Background(), ch, evt)
+		require.True(t, handled)
+		require.NoError(t, err)
+		require.Same(t, evt, <-ch)
+	})
+	t.Run("context canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		ch := make(chan *Event)
+		handled, err := tryEmitReadyEvent(ctx, ch, evt)
+		require.True(t, handled)
+		require.ErrorIs(t, err, context.Canceled)
+	})
+	t.Run("not ready", func(t *testing.T) {
+		ch := make(chan *Event)
+		handled, err := tryEmitReadyEvent(context.Background(), ch, evt)
+		require.False(t, handled)
+		require.NoError(t, err)
+	})
+}
+
 func TestEmitEventTimeoutError_Error_And_As(t *testing.T) {
 	// Verify Error() returns the message
 	msg := "emit event timeout."
