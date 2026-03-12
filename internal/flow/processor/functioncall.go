@@ -590,15 +590,17 @@ func (p *FunctionCallResponseProcessor) runParallelToolCall(
 		}
 	}
 	// Attach state delta if the tool provides it.
-	if tl, ok := tools[tc.Function.Name]; ok {
-		// Use the first choice as the canonical tool result for state delta.
-		p.attachStateDelta(
-			invocation,
-			tl,
-			modifiedArgs,
-			&choices[0],
-			toolCallResponseEvent,
-		)
+	if !hasSyntheticStateOnlyToolChoice(ctx) {
+		if tl, ok := tools[tc.Function.Name]; ok {
+			// Use the first choice as the canonical tool result for state delta.
+			p.attachStateDelta(
+				invocation,
+				tl,
+				modifiedArgs,
+				&choices[0],
+				toolCallResponseEvent,
+			)
+		}
 	}
 	itelemetry.TraceToolCall(span, sess, decl, modifiedArgs, toolCallResponseEvent, err)
 	itelemetry.ReportExecuteToolMetrics(ctx, itelemetry.ExecuteToolAttributes{

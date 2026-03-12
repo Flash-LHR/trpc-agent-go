@@ -2363,6 +2363,61 @@ func TestExecuteSingleToolCallSequential_StateOnlyPlaceholderSkipsStateDeltaProv
 	require.NotContains(t, ev.StateDelta, "provider")
 }
 
+func TestExecuteToolCallsInParallel_StateOnlyPlaceholderSkipsStateDeltaProvider(t *testing.T) {
+	p := NewFunctionCallResponseProcessor(true, nil)
+	inv := &agent.Invocation{
+		AgentName:    "a",
+		InvocationID: "inv-state-only-provider-parallel",
+		Model:        &mockModel{},
+	}
+	rsp := &model.Response{Choices: []model.Choice{{}}}
+	stateOnlyTool := &stateOnlyPlaceholderDeltaTool{
+		finalResultStreamTool: finalResultStreamTool{
+			name:       "state-only",
+			stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
+		},
+	}
+	tools := map[string]tool.Tool{
+		"state-only": stateOnlyTool,
+		"echo": &mockCallableTool{
+			declaration: &tool.Declaration{Name: "echo"},
+			callFn: func(_ context.Context, _ []byte) (any, error) {
+				return "echo-result", nil
+			},
+		},
+	}
+	toolCalls := []model.ToolCall{
+		{
+			ID: "call-state",
+			Function: model.FunctionDefinitionParam{
+				Name:      "state-only",
+				Arguments: []byte(`{}`),
+			},
+		},
+		{
+			ID: "call-echo",
+			Function: model.FunctionDefinitionParam{
+				Name:      "echo",
+				Arguments: []byte(`{}`),
+			},
+		},
+	}
+	ch := make(chan *event.Event, 4)
+	ev, err := p.executeToolCallsInParallel(
+		context.Background(),
+		inv,
+		rsp,
+		toolCalls,
+		tools,
+		ch,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, ev)
+	require.Nil(t, stateOnlyTool.lastResultJSON)
+	require.NotContains(t, ev.StateDelta, "provider")
+	require.Len(t, ev.Choices, 2)
+}
+
 func TestSubAgentCall(t *testing.T) {
 	t.Run("should unmarshal message field correctly", func(t *testing.T) {
 		input := subAgentCall{}
