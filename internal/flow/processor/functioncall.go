@@ -1383,6 +1383,11 @@ type streamInnerEventState struct {
 	pendingGraphToolErrorEvent    *event.Event
 }
 
+type normalizedFinalResultChunk struct {
+	result     any
+	stateDelta map[string][]byte
+}
+
 // consumeStream reads all chunks from the reader and processes them.
 func (f *FunctionCallResponseProcessor) consumeStream(
 	ctx context.Context,
@@ -1833,16 +1838,28 @@ func (f *FunctionCallResponseProcessor) processStreamChunk(
 	)
 }
 
-func normalizeFinalResultChunk(content any) (*tool.FinalResultChunk, bool) {
+func normalizeFinalResultChunk(content any) (*normalizedFinalResultChunk, bool) {
 	switch v := content.(type) {
 	case tool.FinalResultChunk:
-		chunk := v
-		return &chunk, true
+		return &normalizedFinalResultChunk{result: v.Result}, true
 	case *tool.FinalResultChunk:
 		if v == nil {
 			return nil, true
 		}
-		return v, true
+		return &normalizedFinalResultChunk{result: v.Result}, true
+	case tool.FinalResultStateChunk:
+		return &normalizedFinalResultChunk{
+			result:     v.Result,
+			stateDelta: cloneEventStateDelta(v.StateDelta),
+		}, true
+	case *tool.FinalResultStateChunk:
+		if v == nil {
+			return nil, true
+		}
+		return &normalizedFinalResultChunk{
+			result:     v.Result,
+			stateDelta: cloneEventStateDelta(v.StateDelta),
+		}, true
 	default:
 		return nil, false
 	}
@@ -1855,19 +1872,19 @@ func (f *FunctionCallResponseProcessor) handleFinalResultChunk(
 	eventChan chan<- *event.Event,
 	finalResult *streamFinalResult,
 	innerEventState *streamInnerEventState,
-	finalChunk *tool.FinalResultChunk,
+	finalChunk *normalizedFinalResultChunk,
 ) error {
 	if err := flushPendingGraphToolError(innerEventState, nil); err != nil {
 		return err
 	}
 	if finalChunk != nil && finalResult != nil {
 		finalResult.seen = true
-		finalResult.value = finalChunk.Result
+		finalResult.value = finalChunk.result
 	}
-	if finalChunk == nil || len(finalChunk.StateDelta) == 0 || eventChan == nil {
+	if finalChunk == nil || len(finalChunk.stateDelta) == 0 || eventChan == nil {
 		return nil
 	}
-	deltaEvent := f.buildStateDeltaToolResponseEvent(invocation, toolCall, finalChunk.StateDelta)
+	deltaEvent := f.buildStateDeltaToolResponseEvent(invocation, toolCall, finalChunk.stateDelta)
 	return agent.EmitEvent(ctx, invocation, eventChan, deltaEvent)
 }
 

@@ -1017,6 +1017,35 @@ func sessionHasAssistantContent(sess *session.Session, content string) bool {
 	return false
 }
 
+type finalChunkView struct {
+	Result     any
+	StateDelta map[string][]byte
+}
+
+func requireFinalChunkView(t *testing.T, content any) finalChunkView {
+	t.Helper()
+
+	switch v := content.(type) {
+	case tool.FinalResultChunk:
+		return finalChunkView{Result: v.Result}
+	case *tool.FinalResultChunk:
+		if v == nil {
+			require.FailNow(t, "unexpected nil final result chunk")
+		}
+		return finalChunkView{Result: v.Result}
+	case tool.FinalResultStateChunk:
+		return finalChunkView{Result: v.Result, StateDelta: v.StateDelta}
+	case *tool.FinalResultStateChunk:
+		if v == nil {
+			require.FailNow(t, "unexpected nil final result state chunk")
+		}
+		return finalChunkView{Result: v.Result, StateDelta: v.StateDelta}
+	default:
+		require.FailNowf(t, "unexpected final result chunk type", "%T", content)
+		return finalChunkView{}
+	}
+}
+
 type filterKeyAgent struct {
 	name string
 	seen string
@@ -1955,10 +1984,9 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_KeepsFinalResult(t *tes
 			require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
 			continue
 		}
-		resultChunk, ok := chunk.Content.(tool.FinalResultChunk)
-		require.True(t, ok)
-		finalResult = resultChunk.Result
-		require.Equal(t, []byte(`"child-final"`), resultChunk.StateDelta[graph.StateKeyLastResponse])
+		finalChunk := requireFinalChunkView(t, chunk.Content)
+		finalResult = finalChunk.Result
+		require.Equal(t, []byte(`"child-final"`), finalChunk.StateDelta[graph.StateKeyLastResponse])
 	}
 	require.Equal(t, "child-final", finalResult)
 }
@@ -2013,7 +2041,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistant
 	defer reader.Close()
 
 	var assistantEvents int
-	var finalChunk tool.FinalResultChunk
+	var finalChunk finalChunkView
 	var sawFinalChunk bool
 	for {
 		chunk, recvErr := reader.Recv()
@@ -2028,9 +2056,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistant
 			}
 			continue
 		}
-		resultChunk, ok := chunk.Content.(tool.FinalResultChunk)
-		require.True(t, ok)
-		finalChunk = resultChunk
+		finalChunk = requireFinalChunkView(t, chunk.Content)
 		sawFinalChunk = true
 	}
 
@@ -2062,7 +2088,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistant
 	require.NoError(t, err)
 	defer reader.Close()
 
-	var finalChunk tool.FinalResultChunk
+	var finalChunk finalChunkView
 	var sawFinalChunk bool
 	for {
 		chunk, recvErr := reader.Recv()
@@ -2073,9 +2099,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistant
 		if _, ok := chunk.Content.(*event.Event); ok {
 			continue
 		}
-		resultChunk, ok := chunk.Content.(tool.FinalResultChunk)
-		require.True(t, ok)
-		finalChunk = resultChunk
+		finalChunk = requireFinalChunkView(t, chunk.Content)
 		sawFinalChunk = true
 	}
 
@@ -2102,7 +2126,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_SuppressesStateOnlyComp
 	defer reader.Close()
 	eventChunks := 0
 	resultChunks := 0
-	var finalChunk tool.FinalResultChunk
+	var finalChunk finalChunkView
 	for {
 		chunk, recvErr := reader.Recv()
 		if recvErr == io.EOF {
@@ -2114,9 +2138,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_SuppressesStateOnlyComp
 			require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
 			continue
 		}
-		resultChunk, ok := chunk.Content.(tool.FinalResultChunk)
-		require.True(t, ok)
-		finalChunk = resultChunk
+		finalChunk = requireFinalChunkView(t, chunk.Content)
 		resultChunks++
 	}
 	require.Zero(t, eventChunks)
@@ -2149,7 +2171,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 	require.NoError(t, err)
 	defer reader.Close()
 	var sawAfterCallback bool
-	var finalChunk tool.FinalResultChunk
+	var finalChunk finalChunkView
 	var sawFinalChunk bool
 	for {
 		chunk, recvErr := reader.Recv()
@@ -2166,9 +2188,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 			}
 			continue
 		}
-		resultChunk, ok := chunk.Content.(tool.FinalResultChunk)
-		require.True(t, ok)
-		finalChunk = resultChunk
+		finalChunk = requireFinalChunkView(t, chunk.Content)
 		sawFinalChunk = true
 	}
 	require.True(t, sawAfterCallback)
@@ -2200,7 +2220,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
 	require.NoError(t, err)
 	defer reader.Close()
-	var finalChunk tool.FinalResultChunk
+	var finalChunk finalChunkView
 	var sawFinalChunk bool
 	for {
 		chunk, recvErr := reader.Recv()
@@ -2211,9 +2231,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 		if _, ok := chunk.Content.(*event.Event); ok {
 			continue
 		}
-		resultChunk, ok := chunk.Content.(tool.FinalResultChunk)
-		require.True(t, ok)
-		finalChunk = resultChunk
+		finalChunk = requireFinalChunkView(t, chunk.Content)
 		sawFinalChunk = true
 	}
 	require.True(t, sawFinalChunk)
@@ -2240,7 +2258,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 	defer reader.Close()
 
 	var sawAfterCallback bool
-	var finalChunk tool.FinalResultChunk
+	var finalChunk finalChunkView
 	var sawFinalChunk bool
 	for {
 		chunk, recvErr := reader.Recv()
@@ -2255,9 +2273,7 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 			}
 			continue
 		}
-		resultChunk, ok := chunk.Content.(tool.FinalResultChunk)
-		require.True(t, ok)
-		finalChunk = resultChunk
+		finalChunk = requireFinalChunkView(t, chunk.Content)
 		sawFinalChunk = true
 	}
 

@@ -483,18 +483,23 @@ func assistantMessageContent(evt *event.Event) (string, bool) {
 	return message.Content, true
 }
 
-func graphCompletionFinalChunk(evt *event.Event) (tool.FinalResultChunk, bool) {
+type pendingFinalResultChunk struct {
+	Result     any
+	StateDelta map[string][]byte
+}
+
+func graphCompletionFinalChunk(evt *event.Event) (pendingFinalResultChunk, bool) {
 	if !isGraphCompletionSnapshotEvent(evt) {
-		return tool.FinalResultChunk{}, false
+		return pendingFinalResultChunk{}, false
 	}
-	chunk := tool.FinalResultChunk{
+	chunk := pendingFinalResultChunk{
 		StateDelta: cloneStateDelta(evt.StateDelta),
 	}
 	if result, ok := assistantMessageContent(evt); ok {
 		chunk.Result = result
 	}
 	if chunk.Result == nil && len(chunk.StateDelta) == 0 {
-		return tool.FinalResultChunk{}, false
+		return pendingFinalResultChunk{}, false
 	}
 	return chunk, true
 }
@@ -615,7 +620,7 @@ func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.Stre
 }
 
 type streamCompletionState struct {
-	pendingCompletionChunk     *tool.FinalResultChunk
+	pendingCompletionChunk     *pendingFinalResultChunk
 	sawGraphCompletionSnapshot bool
 	lastAssistantResponseID    string
 	lastAssistantContent       string
@@ -763,8 +768,17 @@ func (at *Tool) emitPendingCompletionChunk(
 	if state.overrideResult != "" {
 		state.pendingCompletionChunk.Result = state.overrideResult
 	}
+	var content any = tool.FinalResultChunk{
+		Result: state.pendingCompletionChunk.Result,
+	}
+	if len(state.pendingCompletionChunk.StateDelta) > 0 {
+		content = tool.FinalResultStateChunk{
+			Result:     state.pendingCompletionChunk.Result,
+			StateDelta: cloneStateDelta(state.pendingCompletionChunk.StateDelta),
+		}
+	}
 	_ = writer.Send(tool.StreamChunk{
-		Content: *state.pendingCompletionChunk,
+		Content: content,
 	}, nil)
 }
 

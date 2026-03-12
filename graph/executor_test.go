@@ -848,6 +848,29 @@ func TestHandleInterrupt_EmitsEvent_WithCanceledContext(t *testing.T) {
 	}
 }
 
+func TestHandleInterrupt_DisableGraphExecutorEvents_SuppressesInterruptEvent(t *testing.T) {
+	exec := &Executor{}
+	ch := make(chan *event.Event, 1)
+	inv := agent.NewInvocation(
+		agent.WithInvocationID("inv-int-disabled"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphExecutorEvents: true,
+		}),
+	)
+	execCtx := &ExecutionContext{InvocationID: "inv-int-disabled", EventChan: ch}
+	intr := &InterruptError{NodeID: "N1", Value: "ask"}
+
+	err := exec.handleInterrupt(context.Background(), inv, execCtx, intr, 7, nil, nil)
+	require.True(t, IsInterruptError(err))
+	require.Same(t, intr, err)
+
+	select {
+	case evt := <-ch:
+		require.FailNowf(t, "unexpected interrupt event", "%#v", evt)
+	default:
+	}
+}
+
 func TestExecutor_EvaluateRetryDecision_SetsTaskIDOnInterrupt(t *testing.T) {
 	t.Parallel()
 

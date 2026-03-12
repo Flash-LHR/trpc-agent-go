@@ -301,17 +301,19 @@ func (e *Executor) Execute(
 					string(stack),
 				)
 				workflow.Error = fmt.Errorf("executor panic: %v", r)
-				agent.EmitEvent(ctx, invocation, eventChan, NewPregelErrorEvent(
-					WithPregelEventInvocationID(invocation.InvocationID),
-					WithPregelEventStepNumber(-1),
-					WithPregelEventError(workflow.Error.Error()),
-					WithPregelEventResponseError(
-						model.ResponseErrorFromError(
-							workflow.Error,
-							model.ErrorTypeFlowError,
+				if shouldEmitPregelStepEvents(invocation) {
+					agent.EmitEvent(ctx, invocation, eventChan, NewPregelErrorEvent(
+						WithPregelEventInvocationID(invocation.InvocationID),
+						WithPregelEventStepNumber(-1),
+						WithPregelEventError(workflow.Error.Error()),
+						WithPregelEventResponseError(
+							model.ResponseErrorFromError(
+								workflow.Error,
+								model.ErrorTypeFlowError,
+							),
 						),
-					),
-				))
+					))
+				}
 			}
 			agent.GetOrCreateStreamHub(invocation).CloseAll(ctx.Err())
 			close(eventChan)
@@ -327,17 +329,19 @@ func (e *Executor) Execute(
 			}
 			workflow.Error = err
 			// Emit error event for other errors.
-			agent.EmitEvent(ctx, invocation, eventChan, NewPregelErrorEvent(
-				WithPregelEventInvocationID(invocation.InvocationID),
-				WithPregelEventStepNumber(-1),
-				WithPregelEventError(err.Error()),
-				WithPregelEventResponseError(
-					model.ResponseErrorFromError(
-						err,
-						model.ErrorTypeFlowError,
+			if shouldEmitPregelStepEvents(invocation) {
+				agent.EmitEvent(ctx, invocation, eventChan, NewPregelErrorEvent(
+					WithPregelEventInvocationID(invocation.InvocationID),
+					WithPregelEventStepNumber(-1),
+					WithPregelEventError(err.Error()),
+					WithPregelEventResponseError(
+						model.ResponseErrorFromError(
+							err,
+							model.ErrorTypeFlowError,
+						),
 					),
-				),
-			))
+				))
+			}
 		}
 	}(runCtx)
 	return outputChan, nil
@@ -1707,6 +1711,10 @@ func shouldEmitCheckpointLifecycleEvents(
 	return false
 }
 
+func shouldEmitPregelStepEvents(invocation *agent.Invocation) bool {
+	return invocation == nil || !invocation.RunOptions.DisableGraphExecutorEvents
+}
+
 // applyPendingWrites replays pending writes into channels to rebuild frontier.
 func (e *Executor) applyPendingWrites(ctx context.Context, invocation *agent.Invocation,
 	execCtx *ExecutionContext, writes []PendingWrite) {
@@ -1789,7 +1797,7 @@ func (e *Executor) planStep(ctx context.Context, invocation *agent.Invocation,
 	execCtx *ExecutionContext, step int) ([]*Task, error) {
 	var tasks []*Task
 
-	if execCtx.EventChan != nil && (invocation == nil || !invocation.RunOptions.DisableGraphExecutorEvents) {
+	if execCtx.EventChan != nil && shouldEmitPregelStepEvents(invocation) {
 		planEvent := NewPregelStepEvent(
 			WithPregelEventInvocationID(execCtx.InvocationID),
 			WithPregelEventStepNumber(step),
@@ -2320,7 +2328,7 @@ func (e *Executor) taskInvocationContext(
 // emitExecutionStepEvent emits the execution step event.
 func (e *Executor) emitExecutionStepEvent(ctx context.Context, invocation *agent.Invocation,
 	execCtx *ExecutionContext, tasks []*Task, step int) {
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if !shouldEmitPregelStepEvents(invocation) {
 		return
 	}
 	if execCtx == nil || execCtx.EventChan == nil {
@@ -3875,7 +3883,7 @@ func (e *Executor) updateChannels(ctx context.Context, invocation *agent.Invocat
 
 // emitUpdateStepEvent emits the update step event.
 func (e *Executor) emitUpdateStepEvent(ctx context.Context, invocation *agent.Invocation, execCtx *ExecutionContext, step int) {
-	if invocation != nil && invocation.RunOptions.DisableGraphExecutorEvents {
+	if !shouldEmitPregelStepEvents(invocation) {
 		return
 	}
 	if execCtx == nil || execCtx.EventChan == nil {
@@ -4202,8 +4210,9 @@ func (e *Executor) handleInterrupt(
 		WithPregelEventLineageID(GetLineageID(checkpointConfig)),
 		WithPregelEventCheckpointID(GetCheckpointID(checkpointConfig)),
 	)
-
-	agent.EmitEvent(eventCtx, invocation, execCtx.EventChan, interruptEvent)
+	if shouldEmitPregelStepEvents(invocation) {
+		agent.EmitEvent(eventCtx, invocation, execCtx.EventChan, interruptEvent)
+	}
 
 	// Return the interrupt error to propagate it to the caller.
 	return interrupt

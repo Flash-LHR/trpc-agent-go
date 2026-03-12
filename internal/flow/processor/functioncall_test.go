@@ -2905,6 +2905,16 @@ type finalResultStreamTool struct {
 	stateDelta map[string][]byte
 }
 
+func finalStreamChunkContent(result any, stateDelta map[string][]byte) any {
+	if len(stateDelta) == 0 {
+		return tool.FinalResultChunk{Result: result}
+	}
+	return tool.FinalResultStateChunk{
+		Result:     result,
+		StateDelta: stateDelta,
+	}
+}
+
 func (s *finalResultStreamTool) Declaration() *tool.Declaration {
 	return &tool.Declaration{Name: s.name}
 }
@@ -2918,10 +2928,7 @@ func (s *finalResultStreamTool) StreamableCall(
 		defer st.Writer.Close()
 		st.Writer.Send(tool.StreamChunk{Content: "line-1"}, nil)
 		st.Writer.Send(tool.StreamChunk{
-			Content: tool.FinalResultChunk{
-				Result:     s.result,
-				StateDelta: s.stateDelta,
-			},
+			Content: finalStreamChunkContent(s.result, s.stateDelta),
 		}, nil)
 	}()
 	return st.Reader, nil
@@ -2949,10 +2956,10 @@ func (s *errorThenFinalResultStreamTool) StreamableCall(
 			),
 		}, nil)
 		st.Writer.Send(tool.StreamChunk{
-			Content: tool.FinalResultChunk{
-				Result:     "stale-result",
-				StateDelta: map[string][]byte{"final": []byte(`"stale"`)},
-			},
+			Content: finalStreamChunkContent(
+				"stale-result",
+				map[string][]byte{"final": []byte(`"stale"`)},
+			),
 		}, nil)
 	}()
 	return st.Reader, nil
@@ -2981,10 +2988,10 @@ func (s *retryingNodeErrorThenFinalResultStreamTool) StreamableCall(
 			),
 		}, nil)
 		st.Writer.Send(tool.StreamChunk{
-			Content: tool.FinalResultChunk{
-				Result:     "ok",
-				StateDelta: map[string][]byte{"final": []byte(`"ok"`)},
-			},
+			Content: finalStreamChunkContent(
+				"ok",
+				map[string][]byte{"final": []byte(`"ok"`)},
+			),
 		}, nil)
 	}()
 	return st.Reader, nil
@@ -3024,10 +3031,10 @@ func (s *retryingToolResponseErrorThenFinalResultStreamTool) StreamableCall(
 			),
 		}, nil)
 		st.Writer.Send(tool.StreamChunk{
-			Content: tool.FinalResultChunk{
-				Result:     "ok",
-				StateDelta: map[string][]byte{"final": []byte(`"ok"`)},
-			},
+			Content: finalStreamChunkContent(
+				"ok",
+				map[string][]byte{"final": []byte(`"ok"`)},
+			),
 		}, nil)
 	}()
 	return st.Reader, nil
@@ -3352,7 +3359,7 @@ func TestProcessStreamChunk_PointerFinalResultChunkMarksSeen(t *testing.T) {
 		inv,
 		tc,
 		tool.StreamChunk{
-			Content: &tool.FinalResultChunk{
+			Content: &tool.FinalResultStateChunk{
 				StateDelta: map[string][]byte{"final": []byte(`"ok"`)},
 			},
 		},
