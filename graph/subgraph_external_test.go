@@ -346,3 +346,68 @@ func TestSubgraph_DisableGraphExecutorEvents_ChildFailureStopsParentGraph(t *tes
 	require.True(t, sawChildError)
 	require.False(t, sawAfterResponse)
 }
+
+func TestSubgraph_DisableGraphExecutorEvents_PreservesChildAfterCallbackCustomResponse(
+	t *testing.T,
+) {
+	const childNodeName = "child"
+	childSchema := graph.NewStateSchema().
+		AddField(graph.StateKeyLastResponse, graph.StateField{Type: reflect.TypeOf("")})
+	childGraph := graph.NewStateGraph(childSchema)
+	childGraph.AddNode("boom", func(context.Context, graph.State) (any, error) {
+		return nil, errors.New("child boom")
+	})
+	childCompiled := childGraph.SetEntryPoint("boom").SetFinishPoint("boom").MustCompile()
+	callbacks := agent.NewCallbacks()
+	callbacks.RegisterAfterAgent(func(
+		ctx context.Context,
+		args *agent.AfterAgentArgs,
+	) (*agent.AfterAgentResult, error) {
+		if args.Error == nil {
+			return nil, nil
+		}
+		return &agent.AfterAgentResult{
+			CustomResponse: &model.Response{
+				Object: model.ObjectTypeChatCompletion,
+				Done:   true,
+				Choices: []model.Choice{{
+					Message: model.NewAssistantMessage("recovered"),
+				}},
+			},
+		}, nil
+	})
+	childAgent, err := graphagent.New(
+		childNodeName,
+		childCompiled,
+		graphagent.WithAgentCallbacks(callbacks),
+	)
+	require.NoError(t, err)
+	parentSchema := graph.NewStateSchema().
+		AddField(graph.StateKeyLastResponse, graph.StateField{Type: reflect.TypeOf("")})
+	parentGraph := graph.NewStateGraph(parentSchema)
+	parentGraph.AddAgentNode(childNodeName)
+	parentCompiled := parentGraph.SetEntryPoint(childNodeName).SetFinishPoint(childNodeName).MustCompile()
+	parentAgent, err := graphagent.New(
+		"parent",
+		parentCompiled,
+		graphagent.WithSubAgents([]agent.Agent{childAgent}),
+	)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("hello")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphExecutorEvents: true,
+		}),
+	)
+	eventCh, err := parentAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	var lastEvent *event.Event
+	for evt := range eventCh {
+		lastEvent = evt
+	}
+	require.NotNil(t, lastEvent)
+	require.NotNil(t, lastEvent.Response)
+	require.Nil(t, lastEvent.Error)
+	require.Len(t, lastEvent.Response.Choices, 1)
+	require.Equal(t, "recovered", lastEvent.Response.Choices[0].Message.Content)
+}

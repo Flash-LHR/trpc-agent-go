@@ -2443,6 +2443,7 @@ func updateAgentStreamResultFromEvent(
 	updateAgentInterrupt(res, ev)
 	updateAgentFinalState(ctx, res, ev)
 	clearAgentSuccessResultOnError(res, ev)
+	clearAgentTerminalErrorOnTerminalSuccess(res, ev)
 	updateAgentTerminalError(res, ev)
 }
 
@@ -2514,6 +2515,13 @@ func clearAgentSuccessResultOnError(res *agentEventStreamResult, ev *event.Event
 	res.structuredOutput = nil
 }
 
+func clearAgentTerminalErrorOnTerminalSuccess(res *agentEventStreamResult, ev *event.Event) {
+	if res == nil || res.terminalErr == nil || !isTerminalAgentSuccessEvent(ev) {
+		return
+	}
+	res.terminalErr = nil
+}
+
 func updateAgentTerminalError(res *agentEventStreamResult, ev *event.Event) {
 	if res == nil || res.terminalErr != nil || !isTerminalAgentErrorEvent(ev) {
 		return
@@ -2551,6 +2559,16 @@ func isTerminalAgentErrorEvent(ev *event.Event) bool {
 		if _, ok := ev.StateDelta[key]; ok {
 			return false
 		}
+	}
+	return true
+}
+
+func isTerminalAgentSuccessEvent(ev *event.Event) bool {
+	if ev == nil || ev.Response == nil {
+		return false
+	}
+	if ev.Response.Error != nil || !ev.Response.Done {
+		return false
 	}
 	return true
 }
