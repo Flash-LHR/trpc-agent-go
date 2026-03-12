@@ -280,7 +280,10 @@ func TestExecuteToolCall_StreamableFinalStateOnlyResultSkipsNullToolMessage(t *t
 		eventCh,
 	)
 	require.NoError(t, err)
-	require.Len(t, choices, 0)
+	require.Len(t, choices, 1)
+	require.Equal(t, model.RoleTool, choices[0].Message.Role)
+	require.Equal(t, tc.ID, choices[0].Message.ToolID)
+	require.Empty(t, choices[0].Message.Content)
 	first := <-eventCh
 	require.NotNil(t, first)
 	require.True(t, first.IsPartial)
@@ -4505,7 +4508,10 @@ func TestExecuteToolCall_StreamableFinalStateOnlyResultAfterToolContextReplaceme
 		eventCh,
 	)
 	require.NoError(t, err)
-	require.Len(t, choices, 0)
+	require.Len(t, choices, 1)
+	require.Equal(t, model.RoleTool, choices[0].Message.Role)
+	require.Equal(t, tc.ID, choices[0].Message.ToolID)
+	require.Empty(t, choices[0].Message.Content)
 	first := <-eventCh
 	require.NotNil(t, first)
 	require.True(t, first.IsPartial)
@@ -4577,6 +4583,61 @@ func TestExecuteToolCall_StreamableFinalStateOnlyResultStillRunsToolResultMessag
 	require.Len(t, choices, 1)
 	require.Equal(t, `{"from":"callback"}`, choices[0].Message.Content)
 	require.Equal(t, tc.ID, choices[0].Message.ToolID)
+}
+
+func TestHandleFunctionCalls_PreservesStateOnlyToolChoiceAlongsideOtherToolResults(t *testing.T) {
+	ctx := context.Background()
+	p := NewFunctionCallResponseProcessor(false, nil)
+	inv := &agent.Invocation{
+		InvocationID: "inv-multi-state-only",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tools := map[string]tool.Tool{
+		"state-only": &finalResultStreamTool{
+			name:       "state-only",
+			stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
+		},
+		"echo": &mockCallableTool{
+			declaration: &tool.Declaration{Name: "echo"},
+			callFn: func(_ context.Context, _ []byte) (any, error) {
+				return "echo-result", nil
+			},
+		},
+	}
+	rsp := &model.Response{
+		Model: "m",
+		Choices: []model.Choice{{
+			Message: model.Message{
+				ToolCalls: []model.ToolCall{
+					{
+						ID: "call-state",
+						Function: model.FunctionDefinitionParam{
+							Name:      "state-only",
+							Arguments: []byte(`{}`),
+						},
+					},
+					{
+						ID: "call-echo",
+						Function: model.FunctionDefinitionParam{
+							Name:      "echo",
+							Arguments: []byte(`{}`),
+						},
+					},
+				},
+			},
+		}},
+	}
+	eventCh := make(chan *event.Event, 4)
+	evt, err := p.handleFunctionCalls(ctx, inv, rsp, tools, eventCh)
+	require.NoError(t, err)
+	require.NotNil(t, evt)
+	require.Len(t, evt.Choices, 2)
+	require.Equal(t, "call-state", evt.Choices[0].Message.ToolID)
+	require.Empty(t, evt.Choices[0].Message.Content)
+	require.Equal(t, "call-echo", evt.Choices[1].Message.ToolID)
+	require.Equal(t, `"echo-result"`, evt.Choices[1].Message.Content)
 }
 
 type mockToolSet struct {

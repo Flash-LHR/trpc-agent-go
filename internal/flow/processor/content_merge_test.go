@@ -79,15 +79,16 @@ func Test_mergeFunctionResponseEvents_FiltersAndPreservesToolIDs(t *testing.T) {
 
 	merged := p.mergeFunctionResponseEvents([]event.Event{evt1, evt2, evt3})
 	assert.NotNil(t, merged.Response, "merged response should not be nil")
-	assert.Len(t, merged.Response.Choices, 3, "only 3 valid tool result choices should remain")
+	assert.Len(t, merged.Response.Choices, 4, "all tool result choices with ToolID should remain")
 	gotIDs := merged.GetToolResultIDs()
-	assert.ElementsMatch(t, []string{"tool_a", "tool_b", "tool_c"}, gotIDs)
+	assert.ElementsMatch(t, []string{"tool_a", "tool_b", "tool_b", "tool_c"}, gotIDs)
 	contents := []string{
 		merged.Response.Choices[0].Message.Content,
 		merged.Response.Choices[1].Message.Content,
 		merged.Response.Choices[2].Message.Content,
+		merged.Response.Choices[3].Message.Content,
 	}
-	assert.ElementsMatch(t, []string{"A ok", "B ok", "C ok"}, contents)
+	assert.ElementsMatch(t, []string{"A ok", "", "B ok", "C ok"}, contents)
 }
 
 func Test_rearrangeLatestFuncResp_MergesBetweenCallAndLatest(t *testing.T) {

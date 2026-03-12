@@ -1475,7 +1475,7 @@ func (p *ContentRequestProcessor) mergeFunctionResponseEvents(
 	var allChoices []model.Choice
 	for _, evt := range functionResponseEvents {
 		for _, choice := range evt.Choices {
-			if choice.Message.Content != "" && choice.Message.ToolID != "" {
+			if choice.Message.ToolID != "" {
 				allChoices = append(allChoices, choice)
 			}
 		}

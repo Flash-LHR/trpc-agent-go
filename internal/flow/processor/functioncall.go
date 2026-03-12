@@ -826,12 +826,15 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 		}
 	}
 	if suppressDefaultToolMessage {
-		if p.toolCallbacks == nil || p.toolCallbacks.ToolResultMessages == nil {
-			return ctx, nil, modifiedArgs, true, nil
-		}
 		defaultMsg := model.Message{
 			Role:   model.RoleTool,
 			ToolID: toolCall.ID,
+		}
+		defaultChoices := []model.Choice{
+			{Index: index, Message: defaultMsg},
+		}
+		if p.toolCallbacks == nil || p.toolCallbacks.ToolResultMessages == nil {
+			return ctx, defaultChoices, modifiedArgs, true, nil
 		}
 		customChoices, overridden, cbErr := p.applyToolResultMessagesCallback(
 			ctx,
@@ -848,7 +851,7 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 		if overridden {
 			return ctx, customChoices, modifiedArgs, true, nil
 		}
-		return ctx, nil, modifiedArgs, true, nil
+		return ctx, defaultChoices, modifiedArgs, true, nil
 	}
 
 	// Marshal the result to JSON for the default tool message.
