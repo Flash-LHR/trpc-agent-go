@@ -305,6 +305,49 @@ func TestDefaultPathsAreRESTful(t *testing.T) {
 	assert.Equal(t, "/evaluation/results", srv.ResultsPath())
 }
 
+func TestNewRejectsInvalidConfigAndNormalizesBasePath(t *testing.T) {
+	t.Run("missing app name", func(t *testing.T) {
+		_, err := New(
+			WithAgentEvaluator(&fakeAgentEvaluator{}),
+			WithEvalSetManager(&fakeEvalSetManager{}),
+			WithEvalResultManager(&fakeEvalResultManager{}),
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "app name")
+	})
+	t.Run("missing eval set manager", func(t *testing.T) {
+		_, err := New(
+			WithAppName("demo-app"),
+			WithAgentEvaluator(&fakeAgentEvaluator{}),
+			WithEvalResultManager(&fakeEvalResultManager{}),
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "eval set manager")
+	})
+	t.Run("missing eval result manager", func(t *testing.T) {
+		_, err := New(
+			WithAppName("demo-app"),
+			WithAgentEvaluator(&fakeAgentEvaluator{}),
+			WithEvalSetManager(&fakeEvalSetManager{}),
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "eval result manager")
+	})
+	t.Run("normalize relative base path", func(t *testing.T) {
+		srv := newTestServer(t, WithBasePath("evaluation/"))
+		assert.Equal(t, "/evaluation", srv.BasePath())
+	})
+	t.Run("normalize empty base path", func(t *testing.T) {
+		srv := newTestServer(t, WithBasePath(" "))
+		assert.Equal(t, "/evaluation", srv.BasePath())
+	})
+}
+
+func TestCloseReturnsNil(t *testing.T) {
+	srv := newTestServer(t)
+	assert.NoError(t, srv.Close())
+}
+
 func TestHandleCreateRun(t *testing.T) {
 	srv := newTestServer(t, WithAgentEvaluator(&fakeAgentEvaluator{
 		evaluate: func(ctx context.Context, evalSetID string, opt ...coreevaluation.Option) (*coreevaluation.EvaluationResult, error) {
@@ -404,6 +447,32 @@ func TestHandleRunsRejectsReadRequests(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 }
 
+func TestHandleOptionsRequests(t *testing.T) {
+	srv := newTestServer(t)
+	testCases := []struct {
+		name string
+		path string
+	}{
+		{name: "sets", path: srv.SetsPath()},
+		{name: "set detail", path: srv.SetsPath() + "/math-basic"},
+		{name: "runs", path: srv.RunsPath()},
+		{name: "runs trailing slash", path: srv.RunsPath() + "/"},
+		{name: "results", path: srv.ResultsPath()},
+		{name: "result detail", path: srv.ResultsPath() + "/result-1"},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodOptions, tc.path, nil)
+			recorder := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(recorder, req)
+			require.Equal(t, http.StatusNoContent, recorder.Code)
+			assert.Equal(t, "*", recorder.Header().Get("Access-Control-Allow-Origin"))
+			assert.Equal(t, "GET, POST, OPTIONS", recorder.Header().Get("Access-Control-Allow-Methods"))
+			assert.Equal(t, "Content-Type", recorder.Header().Get("Access-Control-Allow-Headers"))
+		})
+	}
+}
+
 func TestHandleSetQueries(t *testing.T) {
 	srv := newTestServer(t, WithEvalSetManager(&fakeEvalSetManager{
 		list: func(ctx context.Context, appName string) ([]string, error) {
@@ -467,6 +536,78 @@ func TestHandleSetQueries(t *testing.T) {
 	})
 }
 
+func TestHandleSetErrorsAndMethods(t *testing.T) {
+	t.Run("list rejects non get", func(t *testing.T) {
+		srv := newTestServer(t)
+		req := httptest.NewRequest(http.MethodPost, srv.SetsPath(), nil)
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
+		assert.Equal(t, http.MethodGet, recorder.Header().Get("Allow"))
+	})
+	t.Run("list returns internal error when list fails", func(t *testing.T) {
+		srv := newTestServer(t, WithEvalSetManager(&fakeEvalSetManager{
+			list: func(ctx context.Context, appName string) ([]string, error) {
+				return nil, errors.New("list failed")
+			},
+			get: func(ctx context.Context, appName, evalSetID string) (*evalset.EvalSet, error) {
+				return newTestEvalSet(evalSetID), nil
+			},
+		}))
+		req := httptest.NewRequest(http.MethodGet, srv.SetsPath(), nil)
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusInternalServerError, recorder.Code)
+		assert.JSONEq(t, `{"error":"internal server error"}`, recorder.Body.String())
+	})
+	t.Run("list returns error when item lookup fails", func(t *testing.T) {
+		srv := newTestServer(t, WithEvalSetManager(&fakeEvalSetManager{
+			list: func(ctx context.Context, appName string) ([]string, error) {
+				return []string{"math-basic"}, nil
+			},
+			get: func(ctx context.Context, appName, evalSetID string) (*evalset.EvalSet, error) {
+				return nil, os.ErrNotExist
+			},
+		}))
+		req := httptest.NewRequest(http.MethodGet, srv.SetsPath(), nil)
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusNotFound, recorder.Code)
+		assert.JSONEq(t, `{"error":"not found"}`, recorder.Body.String())
+	})
+	t.Run("detail rejects non get", func(t *testing.T) {
+		srv := newTestServer(t)
+		req := httptest.NewRequest(http.MethodDelete, srv.SetsPath()+"/math-basic", nil)
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
+		assert.Equal(t, http.MethodGet, recorder.Header().Get("Allow"))
+	})
+	t.Run("detail rejects blank id", func(t *testing.T) {
+		srv := newTestServer(t)
+		req := httptest.NewRequest(http.MethodGet, srv.SetsPath()+"/%20", nil)
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusNotFound, recorder.Code)
+		assert.JSONEq(t, `{"error":"not found"}`, recorder.Body.String())
+	})
+	t.Run("detail returns not found", func(t *testing.T) {
+		srv := newTestServer(t, WithEvalSetManager(&fakeEvalSetManager{
+			list: func(ctx context.Context, appName string) ([]string, error) {
+				return []string{}, nil
+			},
+			get: func(ctx context.Context, appName, evalSetID string) (*evalset.EvalSet, error) {
+				return nil, os.ErrNotExist
+			},
+		}))
+		req := httptest.NewRequest(http.MethodGet, srv.SetsPath()+"/missing", nil)
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusNotFound, recorder.Code)
+		assert.JSONEq(t, `{"error":"not found"}`, recorder.Body.String())
+	})
+}
+
 func TestHandleRunCollectionRedirectsTrailingSlash(t *testing.T) {
 	srv := newTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, srv.RunsPath()+"/", bytes.NewBufferString(`{"setId":"math-basic"}`))
@@ -474,6 +615,15 @@ func TestHandleRunCollectionRedirectsTrailingSlash(t *testing.T) {
 	srv.Handler().ServeHTTP(recorder, req)
 	require.Equal(t, http.StatusPermanentRedirect, recorder.Code)
 	assert.Equal(t, srv.RunsPath(), recorder.Header().Get("Location"))
+}
+
+func TestHandleRunCollectionRedirectPreservesQuery(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, srv.RunsPath()+"/?setId=math-basic", bytes.NewBufferString(`{"setId":"math-basic"}`))
+	recorder := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(recorder, req)
+	require.Equal(t, http.StatusPermanentRedirect, recorder.Code)
+	assert.Equal(t, srv.RunsPath()+"?setId=math-basic", recorder.Header().Get("Location"))
 }
 
 func TestHandleCreateRunRejectsUnknownFields(t *testing.T) {
@@ -492,6 +642,33 @@ func TestHandleCreateRunRejectsZeroNumRuns(t *testing.T) {
 	srv.Handler().ServeHTTP(recorder, req)
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	assert.JSONEq(t, `{"error":"numRuns must be greater than 0 when provided"}`, recorder.Body.String())
+}
+
+func TestHandleCreateRunRejectsInvalidBodies(t *testing.T) {
+	t.Run("invalid json", func(t *testing.T) {
+		srv := newTestServer(t)
+		req := httptest.NewRequest(http.MethodPost, srv.RunsPath(), bytes.NewBufferString(`{"setId":`))
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusBadRequest, recorder.Code)
+		assert.Contains(t, recorder.Body.String(), "invalid request body")
+	})
+	t.Run("multiple json values", func(t *testing.T) {
+		srv := newTestServer(t)
+		req := httptest.NewRequest(http.MethodPost, srv.RunsPath(), bytes.NewBufferString(`{"setId":"math-basic"}{"setId":"trace-basic"}`))
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusBadRequest, recorder.Code)
+		assert.JSONEq(t, `{"error":"invalid request body: request body must contain a single JSON object"}`, recorder.Body.String())
+	})
+	t.Run("empty set id", func(t *testing.T) {
+		srv := newTestServer(t)
+		req := httptest.NewRequest(http.MethodPost, srv.RunsPath(), bytes.NewBufferString(`{"setId":"   "}`))
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusBadRequest, recorder.Code)
+		assert.JSONEq(t, `{"error":"setId must not be empty"}`, recorder.Body.String())
+	})
 }
 
 func TestHandleResultQueries(t *testing.T) {
@@ -552,6 +729,78 @@ func TestHandleResultQueries(t *testing.T) {
 	})
 }
 
+func TestHandleResultErrorsAndMethods(t *testing.T) {
+	t.Run("list rejects non get", func(t *testing.T) {
+		srv := newTestServer(t)
+		req := httptest.NewRequest(http.MethodPost, srv.ResultsPath(), nil)
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
+		assert.Equal(t, http.MethodGet, recorder.Header().Get("Allow"))
+	})
+	t.Run("list returns internal error when list fails", func(t *testing.T) {
+		srv := newTestServer(t, WithEvalResultManager(&fakeEvalResultManager{
+			list: func(ctx context.Context, appName string) ([]string, error) {
+				return nil, errors.New("list failed")
+			},
+			get: func(ctx context.Context, appName, evalSetResultID string) (*evalresult.EvalSetResult, error) {
+				return newTestEvalResult(evalSetResultID, "math-basic", 1), nil
+			},
+		}))
+		req := httptest.NewRequest(http.MethodGet, srv.ResultsPath(), nil)
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusInternalServerError, recorder.Code)
+		assert.JSONEq(t, `{"error":"internal server error"}`, recorder.Body.String())
+	})
+	t.Run("list returns error when item lookup fails", func(t *testing.T) {
+		srv := newTestServer(t, WithEvalResultManager(&fakeEvalResultManager{
+			list: func(ctx context.Context, appName string) ([]string, error) {
+				return []string{"result-1"}, nil
+			},
+			get: func(ctx context.Context, appName, evalSetResultID string) (*evalresult.EvalSetResult, error) {
+				return nil, os.ErrNotExist
+			},
+		}))
+		req := httptest.NewRequest(http.MethodGet, srv.ResultsPath(), nil)
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusNotFound, recorder.Code)
+		assert.JSONEq(t, `{"error":"not found"}`, recorder.Body.String())
+	})
+	t.Run("detail rejects non get", func(t *testing.T) {
+		srv := newTestServer(t)
+		req := httptest.NewRequest(http.MethodDelete, srv.ResultsPath()+"/result-1", nil)
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
+		assert.Equal(t, http.MethodGet, recorder.Header().Get("Allow"))
+	})
+	t.Run("detail rejects blank id", func(t *testing.T) {
+		srv := newTestServer(t)
+		req := httptest.NewRequest(http.MethodGet, srv.ResultsPath()+"/%20", nil)
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusNotFound, recorder.Code)
+		assert.JSONEq(t, `{"error":"not found"}`, recorder.Body.String())
+	})
+	t.Run("detail returns not found", func(t *testing.T) {
+		srv := newTestServer(t, WithEvalResultManager(&fakeEvalResultManager{
+			list: func(ctx context.Context, appName string) ([]string, error) {
+				return []string{}, nil
+			},
+			get: func(ctx context.Context, appName, evalSetResultID string) (*evalresult.EvalSetResult, error) {
+				return nil, os.ErrNotExist
+			},
+		}))
+		req := httptest.NewRequest(http.MethodGet, srv.ResultsPath()+"/missing", nil)
+		recorder := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusNotFound, recorder.Code)
+		assert.JSONEq(t, `{"error":"not found"}`, recorder.Body.String())
+	})
+}
+
 func TestRespondStatusErrorUsesSafeMessageAndLogs(t *testing.T) {
 	srv := newTestServer(t)
 	recorder := httptest.NewRecorder()
@@ -567,4 +816,51 @@ func TestRespondStatusErrorUsesSafeMessageAndLogs(t *testing.T) {
 	assert.JSONEq(t, `{"error":"internal server error"}`, recorder.Body.String())
 	require.Len(t, logger.errorfCalls, 1)
 	assert.Contains(t, logger.errorfCalls[0], "sensitive backend detail")
+}
+
+func TestNewExecutionContext(t *testing.T) {
+	t.Run("uses cancel when timeout is zero", func(t *testing.T) {
+		ctx, cancel := newExecutionContext(context.Background(), 0)
+		defer cancel()
+		_, hasDeadline := ctx.Deadline()
+		assert.False(t, hasDeadline)
+	})
+	t.Run("uses shorter parent deadline", func(t *testing.T) {
+		parent, parentCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer parentCancel()
+		ctx, cancel := newExecutionContext(parent, time.Second)
+		defer cancel()
+		deadline, hasDeadline := ctx.Deadline()
+		require.True(t, hasDeadline)
+		parentDeadline, _ := parent.Deadline()
+		assert.WithinDuration(t, parentDeadline, deadline, 5*time.Millisecond)
+	})
+	t.Run("uses explicit timeout when shorter than parent deadline", func(t *testing.T) {
+		parent, parentCancel := context.WithTimeout(context.Background(), time.Second)
+		defer parentCancel()
+		start := time.Now()
+		ctx, cancel := newExecutionContext(parent, 20*time.Millisecond)
+		defer cancel()
+		deadline, hasDeadline := ctx.Deadline()
+		require.True(t, hasDeadline)
+		assert.WithinDuration(t, start.Add(20*time.Millisecond), deadline, 10*time.Millisecond)
+	})
+}
+
+func TestStatusCodeAndErrorMessages(t *testing.T) {
+	assert.Equal(t, http.StatusGatewayTimeout, statusCodeFromError(context.DeadlineExceeded))
+	assert.Equal(t, http.StatusRequestTimeout, statusCodeFromError(context.Canceled))
+	assert.Equal(t, http.StatusNotFound, statusCodeFromError(os.ErrNotExist))
+	assert.Equal(t, http.StatusInternalServerError, statusCodeFromError(errors.New("boom")))
+	assert.Equal(t, "evaluation timed out", errorMessageFromError(context.DeadlineExceeded))
+	assert.Equal(t, "evaluation canceled", errorMessageFromError(context.Canceled))
+	assert.Equal(t, "not found", errorMessageFromError(os.ErrNotExist))
+	assert.Equal(t, "internal server error", errorMessageFromError(errors.New("boom")))
+}
+
+func TestValidateRunEvaluationRequest(t *testing.T) {
+	require.EqualError(t, validateRunEvaluationRequest(nil), "request must not be nil")
+	require.EqualError(t, validateRunEvaluationRequest(&RunEvaluationRequest{SetID: "   "}), "setId must not be empty")
+	require.EqualError(t, validateRunEvaluationRequest(&RunEvaluationRequest{SetID: "math-basic", NumRuns: intPtr(-1)}), "numRuns must be greater than 0 when provided")
+	assert.NoError(t, validateRunEvaluationRequest(&RunEvaluationRequest{SetID: "math-basic"}))
 }
