@@ -2448,7 +2448,14 @@ func updateAgentStreamResultFromEvent(
 }
 
 func updateAgentLastResponse(res *agentEventStreamResult, ev *event.Event) {
-	if res == nil || ev == nil || ev.Response == nil {
+	if res == nil {
+		return
+	}
+	updateAgentLastResponseValue(&res.lastResponse, ev)
+}
+
+func updateAgentLastResponseValue(lastResponse *string, ev *event.Event) {
+	if lastResponse == nil || ev == nil || ev.Response == nil {
 		return
 	}
 	if len(ev.Response.Choices) == 0 {
@@ -2458,7 +2465,7 @@ func updateAgentLastResponse(res *agentEventStreamResult, ev *event.Event) {
 	if msg == "" {
 		return
 	}
-	res.lastResponse = msg
+	*lastResponse = msg
 }
 
 func updateAgentStructuredOutput(res *agentEventStreamResult, ev *event.Event) {
@@ -2636,8 +2643,8 @@ func processAgentEventStream(
 	parentInvocation, _ := agent.InvocationFromContext(ctx)
 	suppressGraphCompletion := parentInvocation != nil &&
 		parentInvocation.RunOptions.DisableGraphCompletionEvent
-
-	tap, err := newAgentDeltaStreamTap(ctx, streamName, &res.lastResponse)
+	streamLastResponse := ""
+	tap, err := newAgentDeltaStreamTap(ctx, streamName, &streamLastResponse)
 	if err != nil {
 		return res, err
 	}
@@ -2663,6 +2670,7 @@ func processAgentEventStream(
 		}
 		tap.WriteDelta(agentEvent)
 		updateAgentStreamResultFromEvent(ctx, &res, agentEvent, tracker)
+		updateAgentLastResponseValue(&streamLastResponse, agentEvent)
 	}
 	if res.terminalErr != nil {
 		return res, res.terminalErr

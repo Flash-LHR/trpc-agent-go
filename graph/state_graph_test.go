@@ -532,6 +532,48 @@ func TestProcessAgentEventStream_StreamOutputWritesFinalWhenNoDeltas(
 	require.Equal(t, "final", string(b))
 }
 
+func TestProcessAgentEventStream_StreamOutputSkipsHiddenGraphCompletionFinal(
+	t *testing.T,
+) {
+	inv := agent.NewInvocation(
+		agent.WithInvocationID("inv-stream-hidden-final"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+	agent.GetOrCreateStreamHub(inv)
+	const streamName = "s"
+	r, err := OpenStreamReader(ctx, streamName)
+	require.NoError(t, err)
+	defer r.Close()
+	agentEvents := make(chan *event.Event, 1)
+	parentEventChan := make(chan *event.Event, 1)
+	agentEvents <- NewGraphCompletionEvent(
+		WithCompletionEventInvocationID(inv.InvocationID),
+		WithCompletionEventFinalState(State{
+			StateKeyLastResponse: "hidden-final",
+		}),
+	)
+	close(agentEvents)
+	res, err := processAgentEventStream(
+		ctx,
+		agentEvents,
+		nil,
+		"node",
+		State{},
+		parentEventChan,
+		"agent",
+		streamName,
+		&itelemetry.InvokeAgentTracker{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "hidden-final", res.lastResponse)
+	b, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.Empty(t, string(b))
+}
+
 func TestProcessAgentEventStream_StreamOutputCloseWithError(
 	t *testing.T,
 ) {
