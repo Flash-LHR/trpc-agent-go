@@ -546,7 +546,13 @@ func (at *Tool) callWithIsolatedRunner(
 		at.agent,
 		runner.WithSessionService(inmemory.NewSessionService()),
 	)
-	evCh, err := r.Run(ctx, "tool_user", "tool_session", message)
+	evCh, err := r.Run(
+		ctx,
+		"tool_user",
+		"tool_session",
+		message,
+		at.fallbackRunnerRunOptions(ctx)...,
+	)
 	if err != nil {
 		return "", fmt.Errorf("failed to run agent: %w", err)
 	}
@@ -703,35 +709,42 @@ func (at *Tool) forwardSubInvocationStream(
 	wrapped <-chan *event.Event,
 	writer *tool.StreamWriter,
 ) {
+	managePendingVisibleCompletion := shouldDeferStreamCompletion(ctx, subInv)
 	state := streamCompletionState{}
 	for ev := range wrapped {
 		if subInv.RunOptions.DisableGraphCompletionEvent &&
 			isGraphCompletionSnapshotEvent(ev) {
 			at.capturePendingCompletionChunk(ev, &state)
-			at.capturePendingVisibleCompletion(ev, &state)
+			if managePendingVisibleCompletion {
+				at.capturePendingVisibleCompletion(ev, &state)
+			}
 			continue
 		}
-		state.pendingVisibleCompletion = at.updatePendingVisibleCompletionForSession(
-			ctx,
-			subInv,
-			state.pendingVisibleCompletion,
-			ev,
-		)
-		if ev != nil &&
-			ev.RequiresCompletion &&
-			state.pendingVisibleCompletion != nil {
-			at.flushPendingVisibleCompletionForSession(
+		if managePendingVisibleCompletion {
+			state.pendingVisibleCompletion = at.updatePendingVisibleCompletionForSession(
 				ctx,
 				subInv,
-				&state,
+				state.pendingVisibleCompletion,
+				ev,
 			)
+			if ev != nil &&
+				ev.RequiresCompletion &&
+				state.pendingVisibleCompletion != nil {
+				at.flushPendingVisibleCompletionForSession(
+					ctx,
+					subInv,
+					&state,
+				)
+			}
 		}
 		at.updateStreamCompletionState(ev, &state)
 		if writer.Send(tool.StreamChunk{Content: ev}, nil) {
 			return
 		}
 	}
-	at.flushPendingVisibleCompletionForSession(ctx, subInv, &state)
+	if managePendingVisibleCompletion {
+		at.flushPendingVisibleCompletionForSession(ctx, subInv, &state)
+	}
 	at.emitPendingCompletionChunk(&state, writer)
 }
 
@@ -860,7 +873,13 @@ func (at *Tool) streamFromFallbackRunner(
 		at.agent,
 		runner.WithSessionService(inmemory.NewSessionService()),
 	)
-	evCh, err := r.Run(ctx, "tool_user", "tool_session", message)
+	evCh, err := r.Run(
+		ctx,
+		"tool_user",
+		"tool_session",
+		message,
+		at.fallbackRunnerRunOptions(ctx)...,
+	)
 	if err != nil {
 		sendStreamableCallError(ctx, writer, "agent tool run error: %w", err)
 		return
@@ -889,6 +908,34 @@ func sendStreamableCallError(
 func shouldEmitStreamableCallErrorChunk(ctx context.Context) bool {
 	toolCallID, ok := tool.ToolCallIDFromContext(ctx)
 	return !ok || toolCallID == ""
+}
+
+func (at *Tool) fallbackRunnerRunOptions(ctx context.Context) []agent.RunOption {
+	parentInv, ok := agent.InvocationFromContext(ctx)
+	if !ok || parentInv == nil {
+		return nil
+	}
+	ro := parentInv.RunOptions
+	opts := make([]agent.RunOption, 0, 5)
+	if ro.StreamModeEnabled {
+		opts = append(opts, agent.WithStreamMode(ro.StreamModes...))
+		opts = append(
+			opts,
+			agent.WithGraphEmitFinalModelResponses(ro.GraphEmitFinalModelResponses),
+		)
+	} else if ro.GraphEmitFinalModelResponses {
+		opts = append(opts, agent.WithGraphEmitFinalModelResponses(true))
+	}
+	if ro.DisableGraphCompletionEvent {
+		opts = append(opts, agent.WithDisableGraphCompletionEvent(true))
+	}
+	if ro.DisableGraphExecutorEvents {
+		opts = append(opts, agent.WithDisableGraphExecutorEvents(true))
+	}
+	if ro.EventChannelBufferSize > 0 {
+		opts = append(opts, agent.WithEventChannelBufferSize(ro.EventChannelBufferSize))
+	}
+	return opts
 }
 
 // SkipSummarization exposes whether the AgentTool prefers skipping

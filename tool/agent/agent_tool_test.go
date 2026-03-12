@@ -996,12 +996,16 @@ func sessionHasToolResult(
 }
 
 func sessionHasAssistantContent(sess *session.Session, content string) bool {
+	return countSessionAssistantContent(sess, content) > 0
+}
+
+func countSessionAssistantContent(sess *session.Session, content string) int {
 	if sess == nil {
-		return false
+		return 0
 	}
 	sess.EventMu.RLock()
 	defer sess.EventMu.RUnlock()
-
+	var count int
 	for i := range sess.Events {
 		evt := sess.Events[i]
 		if evt.Response == nil || evt.IsPartial || !evt.IsValidContent() {
@@ -1010,11 +1014,11 @@ func sessionHasAssistantContent(sess *session.Session, content string) bool {
 		for _, choice := range evt.Response.Choices {
 			if choice.Message.Role == model.RoleAssistant &&
 				choice.Message.Content == content {
-				return true
+				count++
 			}
 		}
 	}
-	return false
+	return count
 }
 
 type finalChunkView struct {
@@ -2139,6 +2143,43 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesFinalTextInSha
 		require.NoError(t, recvErr)
 	}
 	require.True(t, sessionHasAssistantContent(sess, "child-final"))
+	require.Equal(t, 1, countSessionAssistantContent(sess, "child-final"))
+}
+
+func TestTool_StreamableCall_FallbackRunnerPreservesDisableGraphCompletionEvent(t *testing.T) {
+	sg := graph.NewStateGraph(graph.MessagesStateSchema())
+	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "child-final"}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	ga, err := graphagent.New("graph-child-fallback", compiled)
+	require.NoError(t, err)
+	at := NewTool(ga, WithStreamInner(true))
+	parent := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableGraphCompletionEvent: true,
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	defer reader.Close()
+	var contents []string
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		if evt, ok := chunk.Content.(*event.Event); ok {
+			require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+			if content, ok := assistantMessageContent(evt); ok && content != "" {
+				contents = append(contents, content)
+			}
+			continue
+		}
+	}
+	require.Contains(t, contents, "child-final")
 }
 
 func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistantResultForVisibleStateOnlyCompletion(
