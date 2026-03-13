@@ -255,6 +255,22 @@ func TestVisibleGraphCompletionEventsForForwardingWithAuthor_RestoresAuthor(
 	require.Equal(t, "child-agent", fullRespEvent.Author)
 }
 
+func TestVisibleGraphCompletionEventsForForwardingWithAuthor_NonCompletion(t *testing.T) {
+	visible, fullRespEvent, ok := VisibleGraphCompletionEventsForForwardingWithAuthor(
+		&event.Event{
+			Response: &model.Response{
+				Object: model.ObjectTypeChatCompletion,
+				Done:   true,
+			},
+		},
+		nil,
+		"child-agent",
+	)
+	require.False(t, ok)
+	require.Nil(t, visible)
+	require.Nil(t, fullRespEvent)
+}
+
 func TestShouldSuppressGraphCompletionEvent(t *testing.T) {
 	raw := NewGraphCompletionEvent()
 	require.False(t, ShouldSuppressGraphCompletionEvent(context.Background(), nil, raw))
@@ -274,6 +290,46 @@ func TestCompletionResponseIDFromStateDelta(t *testing.T) {
 	require.Equal(t, "resp-1", completionResponseIDFromStateDelta(map[string][]byte{
 		StateKeyLastResponseID: []byte(`"resp-1"`),
 	}))
+}
+
+func TestRecordAssistantResponseID_IgnoresUnsupportedEvents(t *testing.T) {
+	emitted := map[string]struct{}{"keep": {}}
+	require.Equal(t, emitted, RecordAssistantResponseID(emitted, nil))
+	require.Equal(t, emitted, RecordAssistantResponseID(emitted, &event.Event{
+		Response: &model.Response{
+			IsPartial: true,
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("answer"),
+			}},
+		},
+	}))
+	require.Equal(t, emitted, RecordAssistantResponseID(emitted, &event.Event{
+		Response: &model.Response{
+			Choices: []model.Choice{{
+				Message: model.NewUserMessage("question"),
+			}},
+		},
+	}))
+}
+
+func TestVisibleGraphCompletionDedupHelpers_FalseBranches(t *testing.T) {
+	raw := NewGraphCompletionEvent(
+		WithCompletionEventFinalState(State{
+			StateKeyLastResponse: "answer",
+		}),
+	)
+	visible, ok := VisibleGraphCompletionEvent(raw)
+	require.True(t, ok)
+	require.False(t, shouldClearVisibleGraphCompletionChoices(nil, nil))
+	require.False(t, shouldClearVisibleGraphCompletionChoices(&event.Event{
+		Response: &model.Response{},
+	}, map[string]struct{}{}))
+	require.False(t, shouldClearVisibleGraphCompletionChoices(visible, map[string]struct{}{}))
+	require.False(t, visibleGraphCompletionNeedsFullResponseSnapshot(nil, visible))
+	require.False(t, visibleGraphCompletionNeedsFullResponseSnapshot(raw, &event.Event{
+		Response: &model.Response{IsPartial: true},
+	}))
+	require.False(t, visibleGraphCompletionNeedsFullResponseSnapshot(raw, visible))
 }
 
 func TestAssistantChoiceSignature(t *testing.T) {

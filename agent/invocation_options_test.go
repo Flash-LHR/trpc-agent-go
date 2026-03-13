@@ -485,6 +485,41 @@ func TestGraphRunOptionSetters(t *testing.T) {
 	require.Nil(t, invocation.RunOptions.CustomAgentConfigs)
 }
 
+func TestGraphRunControlHelpers_DefaultsAndNilSafety(t *testing.T) {
+	opts := NewRunOptions(
+		nil,
+		WithDisableGraphCompletionEvent(true),
+		nil,
+		WithDisableGraphExecutorEvents(true),
+		WithEventChannelBufferSize(64),
+	)
+	invocation := NewInvocation(WithInvocationRunOptions(opts))
+	require.True(t, IsGraphCompletionEventDisabled(invocation))
+	require.True(t, IsGraphExecutorEventsDisabled(invocation))
+	require.Equal(t, 64, GetEventChannelBufferSize(invocation))
+	require.False(t, IsGraphCompletionEventDisabled(nil))
+	require.False(t, IsGraphExecutorEventsDisabled(nil))
+	require.Zero(t, GetEventChannelBufferSize(nil))
+	require.Equal(t, runControlConfig{}, getRunControlConfig(nil))
+	setRunControlConfig(nil, runControlConfig{
+		DisableGraphCompletionEvent: true,
+		DisableGraphExecutorEvents:  true,
+		EventChannelBufferSize:      128,
+	})
+	runOpts := &RunOptions{}
+	require.Equal(t, runControlConfig{}, getRunControlConfig(runOpts))
+	setRunControlConfig(runOpts, runControlConfig{
+		DisableGraphCompletionEvent: true,
+		DisableGraphExecutorEvents:  true,
+		EventChannelBufferSize:      128,
+	})
+	require.Equal(t, runControlConfig{
+		DisableGraphCompletionEvent: true,
+		DisableGraphExecutorEvents:  true,
+		EventChannelBufferSize:      128,
+	}, getRunControlConfig(runOpts))
+}
+
 func TestWithDisableTracing(t *testing.T) {
 	opts := &RunOptions{}
 
