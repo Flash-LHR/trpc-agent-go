@@ -515,7 +515,7 @@ func TestExecuteSingleToolCall_UsesInvocationFromCallbackContext(t *testing.T) {
 	require.Equal(t, "tool-callback", completeEvent.FilterKey)
 }
 
-func TestExecuteSingleToolCall_UsesAfterToolInvocationForCompleteEvent(t *testing.T) {
+func TestExecuteSingleToolCall_UsesLatestToolCallbackInvocationForEvents(t *testing.T) {
 	callbacks := tool.NewCallbacks()
 	callbacks.RegisterBeforeTool(func(
 		ctx context.Context,
@@ -570,9 +570,9 @@ func TestExecuteSingleToolCall_UsesAfterToolInvocationForCompleteEvent(t *testin
 	require.Len(t, eventCh, 2)
 	startEvent := <-eventCh
 	completeEvent := <-eventCh
-	require.Equal(t, "tool-before", startEvent.FilterKey)
+	require.Equal(t, "tool-after", startEvent.FilterKey)
 	require.Equal(t, "tool-after", completeEvent.FilterKey)
-	require.Equal(t, "inv-tool-before-context", startEvent.InvocationID)
+	require.Equal(t, "inv-tool-after-context", startEvent.InvocationID)
 	require.Equal(t, "inv-tool-after-context", completeEvent.InvocationID)
 	require.Equal(t, startEvent.InvocationID, requireToolExecutionMetadata(t, startEvent).InvocationID)
 	require.Equal(t, completeEvent.InvocationID, requireToolExecutionMetadata(t, completeEvent).InvocationID)

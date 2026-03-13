@@ -795,6 +795,64 @@ func TestProcessAgentEventStream_PropagatesTerminalErrorWhenEnabled(
 	require.Len(t, parentEventChan, 2)
 }
 
+func TestProcessAgentEventStream_PreservesExternalEventMetadataWhileTrackingTerminalErrors(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	parentInvocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-parent"),
+	)
+	inv := parentInvocation.Clone(
+		agent.WithInvocationID("inv-terminal-error-raw"),
+		agent.WithInvocationBranch("branch/raw"),
+		agent.WithInvocationEventFilterKey("branch/raw/filter"),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithRequestID("req-terminal-error-raw"),
+			agent.WithPropagateChildAgentErrors(true),
+		)),
+	)
+	agentEvents := make(chan *event.Event, 1)
+	parentEventChan := make(chan *event.Event, 1)
+	var callbackEvent *event.Event
+	callbacks := NewNodeCallbacks()
+	callbacks.AgentEvent = append(callbacks.AgentEvent, func(
+		_ context.Context,
+		_ *NodeCallbackContext,
+		_ State,
+		evt *event.Event,
+	) {
+		callbackEvent = evt
+	})
+	agentEvents <- event.NewErrorEvent(
+		"",
+		"child",
+		model.ErrorTypeFlowError,
+		"boom",
+	)
+	close(agentEvents)
+	res, err := processAgentEventStream(
+		agent.NewInvocationContext(ctx, inv),
+		inv,
+		agentEvents,
+		callbacks,
+		"node",
+		State{},
+		parentEventChan,
+		"agent",
+		"",
+		&itelemetry.InvokeAgentTracker{},
+	)
+	require.EqualError(t, err, "boom")
+	require.EqualError(t, res.terminalErr, "boom")
+	forwarded := <-parentEventChan
+	require.Same(t, callbackEvent, forwarded)
+	require.Empty(t, forwarded.RequestID)
+	require.Empty(t, forwarded.InvocationID)
+	require.Empty(t, forwarded.ParentInvocationID)
+	require.Empty(t, forwarded.Branch)
+	require.Empty(t, forwarded.FilterKey)
+}
+
 func TestClearAgentTerminalErrorOnContinuedOutput_IgnoresLifecycleOnlyEvents(
 	t *testing.T,
 ) {

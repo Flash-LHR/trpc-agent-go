@@ -2959,28 +2959,37 @@ func matchesAgentTerminalErrorSource(
 	return ev.FilterKey == meta.FilterKey
 }
 
-func populateMissingAgentEventInvocationFields(
+func internalAgentEventWithInvocationFields(
 	invocation *agent.Invocation,
 	ev *event.Event,
-) {
+) *event.Event {
 	if invocation == nil || ev == nil {
-		return
+		return ev
 	}
-	if ev.RequestID == "" {
-		ev.RequestID = invocation.RunOptions.RequestID
+	if ev.RequestID != "" &&
+		ev.InvocationID != "" &&
+		ev.Branch != "" &&
+		ev.FilterKey != "" &&
+		(ev.ParentInvocationID != "" || invocation.GetParentInvocation() == nil) {
+		return ev
 	}
-	if ev.ParentInvocationID == "" && invocation.GetParentInvocation() != nil {
-		ev.ParentInvocationID = invocation.GetParentInvocation().InvocationID
+	internalEvent := *ev
+	if internalEvent.RequestID == "" {
+		internalEvent.RequestID = invocation.RunOptions.RequestID
 	}
-	if ev.InvocationID == "" {
-		ev.InvocationID = invocation.InvocationID
+	if internalEvent.ParentInvocationID == "" && invocation.GetParentInvocation() != nil {
+		internalEvent.ParentInvocationID = invocation.GetParentInvocation().InvocationID
 	}
-	if ev.Branch == "" {
-		ev.Branch = invocation.Branch
+	if internalEvent.InvocationID == "" {
+		internalEvent.InvocationID = invocation.InvocationID
 	}
-	if ev.FilterKey == "" {
-		ev.FilterKey = invocation.GetEventFilterKey()
+	if internalEvent.Branch == "" {
+		internalEvent.Branch = invocation.Branch
 	}
+	if internalEvent.FilterKey == "" {
+		internalEvent.FilterKey = invocation.GetEventFilterKey()
+	}
+	return &internalEvent
 }
 
 func updateAgentTerminalError(res *agentEventStreamResult, ev *event.Event) {
@@ -3127,7 +3136,10 @@ func processAgentEventStream(
 	defer tap.Close(&err)
 
 	for agentEvent := range agentEventChan {
-		populateMissingAgentEventInvocationFields(invocation, agentEvent)
+		internalAgentEvent := internalAgentEventWithInvocationFields(
+			invocation,
+			agentEvent,
+		)
 		runAgentEventCallbacks(
 			ctx,
 			nodeCallbacks,
@@ -3141,7 +3153,7 @@ func processAgentEventStream(
 			updateAgentStreamResultFromEvent(
 				ctx,
 				&res,
-				agentEvent,
+				internalAgentEvent,
 				tracker,
 				invalidateSuccessResult,
 				propagateChildAgentErrors,
@@ -3157,7 +3169,7 @@ func processAgentEventStream(
 		updateAgentStreamResultFromEvent(
 			ctx,
 			&res,
-			agentEvent,
+			internalAgentEvent,
 			tracker,
 			invalidateSuccessResult,
 			propagateChildAgentErrors,
@@ -4651,25 +4663,31 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 	// Keep the original invocation as a fallback when callbacks return a bare context.
 	originalInvocation, _ := agent.InvocationFromContext(ctx)
 	ctx, span, startedSpan := startNodeSpan(ctx, itelemetry.NewExecuteToolSpanName(config.ToolCall.Function.Name))
-	startCtx, startEventInvocation, finalCtx, completeEventInvocation, result, modifiedArgs, err := runToolWithEventContexts(
+	_, startEventInvocation, finalCtx, completeEventInvocation, result, modifiedArgs, err := runToolWithEventContexts(
 		ctx,
 		config.ToolCall,
 		config.ToolCallbacks,
 		t,
 		config.State,
 	)
-	startInvocation := invocationFromContextOrFallback(startCtx, invocationOrFallback(startEventInvocation, originalInvocation))
-	completeInvocation := invocationFromContextOrFallback(
+	eventInvocation := invocationFromContextOrFallback(
 		finalCtx,
-		invocationOrFallback(completeEventInvocation, startInvocation),
+		invocationOrFallback(
+			completeEventInvocation,
+			invocationOrFallback(startEventInvocation, originalInvocation),
+		),
 	)
 	ctx = finalCtx
+	eventInvocationID := invocationIDOrFallback(
+		eventInvocation,
+		config.InvocationID,
+	)
 	// Emit tool execution start event with modified arguments.
 	emitToolStartEvent(
-		startCtx,
-		startInvocation,
+		finalCtx,
+		eventInvocation,
 		config.EventChan,
-		invocationIDOrFallback(startInvocation, config.InvocationID),
+		eventInvocationID,
 		name,
 		id,
 		nodeID,
@@ -4689,9 +4707,9 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 		}
 	}
 	// Emit tool execution complete event.
-	event := emitToolCompleteEvent(finalCtx, completeInvocation, toolCompleteEventConfig{
+	event := emitToolCompleteEvent(finalCtx, eventInvocation, toolCompleteEventConfig{
 		EventChan:    config.EventChan,
-		InvocationID: invocationIDOrFallback(completeInvocation, config.InvocationID),
+		InvocationID: eventInvocationID,
 		ToolName:     name,
 		ToolID:       id,
 		NodeID:       nodeID,
