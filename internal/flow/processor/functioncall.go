@@ -814,10 +814,16 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 		}
 	}
 	if suppressDefaultToolMessage {
-		defaultMsg := model.Message{
-			Role:    model.RoleTool,
-			ToolID:  toolCall.ID,
-			Content: "{}",
+		defaultMsg, err := buildDefaultToolMessage(toolCall.ID, result)
+		if err != nil {
+			log.WarnfContext(
+				ctx,
+				"Failed to marshal tool result for %s: %v",
+				toolCall.Function.Name,
+				err,
+			)
+			return ctx, nil, modifiedArgs, true,
+				fmt.Errorf("%s: %w", ErrorMarshalResult, err)
 		}
 		defaultChoices := []model.Choice{
 			{Index: index, Message: defaultMsg},
@@ -844,9 +850,7 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 		return ctx, defaultChoices, modifiedArgs, true, nil
 	}
 
-	// Marshal the result to JSON for the default tool message.
-	// Note: mcpToolResult implements MarshalJSON to only marshal Content for backward compatibility.
-	resultBytes, err := json.Marshal(result)
+	defaultMsg, err := buildDefaultToolMessage(toolCall.ID, result)
 	if err != nil {
 		// Marshal failures (for example, NaN in floats) do not
 		// affect the overall flow. Downgrade to warning to avoid
@@ -859,12 +863,6 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 		)
 		return ctx, nil, modifiedArgs, true,
 			fmt.Errorf("%s: %w", ErrorMarshalResult, err)
-	}
-
-	defaultMsg := model.Message{
-		Role:    model.RoleTool,
-		Content: string(resultBytes),
-		ToolID:  toolCall.ID,
 	}
 
 	choices := []model.Choice{
@@ -895,7 +893,7 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 		ctx,
 		"CallableTool %s executed successfully, result: %s",
 		toolCall.Function.Name,
-		string(resultBytes),
+		defaultMsg.Content,
 	)
 
 	return ctx, choices, modifiedArgs, true, nil
@@ -1384,6 +1382,22 @@ func (p *FunctionCallResponseProcessor) executeCallableTool(
 		return ctx, nil, fmt.Errorf("%s: %w", ErrorCallableToolExecution, err)
 	}
 	return ctx, result, nil
+}
+
+func buildDefaultToolMessage(
+	toolCallID string,
+	result any,
+) (model.Message, error) {
+	// Preserve legacy tool message serialization for default fallback content.
+	resultBytes, err := json.Marshal(result)
+	if err != nil {
+		return model.Message{}, err
+	}
+	return model.Message{
+		Role:    model.RoleTool,
+		Content: string(resultBytes),
+		ToolID:  toolCallID,
+	}, nil
 }
 
 type structuredStreamErrorOptIn interface {

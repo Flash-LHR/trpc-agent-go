@@ -381,7 +381,7 @@ func TestExecuteToolCall_StreamableFinalStateOnlyResultSkipsNullToolMessage(t *t
 	require.Len(t, choices, 1)
 	require.Equal(t, model.RoleTool, choices[0].Message.Role)
 	require.Equal(t, tc.ID, choices[0].Message.ToolID)
-	require.Equal(t, "{}", choices[0].Message.Content)
+	require.Equal(t, "null", choices[0].Message.Content)
 	first := <-eventCh
 	require.NotNil(t, first)
 	require.True(t, first.IsPartial)
@@ -2456,7 +2456,7 @@ func TestExecuteSingleToolCallSequential_StateOnlyPlaceholderSkipsStateDeltaProv
 	require.NoError(t, err)
 	require.NotNil(t, ev)
 	require.Len(t, ev.Choices, 1)
-	require.Equal(t, "{}", ev.Choices[0].Message.Content)
+	require.Equal(t, "null", ev.Choices[0].Message.Content)
 	require.Nil(t, tl.lastResultJSON)
 	require.NotContains(t, ev.StateDelta, "provider")
 }
@@ -5048,7 +5048,7 @@ func TestExecuteToolCall_StreamableFinalStateOnlyResultAfterToolContextReplaceme
 	require.Len(t, choices, 1)
 	require.Equal(t, model.RoleTool, choices[0].Message.Role)
 	require.Equal(t, tc.ID, choices[0].Message.ToolID)
-	require.Equal(t, "{}", choices[0].Message.Content)
+	require.Equal(t, "null", choices[0].Message.Content)
 	first := <-eventCh
 	require.NotNil(t, first)
 	require.True(t, first.IsPartial)
@@ -5116,7 +5116,7 @@ func TestExecuteToolCall_StreamableFinalStateOnlyResultStillRunsToolResultMessag
 	require.True(t, called)
 	require.Equal(t, model.RoleTool, gotDefault.Role)
 	require.Equal(t, tc.ID, gotDefault.ToolID)
-	require.Equal(t, "{}", gotDefault.Content)
+	require.Equal(t, "null", gotDefault.Content)
 	require.Len(t, choices, 1)
 	require.Equal(t, `{"from":"callback"}`, choices[0].Message.Content)
 	require.Equal(t, tc.ID, choices[0].Message.ToolID)
@@ -5206,7 +5206,7 @@ func TestExecuteToolCall_StreamableFinalStateOnlyResultCallbackFallsBackToDefaul
 	require.Len(t, choices, 1)
 	require.Equal(t, model.RoleTool, choices[0].Message.Role)
 	require.Equal(t, tc.ID, choices[0].Message.ToolID)
-	require.Equal(t, "{}", choices[0].Message.Content)
+	require.Equal(t, "null", choices[0].Message.Content)
 }
 
 func TestHandleFunctionCalls_PreservesStateOnlyToolChoiceAlongsideOtherToolResults(t *testing.T) {
@@ -5259,7 +5259,7 @@ func TestHandleFunctionCalls_PreservesStateOnlyToolChoiceAlongsideOtherToolResul
 	require.NotNil(t, evt)
 	require.Len(t, evt.Choices, 2)
 	require.Equal(t, "call-state", evt.Choices[0].Message.ToolID)
-	require.Equal(t, "{}", evt.Choices[0].Message.Content)
+	require.Equal(t, "null", evt.Choices[0].Message.Content)
 	require.Equal(t, "call-echo", evt.Choices[1].Message.ToolID)
 	require.Equal(t, `"echo-result"`, evt.Choices[1].Message.Content)
 }
@@ -5345,7 +5345,7 @@ func TestHandleFunctionCalls_PreservesCallbackDefaultStateOnlyToolChoiceAlongsid
 	require.NotNil(t, evt)
 	require.Len(t, evt.Choices, 2)
 	require.Equal(t, "call-state", evt.Choices[0].Message.ToolID)
-	require.Equal(t, "{}", evt.Choices[0].Message.Content)
+	require.Equal(t, "null", evt.Choices[0].Message.Content)
 	require.Equal(t, "call-echo", evt.Choices[1].Message.ToolID)
 	require.Equal(t, `"echo-result"`, evt.Choices[1].Message.Content)
 }

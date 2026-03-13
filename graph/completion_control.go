@@ -18,24 +18,16 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
-type graphCompletionCaptureKey struct{}
-
 // WithGraphCompletionCapture keeps terminal graph completion events available
 // to internal graph consumers even when caller-visible forwarding is disabled.
 func WithGraphCompletionCapture(ctx context.Context) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, graphCompletionCaptureKey{}, true)
+	return agent.WithGraphCompletionCapture(ctx)
 }
 
 // WithoutGraphCompletionCapture clears any inherited capture flag for the
 // current visible stream while preserving the rest of the context.
 func WithoutGraphCompletionCapture(ctx context.Context) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, graphCompletionCaptureKey{}, false)
+	return agent.WithoutGraphCompletionCapture(ctx)
 }
 
 // ShouldCaptureGraphCompletion reports whether the current context keeps
@@ -45,11 +37,7 @@ func ShouldCaptureGraphCompletion(ctx context.Context) bool {
 }
 
 func shouldCaptureGraphCompletion(ctx context.Context) bool {
-	if ctx == nil {
-		return false
-	}
-	capture, _ := ctx.Value(graphCompletionCaptureKey{}).(bool)
-	return capture
+	return agent.ShouldCaptureGraphCompletion(ctx)
 }
 
 // IsGraphCompletionEvent reports whether the event is a terminal
