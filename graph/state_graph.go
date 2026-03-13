@@ -2797,6 +2797,7 @@ func updateAgentStreamResultFromEvent(
 	res *agentEventStreamResult,
 	ev *event.Event,
 	tracker *itelemetry.InvokeAgentTracker,
+	invalidateSuccessResult bool,
 	trackTerminalErrors bool,
 ) {
 	updateAgentLastResponse(res, ev)
@@ -2804,7 +2805,7 @@ func updateAgentStreamResultFromEvent(
 	updateAgentTokenUsage(res, ev, tracker)
 	updateAgentInterrupt(res, ev)
 	updateAgentFinalState(ctx, res, ev)
-	if trackTerminalErrors || shouldInvalidateAgentSuccessResult(ev) {
+	if trackTerminalErrors || (invalidateSuccessResult && shouldInvalidateAgentSuccessResult(ev)) {
 		clearAgentSuccessResultOnError(res, ev)
 	}
 	if !trackTerminalErrors {
@@ -3114,6 +3115,7 @@ func processAgentEventStream(
 	parentInvocation, _ := agent.InvocationFromContext(ctx)
 	suppressGraphCompletion := parentInvocation != nil &&
 		agent.IsGraphCompletionEventDisabled(parentInvocation)
+	invalidateSuccessResult := suppressGraphCompletion
 	propagateChildAgentErrors := agent.ShouldPropagateChildAgentErrors(
 		invocation,
 	)
@@ -3141,6 +3143,7 @@ func processAgentEventStream(
 				&res,
 				agentEvent,
 				tracker,
+				invalidateSuccessResult,
 				propagateChildAgentErrors,
 			)
 			updateAgentLastResponseValue(&streamLastResponse, agentEvent)
@@ -3156,6 +3159,7 @@ func processAgentEventStream(
 			&res,
 			agentEvent,
 			tracker,
+			invalidateSuccessResult,
 			propagateChildAgentErrors,
 		)
 		updateAgentLastResponseValue(&streamLastResponse, agentEvent)
