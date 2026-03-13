@@ -1408,6 +1408,7 @@ func streamableToolCallContext(
 	ctx context.Context,
 	tl tool.StreamableTool,
 ) context.Context {
+	ctx = tool.WithFinalResultChunks(ctx)
 	if !shouldRequestStructuredStreamErrors(tl) {
 		return ctx
 	}

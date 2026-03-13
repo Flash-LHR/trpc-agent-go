@@ -1824,7 +1824,7 @@ func TestTool_StreamableCall_DefersCompletionToRunner(t *testing.T) {
 	)
 
 	reader, err := at.StreamableCall(
-		ctxWithToolCallID,
+		tool.WithFinalResultChunks(ctxWithToolCallID),
 		[]byte(`{"request":"payload"}`),
 	)
 	require.NoError(t, err)
@@ -1899,7 +1899,7 @@ func TestTool_StreamableCall_DefersCompletion_FlushesVisibleCompletionBeforeBarr
 		toolCallID,
 	)
 	reader, err := at.StreamableCall(
-		ctxWithToolCallID,
+		tool.WithFinalResultChunks(ctxWithToolCallID),
 		[]byte(`{"request":"payload"}`),
 	)
 	require.NoError(t, err)
@@ -1962,7 +1962,7 @@ func TestTool_StreamableCall_DefersCompletion_PersistsStateOnlyCompletionToShare
 		toolCallID,
 	)
 	reader, err := at.StreamableCall(
-		ctxWithToolCallID,
+		tool.WithFinalResultChunks(ctxWithToolCallID),
 		[]byte(`{"request":"payload"}`),
 	)
 	require.NoError(t, err)
@@ -2019,7 +2019,7 @@ func TestTool_StreamableCall_DefersCompletion_PreservesConsecutiveVisibleComplet
 		toolCallID,
 	)
 	reader, err := at.StreamableCall(
-		ctxWithToolCallID,
+		tool.WithFinalResultChunks(ctxWithToolCallID),
 		[]byte(`{"request":"payload"}`),
 	)
 	require.NoError(t, err)
@@ -2076,7 +2076,7 @@ func TestTool_StreamableCall_DefersCompletion_SuppressesBarrierEventsWhenDisable
 		toolCallID,
 	)
 	reader, err := at.StreamableCall(
-		ctxWithToolCallID,
+		tool.WithFinalResultChunks(ctxWithToolCallID),
 		[]byte(`{"request":"payload"}`),
 	)
 	require.NoError(t, err)
@@ -2314,7 +2314,7 @@ func TestTool_HistoryScope_Isolated_Streamable_NoParentPrefix(t *testing.T) {
 	}
 }
 
-func TestTool_StreamableCall_DisableGraphCompletionEvent_KeepsFinalResult(t *testing.T) {
+func TestTool_StreamableCall_DisableGraphCompletionEvent_WithFinalResultChunks_KeepsFinalResult(t *testing.T) {
 	sg := graph.NewStateGraph(graph.MessagesStateSchema())
 	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
 		return graph.State{graph.StateKeyLastResponse: "child-final"}, nil
@@ -2330,7 +2330,10 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_KeepsFinalResult(t *tes
 		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
-	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	reader, err := at.StreamableCall(
+		tool.WithFinalResultChunks(ctx),
+		[]byte(`{"request":"ignored"}`),
+	)
 	require.NoError(t, err)
 	defer reader.Close()
 	var finalResult any
@@ -2349,6 +2352,45 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_KeepsFinalResult(t *tes
 		require.Equal(t, []byte(`"child-final"`), finalChunk.StateDelta[graph.StateKeyLastResponse])
 	}
 	require.Equal(t, "child-final", finalResult)
+}
+
+func TestTool_StreamableCall_DisableGraphCompletionEvent_DefaultsToVisibleCompletionEvents(t *testing.T) {
+	sg := graph.NewStateGraph(graph.MessagesStateSchema())
+	sg.AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "child-final"}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	ga, err := graphagent.New("graph-child-stream", compiled)
+	require.NoError(t, err)
+	at := NewTool(ga, WithStreamInner(true), WithHistoryScope(HistoryScopeParentBranch))
+	parent := agent.NewInvocation(
+		agent.WithInvocationSession(session.NewSession("app", "user", "session")),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	require.NoError(t, err)
+	defer reader.Close()
+	var sawVisibleCompletion bool
+	for {
+		chunk, recvErr := reader.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		evt, ok := chunk.Content.(*event.Event)
+		require.True(t, ok)
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if graph.IsVisibleGraphCompletionEvent(evt) {
+			sawVisibleCompletion = true
+			require.Equal(t, []byte(`"child-final"`), evt.StateDelta[graph.StateKeyLastResponse])
+			require.Len(t, evt.Response.Choices, 1)
+			require.Equal(t, "child-final", evt.Response.Choices[0].Message.Content)
+		}
+	}
+	require.True(t, sawVisibleCompletion)
 }
 
 func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesFinalTextInSharedSession(t *testing.T) {
@@ -2397,7 +2439,10 @@ func TestTool_StreamableCall_FallbackRunnerPreservesDisableGraphCompletionEvent(
 		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
-	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	reader, err := at.StreamableCall(
+		tool.WithFinalResultChunks(ctx),
+		[]byte(`{"request":"ignored"}`),
+	)
 	require.NoError(t, err)
 	defer reader.Close()
 	var contents []string
@@ -2455,7 +2500,10 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistant
 		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
-	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	reader, err := at.StreamableCall(
+		tool.WithFinalResultChunks(ctx),
+		[]byte(`{"request":"ignored"}`),
+	)
 	require.NoError(t, err)
 	defer reader.Close()
 
@@ -2503,7 +2551,10 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistant
 		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
-	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	reader, err := at.StreamableCall(
+		tool.WithFinalResultChunks(ctx),
+		[]byte(`{"request":"ignored"}`),
+	)
 	require.NoError(t, err)
 	defer reader.Close()
 
@@ -2540,7 +2591,10 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_SuppressesStateOnlyComp
 		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
-	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	reader, err := at.StreamableCall(
+		tool.WithFinalResultChunks(ctx),
+		[]byte(`{"request":"ignored"}`),
+	)
 	require.NoError(t, err)
 	defer reader.Close()
 	eventChunks := 0
@@ -2586,7 +2640,10 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
-	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	reader, err := at.StreamableCall(
+		tool.WithFinalResultChunks(ctx),
+		[]byte(`{"request":"ignored"}`),
+	)
 	require.NoError(t, err)
 	defer reader.Close()
 	var sawAfterCallback bool
@@ -2636,7 +2693,10 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
-	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	reader, err := at.StreamableCall(
+		tool.WithFinalResultChunks(ctx),
+		[]byte(`{"request":"ignored"}`),
+	)
 	require.NoError(t, err)
 	defer reader.Close()
 	var finalChunk finalChunkView
@@ -2672,7 +2732,10 @@ func TestTool_StreamableCall_DisableGraphCompletionEvent_PrefersAfterCallbackCus
 		)),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), parent)
-	reader, err := at.StreamableCall(ctx, []byte(`{"request":"ignored"}`))
+	reader, err := at.StreamableCall(
+		tool.WithFinalResultChunks(ctx),
+		[]byte(`{"request":"ignored"}`),
+	)
 	require.NoError(t, err)
 	defer reader.Close()
 

@@ -80,3 +80,12 @@ func TestStructuredStreamErrorsContext(t *testing.T) {
 	ctx = context.WithValue(ctx, contextKeyStructuredStreamErrors{}, false)
 	require.False(t, StructuredStreamErrorsFromContext(ctx))
 }
+
+func TestFinalResultChunksContext(t *testing.T) {
+	require.False(t, FinalResultChunksFromContext(nil))
+	require.False(t, FinalResultChunksFromContext(context.Background()))
+	ctx := WithFinalResultChunks(nil)
+	require.True(t, FinalResultChunksFromContext(ctx))
+	ctx = context.WithValue(ctx, contextKeyFinalResultChunks{}, false)
+	require.False(t, FinalResultChunksFromContext(ctx))
+}
