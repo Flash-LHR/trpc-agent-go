@@ -1386,8 +1386,8 @@ func (p *FunctionCallResponseProcessor) executeCallableTool(
 	return ctx, result, nil
 }
 
-type structuredStreamErrorPreference interface {
-	StructuredStreamErrors() bool
+type structuredStreamErrorOptIn interface {
+	TRPCAgentGoStructuredStreamErrorsOptIn() bool
 }
 
 func streamableToolCallContext(
@@ -1408,8 +1408,8 @@ func shouldRequestStructuredStreamErrors(tl tool.StreamableTool) bool {
 	if namedTool, ok := tl.(*itool.NamedTool); ok {
 		candidate = namedTool.Original()
 	}
-	pref, ok := candidate.(structuredStreamErrorPreference)
-	return ok && pref.StructuredStreamErrors()
+	pref, ok := candidate.(structuredStreamErrorOptIn)
+	return ok && pref.TRPCAgentGoStructuredStreamErrorsOptIn()
 }
 
 // executeStreamableTool executes a streamable tool.

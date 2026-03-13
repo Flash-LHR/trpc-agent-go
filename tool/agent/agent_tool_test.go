@@ -2418,6 +2418,28 @@ func TestTool_StreamableCall_FallbackRunnerPreservesDisableGraphCompletionEvent(
 	require.Contains(t, contents, "child-final")
 }
 
+func TestTool_FallbackRunnerRunOptions_PreserveOnlyCompatibilityControls(t *testing.T) {
+	at := NewTool(&mockAgent{name: "child"}, WithStreamInner(true))
+	parent := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithStreamMode(agent.StreamModeUpdates),
+			agent.WithGraphEmitFinalModelResponses(true),
+			agent.WithDisableGraphCompletionEvent(true),
+			agent.WithDisableGraphExecutorEvents(true),
+			agent.WithEventChannelBufferSize(7),
+		)),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	runOptions := agent.NewRunOptions(at.fallbackRunnerRunOptions(ctx)...)
+	child := agent.NewInvocation(agent.WithInvocationRunOptions(runOptions))
+
+	require.False(t, runOptions.StreamModeEnabled)
+	require.False(t, runOptions.GraphEmitFinalModelResponses)
+	require.True(t, agent.IsGraphCompletionEventDisabled(child))
+	require.True(t, agent.IsGraphExecutorEventsDisabled(child))
+	require.Equal(t, 7, agent.GetEventChannelBufferSize(child))
+}
+
 func TestTool_StreamableCall_DisableGraphCompletionEvent_PreservesPriorAssistantResultForVisibleStateOnlyCompletion(
 	t *testing.T,
 ) {
@@ -2907,8 +2929,10 @@ func TestTool_StructuredStreamErrors(t *testing.T) {
 	a := &mockAgent{name: "test", description: "test"}
 	at1 := NewTool(a)
 	require.False(t, at1.StructuredStreamErrors())
+	require.False(t, at1.TRPCAgentGoStructuredStreamErrorsOptIn())
 	at2 := NewTool(a, WithStructuredStreamErrors(true))
 	require.True(t, at2.StructuredStreamErrors())
+	require.True(t, at2.TRPCAgentGoStructuredStreamErrorsOptIn())
 }
 
 // eventErrorMockAgent returns an event with error

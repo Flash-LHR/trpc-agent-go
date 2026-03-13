@@ -1054,17 +1054,7 @@ func (at *Tool) fallbackRunnerRunOptions(ctx context.Context) []agent.RunOption 
 	if !ok || parentInv == nil {
 		return nil
 	}
-	ro := parentInv.RunOptions
-	opts := make([]agent.RunOption, 0, 5)
-	if ro.StreamModeEnabled {
-		opts = append(opts, agent.WithStreamMode(ro.StreamModes...))
-		opts = append(
-			opts,
-			agent.WithGraphEmitFinalModelResponses(ro.GraphEmitFinalModelResponses),
-		)
-	} else if ro.GraphEmitFinalModelResponses {
-		opts = append(opts, agent.WithGraphEmitFinalModelResponses(true))
-	}
+	opts := make([]agent.RunOption, 0, 3)
 	if agent.IsGraphCompletionEventDisabled(parentInv) {
 		opts = append(opts, agent.WithDisableGraphCompletionEvent(true))
 	}
@@ -1087,6 +1077,12 @@ func (at *Tool) StructuredStreamErrors() bool {
 		return false
 	}
 	return at.structuredStreamErrors
+}
+
+// TRPCAgentGoStructuredStreamErrorsOptIn provides an explicit framework hook
+// for structured stream error semantics.
+func (at *Tool) TRPCAgentGoStructuredStreamErrorsOptIn() bool {
+	return at.StructuredStreamErrors()
 }
 
 // StreamInner exposes whether this AgentTool prefers the flow to treat it as

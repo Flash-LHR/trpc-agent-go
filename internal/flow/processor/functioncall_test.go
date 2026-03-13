@@ -3195,6 +3195,10 @@ func (s *errorThenFinalResultStreamTool) Declaration() *tool.Declaration {
 
 func (s *errorThenFinalResultStreamTool) StructuredStreamErrors() bool { return true }
 
+func (s *errorThenFinalResultStreamTool) TRPCAgentGoStructuredStreamErrorsOptIn() bool {
+	return true
+}
+
 func (s *errorThenFinalResultStreamTool) StreamableCall(
 	ctx context.Context,
 	_ []byte,
@@ -3227,6 +3231,10 @@ func (s *retryingNodeErrorThenFinalResultStreamTool) Declaration() *tool.Declara
 }
 
 func (s *retryingNodeErrorThenFinalResultStreamTool) StructuredStreamErrors() bool {
+	return true
+}
+
+func (s *retryingNodeErrorThenFinalResultStreamTool) TRPCAgentGoStructuredStreamErrorsOptIn() bool {
 	return true
 }
 
@@ -3263,6 +3271,10 @@ func (s *retryingToolResponseErrorThenFinalResultStreamTool) Declaration() *tool
 }
 
 func (s *retryingToolResponseErrorThenFinalResultStreamTool) StructuredStreamErrors() bool {
+	return true
+}
+
+func (s *retryingToolResponseErrorThenFinalResultStreamTool) TRPCAgentGoStructuredStreamErrorsOptIn() bool {
 	return true
 }
 
@@ -3584,6 +3596,10 @@ func (s *terminalToolResponseErrorStreamTool) Declaration() *tool.Declaration {
 
 func (s *terminalToolResponseErrorStreamTool) StructuredStreamErrors() bool { return true }
 
+func (s *terminalToolResponseErrorStreamTool) TRPCAgentGoStructuredStreamErrorsOptIn() bool {
+	return true
+}
+
 func (s *terminalToolResponseErrorStreamTool) StreamableCall(
 	ctx context.Context,
 	_ []byte,
@@ -3710,11 +3726,19 @@ type structuredErrorPreferenceStreamTool struct {
 	streamChunk tool.StreamChunk
 }
 
+type structuredErrorOptInStreamTool struct {
+	structuredErrorPreferenceStreamTool
+}
+
 func (s *structuredErrorPreferenceStreamTool) Declaration() *tool.Declaration {
 	return &tool.Declaration{Name: s.name}
 }
 
 func (s *structuredErrorPreferenceStreamTool) StructuredStreamErrors() bool {
+	return s.structured
+}
+
+func (s *structuredErrorOptInStreamTool) TRPCAgentGoStructuredStreamErrorsOptIn() bool {
 	return s.structured
 }
 
@@ -3779,16 +3803,18 @@ func TestExecuteStreamableTool_OptInEnablesStructuredStreamErrors(t *testing.T) 
 		ID:       "c1",
 		Function: model.FunctionDefinitionParam{Name: "plain"},
 	}
-	st := &structuredErrorPreferenceStreamTool{
-		name:       "plain",
-		structured: true,
-		streamChunk: tool.StreamChunk{
-			Content: event.NewErrorEvent(
-				"inv-structured-option",
-				"child",
-				model.ErrorTypeFlowError,
-				"boom",
-			),
+	st := &structuredErrorOptInStreamTool{
+		structuredErrorPreferenceStreamTool: structuredErrorPreferenceStreamTool{
+			name:       "plain",
+			structured: true,
+			streamChunk: tool.StreamChunk{
+				Content: event.NewErrorEvent(
+					"inv-structured-option",
+					"child",
+					model.ErrorTypeFlowError,
+					"boom",
+				),
+			},
 		},
 	}
 	ch := make(chan *event.Event, 2)
@@ -5240,7 +5266,15 @@ func TestHandleFunctionCalls_PreservesStateOnlyToolChoiceAlongsideOtherToolResul
 
 func TestShouldRequestStructuredStreamErrors_NilAndNamedTool(t *testing.T) {
 	require.False(t, shouldRequestStructuredStreamErrors(nil))
-	baseTool := &structuredErrorPreferenceStreamTool{name: "structured", structured: true}
+	require.False(t, shouldRequestStructuredStreamErrors(
+		&structuredErrorPreferenceStreamTool{name: "legacy", structured: true},
+	))
+	baseTool := &structuredErrorOptInStreamTool{
+		structuredErrorPreferenceStreamTool: structuredErrorPreferenceStreamTool{
+			name:       "structured",
+			structured: true,
+		},
+	}
 	namedTools := itool.NewNamedToolSet(&mockToolSet{tools: []tool.Tool{baseTool}}).Tools(context.Background())
 	require.Len(t, namedTools, 1)
 	namedStreamTool, ok := namedTools[0].(tool.StreamableTool)
