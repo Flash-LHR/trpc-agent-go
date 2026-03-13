@@ -706,6 +706,95 @@ func TestProcessAgentEventStream_RecoveredErrorDoesNotFail(t *testing.T) {
 	require.Equal(t, "recovered", res.lastResponse)
 }
 
+func TestProcessAgentEventStream_DefaultKeepsLegacyTerminalErrorCompatibility(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	inv := agent.NewInvocation(
+		agent.WithInvocationID("inv-terminal-error-default"),
+	)
+	agentEvents := make(chan *event.Event, 2)
+	parentEventChan := make(chan *event.Event, 2)
+	agentEvents <- event.NewResponseEvent(
+		inv.InvocationID,
+		"child",
+		&model.Response{
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("partial-success"),
+			}},
+		},
+	)
+	agentEvents <- event.NewErrorEvent(
+		inv.InvocationID,
+		"child",
+		model.ErrorTypeFlowError,
+		"boom",
+	)
+	close(agentEvents)
+	res, err := processAgentEventStream(
+		agent.NewInvocationContext(ctx, inv),
+		inv,
+		agentEvents,
+		nil,
+		"node",
+		State{},
+		parentEventChan,
+		"agent",
+		"",
+		&itelemetry.InvokeAgentTracker{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "partial-success", res.lastResponse)
+	require.NoError(t, res.terminalErr)
+	require.Len(t, parentEventChan, 2)
+}
+
+func TestProcessAgentEventStream_PropagatesTerminalErrorWhenEnabled(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	inv := agent.NewInvocation(
+		agent.WithInvocationID("inv-terminal-error-strict"),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithPropagateChildAgentErrors(true),
+		)),
+	)
+	agentEvents := make(chan *event.Event, 2)
+	parentEventChan := make(chan *event.Event, 2)
+	agentEvents <- event.NewResponseEvent(
+		inv.InvocationID,
+		"child",
+		&model.Response{
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("partial-success"),
+			}},
+		},
+	)
+	agentEvents <- event.NewErrorEvent(
+		inv.InvocationID,
+		"child",
+		model.ErrorTypeFlowError,
+		"boom",
+	)
+	close(agentEvents)
+	res, err := processAgentEventStream(
+		agent.NewInvocationContext(ctx, inv),
+		inv,
+		agentEvents,
+		nil,
+		"node",
+		State{},
+		parentEventChan,
+		"agent",
+		"",
+		&itelemetry.InvokeAgentTracker{},
+	)
+	require.EqualError(t, err, "boom")
+	require.Equal(t, "", res.lastResponse)
+	require.EqualError(t, res.terminalErr, "boom")
+	require.Len(t, parentEventChan, 2)
+}
+
 func TestClearAgentTerminalErrorOnContinuedOutput_IgnoresLifecycleOnlyEvents(
 	t *testing.T,
 ) {

@@ -3945,7 +3945,7 @@ func (s *duplicateFullInnerEventStreamTool) StreamableCall(ctx context.Context, 
 	return st.Reader, nil
 }
 
-func TestExecuteStreamableTool_DedupsRepeatedInnerFinalMessage(t *testing.T) {
+func TestExecuteStreamableTool_PreservesRepeatedInnerFinalMessageByDefault(t *testing.T) {
 	f := NewFunctionCallResponseProcessor(false, nil)
 	ctx := context.Background()
 	inv := &agent.Invocation{
@@ -3962,7 +3962,7 @@ func TestExecuteStreamableTool_DedupsRepeatedInnerFinalMessage(t *testing.T) {
 	ch := make(chan *event.Event, 4)
 	_, res, _, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
 	require.NoError(t, err)
-	require.Equal(t, "abc", res.(string))
+	require.Equal(t, "abcabc", res.(string))
 }
 
 func TestExecuteStreamableTool_DoesNotDedupDistinctInnerFinalMessagesWithSameContent(t *testing.T) {

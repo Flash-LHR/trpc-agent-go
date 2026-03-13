@@ -1466,8 +1466,7 @@ type streamFinalResult struct {
 }
 
 type streamInnerEventState struct {
-	sawAssistantDeltaSinceMessage bool
-	pendingGraphToolErrorEvent    *event.Event
+	pendingGraphToolErrorEvent *event.Event
 }
 
 type normalizedFinalResultChunk struct {
@@ -1544,56 +1543,16 @@ func (f *FunctionCallResponseProcessor) consumeStream(
 func (f *FunctionCallResponseProcessor) appendInnerEventContent(
 	ev *event.Event,
 	contents *[]any,
-	state *streamInnerEventState,
 ) {
 	if ev.Response != nil && len(ev.Response.Choices) > 0 {
 		ch := ev.Response.Choices[0]
 		if ch.Delta.Content != "" {
 			*contents = append(*contents, ch.Delta.Content)
-			if state != nil {
-				state.sawAssistantDeltaSinceMessage = true
-			}
 		} else if ch.Message.Role == model.RoleAssistant &&
-			ch.Message.Content != "" &&
-			(!hasTrailingMergedString(*contents, ch.Message.Content) ||
-				state == nil ||
-				!state.sawAssistantDeltaSinceMessage) {
+			ch.Message.Content != "" {
 			*contents = append(*contents, ch.Message.Content)
-			if state != nil {
-				state.sawAssistantDeltaSinceMessage = false
-			}
-		} else if state != nil {
-			state.sawAssistantDeltaSinceMessage = false
 		}
 	}
-}
-
-func hasTrailingMergedString(contents []any, target string) bool {
-	if target == "" || len(contents) == 0 {
-		return false
-	}
-	totalLen := 0
-	start := len(contents)
-	for start > 0 {
-		str, ok := contents[start-1].(string)
-		if !ok {
-			break
-		}
-		totalLen += len(str)
-		start--
-		if totalLen >= len(target) {
-			break
-		}
-	}
-	if totalLen < len(target) {
-		return false
-	}
-	merged := tool.Merge(contents[start:])
-	mergedStr, ok := any(merged).(string)
-	if !ok {
-		return false
-	}
-	return mergedStr == target
 }
 
 // buildPartialToolResponseEvent constructs a partial tool.response event.
@@ -2016,7 +1975,7 @@ func (f *FunctionCallResponseProcessor) handleStreamInnerEvent(
 	if err := event.EmitEvent(ctx, eventChan, ev); err != nil {
 		return err
 	}
-	f.appendInnerEventContent(ev, contents, innerEventState)
+	f.appendInnerEventContent(ev, contents)
 	if !structuredErrors {
 		return nil
 	}

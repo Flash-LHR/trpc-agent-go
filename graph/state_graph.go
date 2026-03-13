@@ -2797,13 +2797,19 @@ func updateAgentStreamResultFromEvent(
 	res *agentEventStreamResult,
 	ev *event.Event,
 	tracker *itelemetry.InvokeAgentTracker,
+	trackTerminalErrors bool,
 ) {
 	updateAgentLastResponse(res, ev)
 	updateAgentStructuredOutput(res, ev)
 	updateAgentTokenUsage(res, ev, tracker)
 	updateAgentInterrupt(res, ev)
 	updateAgentFinalState(ctx, res, ev)
-	clearAgentSuccessResultOnError(res, ev)
+	if trackTerminalErrors || shouldInvalidateAgentSuccessResult(ev) {
+		clearAgentSuccessResultOnError(res, ev)
+	}
+	if !trackTerminalErrors {
+		return
+	}
 	clearAgentTerminalErrorOnContinuedOutput(res, ev)
 	updateAgentTerminalError(res, ev)
 }
@@ -2881,6 +2887,18 @@ func clearAgentSuccessResultOnError(res *agentEventStreamResult, ev *event.Event
 	res.finalState = nil
 	res.rawDelta = nil
 	res.structuredOutput = nil
+}
+
+func shouldInvalidateAgentSuccessResult(ev *event.Event) bool {
+	if ev == nil {
+		return false
+	}
+	if ev.Error != nil && ev.Error.Type == agent.ErrorTypeAgentCallbackError {
+		return true
+	}
+	return ev.Response != nil &&
+		ev.Response.Error != nil &&
+		ev.Response.Error.Type == agent.ErrorTypeAgentCallbackError
 }
 
 func clearAgentTerminalErrorOnContinuedOutput(
@@ -3096,6 +3114,9 @@ func processAgentEventStream(
 	parentInvocation, _ := agent.InvocationFromContext(ctx)
 	suppressGraphCompletion := parentInvocation != nil &&
 		agent.IsGraphCompletionEventDisabled(parentInvocation)
+	propagateChildAgentErrors := agent.ShouldPropagateChildAgentErrors(
+		invocation,
+	)
 	streamLastResponse := ""
 	tap, err := newAgentDeltaStreamTap(ctx, streamName, &streamLastResponse)
 	if err != nil {
@@ -3120,6 +3141,7 @@ func processAgentEventStream(
 				&res,
 				agentEvent,
 				tracker,
+				propagateChildAgentErrors,
 			)
 			updateAgentLastResponseValue(&streamLastResponse, agentEvent)
 			continue
@@ -3134,10 +3156,11 @@ func processAgentEventStream(
 			&res,
 			agentEvent,
 			tracker,
+			propagateChildAgentErrors,
 		)
 		updateAgentLastResponseValue(&streamLastResponse, agentEvent)
 	}
-	if res.terminalErr != nil {
+	if propagateChildAgentErrors && res.terminalErr != nil {
 		return res, res.terminalErr
 	}
 	return res, nil

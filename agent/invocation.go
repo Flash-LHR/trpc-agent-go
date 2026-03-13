@@ -192,6 +192,7 @@ type runControlConfig struct {
 	DisableGraphCompletionEvent bool
 	DisableGraphExecutorEvents  bool
 	EventChannelBufferSize      int
+	PropagateChildAgentErrors   bool
 }
 
 // NewRunOptions builds a RunOptions value from RunOption functions.
@@ -361,6 +362,20 @@ func WithEventChannelBufferSize(size int) RunOption {
 	return func(opts *RunOptions) {
 		cfg := getRunControlConfig(opts)
 		cfg.EventChannelBufferSize = size
+		setRunControlConfig(opts, cfg)
+	}
+}
+
+// WithPropagateChildAgentErrors enables strict propagation for terminal child
+// agent errors observed through agent-node event streams.
+//
+// When disabled (default), agent nodes preserve the legacy compatibility
+// behavior: child error events remain observable in the stream but do not
+// automatically fail the parent graph.
+func WithPropagateChildAgentErrors(enabled bool) RunOption {
+	return func(opts *RunOptions) {
+		cfg := getRunControlConfig(opts)
+		cfg.PropagateChildAgentErrors = enabled
 		setRunControlConfig(opts, cfg)
 	}
 }
@@ -860,6 +875,15 @@ func GetEventChannelBufferSize(inv *Invocation) int {
 		return 0
 	}
 	return getRunControlConfig(&inv.RunOptions).EventChannelBufferSize
+}
+
+// ShouldPropagateChildAgentErrors reports whether terminal child agent errors
+// should fail the parent graph by default.
+func ShouldPropagateChildAgentErrors(inv *Invocation) bool {
+	if inv == nil {
+		return false
+	}
+	return getRunControlConfig(&inv.RunOptions).PropagateChildAgentErrors
 }
 
 // NewInvocation create a new invocation
