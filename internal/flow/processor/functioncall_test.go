@@ -3770,7 +3770,7 @@ func TestExecuteStreamableTool_OptInEnablesStructuredStreamErrors(t *testing.T) 
 	f := NewFunctionCallResponseProcessor(false, nil)
 	ctx := context.Background()
 	inv := &agent.Invocation{
-		InvocationID: "inv-structured-optin",
+		InvocationID: "inv-structured-option",
 		AgentName:    "tester",
 		Branch:       "br",
 		Model:        &mockModel{},
@@ -3784,7 +3784,7 @@ func TestExecuteStreamableTool_OptInEnablesStructuredStreamErrors(t *testing.T) 
 		structured: true,
 		streamChunk: tool.StreamChunk{
 			Content: event.NewErrorEvent(
-				"inv-structured-optin",
+				"inv-structured-option",
 				"child",
 				model.ErrorTypeFlowError,
 				"boom",
@@ -5096,6 +5096,93 @@ func TestExecuteToolCall_StreamableFinalStateOnlyResultStillRunsToolResultMessag
 	require.Equal(t, tc.ID, choices[0].Message.ToolID)
 }
 
+func TestExecuteToolCall_StreamableFinalStateOnlyResultCallbackError(t *testing.T) {
+	ctx := context.Background()
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterToolResultMessages(func(
+		_ context.Context,
+		_ *tool.ToolResultMessagesInput,
+	) (any, error) {
+		return nil, errors.New("callback boom")
+	})
+	p := NewFunctionCallResponseProcessor(false, callbacks)
+	inv := &agent.Invocation{
+		InvocationID: "inv-state-only-callback-error",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID: "call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "final",
+			Arguments: []byte(`{}`),
+		},
+	}
+	tools := map[string]tool.Tool{
+		"final": &finalResultStreamTool{
+			name:       "final",
+			stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
+		},
+	}
+	eventCh := make(chan *event.Event, 4)
+	_, choices, _, _, err := p.executeToolCall(
+		ctx,
+		inv,
+		tc,
+		tools,
+		0,
+		eventCh,
+	)
+	require.ErrorContains(t, err, "callback boom")
+	require.Nil(t, choices)
+}
+
+func TestExecuteToolCall_StreamableFinalStateOnlyResultCallbackFallsBackToDefaultChoice(t *testing.T) {
+	ctx := context.Background()
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterToolResultMessages(func(
+		_ context.Context,
+		_ *tool.ToolResultMessagesInput,
+	) (any, error) {
+		return nil, nil
+	})
+	p := NewFunctionCallResponseProcessor(false, callbacks)
+	inv := &agent.Invocation{
+		InvocationID: "inv-state-only-callback-default",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID: "call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "final",
+			Arguments: []byte(`{}`),
+		},
+	}
+	tools := map[string]tool.Tool{
+		"final": &finalResultStreamTool{
+			name:       "final",
+			stateDelta: map[string][]byte{"final": []byte(`"ok"`)},
+		},
+	}
+	eventCh := make(chan *event.Event, 4)
+	_, choices, _, _, err := p.executeToolCall(
+		ctx,
+		inv,
+		tc,
+		tools,
+		0,
+		eventCh,
+	)
+	require.NoError(t, err)
+	require.Len(t, choices, 1)
+	require.Equal(t, model.RoleTool, choices[0].Message.Role)
+	require.Equal(t, tc.ID, choices[0].Message.ToolID)
+	require.Equal(t, "{}", choices[0].Message.Content)
+}
+
 func TestHandleFunctionCalls_PreservesStateOnlyToolChoiceAlongsideOtherToolResults(t *testing.T) {
 	ctx := context.Background()
 	p := NewFunctionCallResponseProcessor(false, nil)
@@ -5149,6 +5236,20 @@ func TestHandleFunctionCalls_PreservesStateOnlyToolChoiceAlongsideOtherToolResul
 	require.Equal(t, "{}", evt.Choices[0].Message.Content)
 	require.Equal(t, "call-echo", evt.Choices[1].Message.ToolID)
 	require.Equal(t, `"echo-result"`, evt.Choices[1].Message.Content)
+}
+
+func TestShouldRequestStructuredStreamErrors_NilAndNamedTool(t *testing.T) {
+	require.False(t, shouldRequestStructuredStreamErrors(nil))
+	baseTool := &structuredErrorPreferenceStreamTool{name: "structured", structured: true}
+	namedTools := itool.NewNamedToolSet(&mockToolSet{tools: []tool.Tool{baseTool}}).Tools(context.Background())
+	require.Len(t, namedTools, 1)
+	namedStreamTool, ok := namedTools[0].(tool.StreamableTool)
+	require.True(t, ok)
+	require.True(t, shouldRequestStructuredStreamErrors(namedStreamTool))
+}
+
+func TestHasSyntheticStateOnlyToolChoice_NilContext(t *testing.T) {
+	require.False(t, hasSyntheticStateOnlyToolChoice(nil))
 }
 
 func TestHandleFunctionCalls_PreservesCallbackDefaultStateOnlyToolChoiceAlongsideOtherToolResults(t *testing.T) {
