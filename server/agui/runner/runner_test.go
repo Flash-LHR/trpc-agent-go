@@ -1845,7 +1845,10 @@ func TestRunnerAfterTranslateCallbackOverridesEmission(t *testing.T) {
 	fakeTrans := &fakeTranslator{events: [][]aguievents.Event{{aguievents.NewRunFinishedEvent("thread", "run")}}}
 	callbacks := translator.NewCallbacks().
 		RegisterAfterTranslate(func(ctx context.Context, evt aguievents.Event) (aguievents.Event, error) {
-			return replacement, nil
+			if _, ok := evt.(*aguievents.RunFinishedEvent); ok {
+				return replacement, nil
+			}
+			return nil, nil
 		})
 
 	underlying := &fakeRunner{
@@ -1879,7 +1882,7 @@ func TestRunnerAfterTranslateCallbackOverridesEmission(t *testing.T) {
 	ch, err := r.Run(context.Background(), input)
 	assert.NoError(t, err)
 	out := collectEvents(t, ch)
-	assert.Len(t, out, 2)
+	require.Len(t, out, 2)
 	assert.IsType(t, (*aguievents.RunErrorEvent)(nil), out[1])
 }
 
