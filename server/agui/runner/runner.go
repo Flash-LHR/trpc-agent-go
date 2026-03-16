@@ -80,6 +80,7 @@ func New(r trunner.Runner, opt ...Option) Runner {
 		running:                                make(map[session.Key]*sessionContext),
 		startSpan:                              opts.StartSpan,
 		flushInterval:                          opts.FlushInterval,
+		postRunFinalizationTimeout:             opts.PostRunFinalizationTimeout,
 		timeout:                                opts.Timeout,
 		cancelOnContextDoneEnabled:             opts.CancelOnContextDoneEnabled,
 		messagesSnapshotFollowEnabled:          opts.MessagesSnapshotFollowEnabled,
@@ -107,6 +108,7 @@ type runner struct {
 	running                                map[session.Key]*sessionContext
 	startSpan                              StartSpan
 	flushInterval                          time.Duration
+	postRunFinalizationTimeout             time.Duration
 	timeout                                time.Duration
 	cancelOnContextDoneEnabled             bool
 	messagesSnapshotFollowEnabled          bool
@@ -273,7 +275,7 @@ func (r *runner) run(ctx context.Context, cancel context.CancelFunc, key session
 	runID := input.runID
 	if input.enableTrack {
 		defer func() {
-			if err := r.tracker.Flush(ctx, input.key); err != nil {
+			if err := r.flushTrack(ctx, input.key); err != nil {
 				log.WarnfContext(
 					ctx,
 					"agui run: threadID: %s, runID: %s, "+
@@ -327,15 +329,61 @@ func (r *runner) run(ctx context.Context, cancel context.CancelFunc, key session
 		select {
 		case <-ctx.Done():
 			log.ErrorfContext(ctx, "agui run: threadID: %s, runID: %s, err: %v", threadID, runID, ctx.Err())
+			r.emitPostRunFinalizationEvents(ctx, events, input)
 			return
 		case agentEvent, ok := <-ch:
 			if !ok {
+				r.emitPostRunFinalizationEvents(ctx, events, input)
 				return
 			}
 			if !r.handleAgentEvent(ctx, events, input, agentEvent) {
 				return
 			}
 		}
+	}
+}
+
+func (r *runner) flushTrack(ctx context.Context, key session.Key) error {
+	flushCtx := agent.CloneContext(ctx)
+	flushCtx = context.WithoutCancel(flushCtx)
+	if r.postRunFinalizationTimeout > 0 {
+		timeoutCtx, cancel := context.WithTimeout(flushCtx, r.postRunFinalizationTimeout)
+		defer cancel()
+		flushCtx = timeoutCtx
+	}
+	return r.tracker.Flush(flushCtx, key)
+}
+
+func (r *runner) emitPostRunFinalizationEvents(ctx context.Context, events chan<- aguievents.Event, input *runInput) {
+	finalizer, ok := input.translator.(translator.PostRunFinalizingTranslator)
+	if !ok {
+		return
+	}
+	emitCtx := agent.CloneContext(ctx)
+	emitCtx = context.WithoutCancel(emitCtx)
+	if r.postRunFinalizationTimeout > 0 {
+		timeoutCtx, cancel := context.WithTimeout(emitCtx, r.postRunFinalizationTimeout)
+		defer cancel()
+		emitCtx = timeoutCtx
+	}
+	pending, err := finalizer.PostRunFinalizationEvents(emitCtx)
+	for _, evt := range pending {
+		if !r.emitEvent(emitCtx, events, evt, input) {
+			return
+		}
+	}
+	if err != nil {
+		log.ErrorfContext(
+			emitCtx,
+			"agui post-run finalization: threadID: %s, runID: %s, err: %v",
+			input.threadID,
+			input.runID,
+			err,
+		)
+		r.emitEvent(emitCtx, events, aguievents.NewRunErrorEvent(
+			fmt.Sprintf("post-run finalization: %v", err),
+			aguievents.WithRunID(input.runID),
+		), input)
 	}
 }
 

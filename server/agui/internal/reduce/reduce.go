@@ -97,7 +97,11 @@ func Reduce(appName, userID string, events []session.TrackEvent) ([]aguievents.M
 	r.finalizePartial()
 	messages := make([]aguievents.Message, 0, len(r.messages))
 	for _, message := range r.messages {
-		messages = append(messages, *message)
+		sanitized := sanitizeSnapshotMessage(message)
+		if sanitized == nil {
+			continue
+		}
+		messages = append(messages, *sanitized)
 	}
 	// In order to fetch the history messages as much as possible, still return the messages even if there is an error.
 	return messages, err
@@ -231,6 +235,25 @@ func (r *reducer) finalizePartial() {
 		}
 		parent.ToolCalls[state.index].Function.Arguments = strings.Clone(state.content.String())
 	}
+}
+
+func sanitizeSnapshotMessage(message *aguievents.Message) *aguievents.Message {
+	if message == nil {
+		return nil
+	}
+	if message.Role != types.RoleReasoning {
+		return message
+	}
+	if _, ok := message.ContentString(); ok {
+		return message
+	}
+	if message.EncryptedValue == "" {
+		return nil
+	}
+	cloned := *message
+	empty := ""
+	cloned.Content = &empty
+	return &cloned
 }
 
 // handleTextStart handles the text message start event.
