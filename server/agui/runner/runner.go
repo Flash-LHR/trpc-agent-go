@@ -416,9 +416,6 @@ func (r *runner) emitPostRunFinalizationEvents(ctx context.Context, events chan<
 	pending, err := finalizer.PostRunFinalizationEvents(ctx)
 	for _, evt := range pending {
 		if !r.emitEvent(ctx, events, evt, input) {
-			if terminal, _ := terminalRunSignal(evt); terminal {
-				input.terminalEmitted = false
-			}
 			return ctx.Err()
 		}
 	}
@@ -629,6 +626,9 @@ func (r *runner) handleAfterTranslate(ctx context.Context, event aguievents.Even
 
 func (r *runner) emitEvent(ctx context.Context, events chan<- aguievents.Event, event aguievents.Event,
 	input *runInput) bool {
+	if input != nil && input.terminalEmitted {
+		return false
+	}
 	event, err := r.handleAfterTranslate(ctx, event)
 	if err != nil {
 		log.ErrorfContext(
@@ -640,20 +640,20 @@ func (r *runner) emitEvent(ctx context.Context, events chan<- aguievents.Event, 
 			input.runID,
 			err,
 		)
+		runErr := aguievents.NewRunErrorEvent(fmt.Sprintf("after translate callback: %v", err),
+			aguievents.WithRunID(input.runID))
 		select {
-		case events <- aguievents.NewRunErrorEvent(fmt.Sprintf("after translate callback: %v", err),
-			aguievents.WithRunID(input.runID)):
+		case events <- runErr:
+			if input != nil {
+				input.terminalEmitted = true
+			}
 		case <-ctx.Done():
 			log.ErrorfContext(ctx, "agui emit event: context done, threadID: %s, runID: %s, err: %v",
 				input.threadID, input.runID, ctx.Err())
 		}
 		return false
 	}
-	if input != nil {
-		if terminal, _ := terminalRunSignal(event); terminal {
-			input.terminalEmitted = true
-		}
-	}
+	isTerminal, _ := terminalRunSignal(event)
 	log.DebugfContext(
 		ctx,
 		"agui emit event: emitted event: %v, threadID: %s, runID: %s",
@@ -675,6 +675,9 @@ func (r *runner) emitEvent(ctx context.Context, events chan<- aguievents.Event, 
 	}
 	select {
 	case events <- event:
+		if input != nil && isTerminal {
+			input.terminalEmitted = true
+		}
 		return true
 	case <-ctx.Done():
 		log.ErrorfContext(ctx, "agui emit event: context done, threadID: %s, runID: %s, err: %v",

@@ -315,6 +315,85 @@ func TestCancelEmitsTerminalRunErrorWhenPostRunFinalizationTimesOut(t *testing.T
 	assert.True(t, finalizer.finalizationTimed)
 }
 
+func TestCancelEmitsSingleTerminalEventAfterTranslateCallbackError(t *testing.T) {
+	callbacks := translator.NewCallbacks().
+		RegisterAfterTranslate(func(ctx context.Context, evt aguievents.Event) (aguievents.Event, error) {
+			if _, ok := evt.(*aguievents.ReasoningMessageEndEvent); ok {
+				return nil, errors.New("after translate fail")
+			}
+			return evt, nil
+		})
+	r := New(
+		&reasoningWaitRunner{},
+		WithReasoningContentEnabled(true),
+		WithTranslateCallbacks(callbacks),
+	).(*runner)
+	input := &adapter.RunAgentInput{
+		ThreadID: "thread",
+		RunID:    "run",
+		Messages: []types.Message{{Role: types.RoleUser, Content: "hi"}},
+	}
+	events, err := r.Run(context.Background(), input)
+	assert.NoError(t, err)
+	waitForAGUIEventType(t, events, (*aguievents.ReasoningMessageContentEvent)(nil))
+	err = r.Cancel(context.Background(), &adapter.RunAgentInput{ThreadID: "thread", RunID: "run"})
+	assert.NoError(t, err)
+	remaining := collectEvents(t, events)
+	terminalCount := 0
+	for _, evt := range remaining {
+		terminal, _ := terminalRunSignal(evt)
+		if terminal {
+			terminalCount++
+		}
+	}
+	assert.Equal(t, 1, terminalCount)
+	assert.True(t, hasRunErrorEvent(remaining))
+	assert.False(t, hasRunFinishedEvent(remaining))
+}
+
+func TestCancelEmitsSingleTerminalEventWhenFinalizerReturnsMultipleTerminalEvents(t *testing.T) {
+	ctxCh := make(chan context.Context, 1)
+	underlying := &waitCancelRunner{ctxCh: ctxCh}
+	finalizer := &finalizingTranslator{
+		finalizationEvents: []aguievents.Event{
+			aguievents.NewRunErrorEvent("boom", aguievents.WithRunID("run")),
+			aguievents.NewRunFinishedEvent("thread", "run"),
+		},
+	}
+	r := New(
+		underlying,
+		WithTranslatorFactory(func(context.Context, *adapter.RunAgentInput, ...translator.Option) (translator.Translator, error) {
+			return finalizer, nil
+		}),
+	).(*runner)
+	input := &adapter.RunAgentInput{
+		ThreadID: "thread",
+		RunID:    "run",
+		Messages: []types.Message{{Role: types.RoleUser, Content: "hi"}},
+	}
+	events, err := r.Run(context.Background(), input)
+	assert.NoError(t, err)
+	select {
+	case evt := <-events:
+		assert.IsType(t, (*aguievents.RunStartedEvent)(nil), evt)
+	case <-time.After(3 * time.Second):
+		assert.FailNow(t, "timeout waiting for RUN_STARTED")
+	}
+	err = r.Cancel(context.Background(), input)
+	assert.NoError(t, err)
+	remaining := collectEvents(t, events)
+	terminalCount := 0
+	for _, evt := range remaining {
+		terminal, _ := terminalRunSignal(evt)
+		if terminal {
+			terminalCount++
+		}
+	}
+	assert.Equal(t, 1, terminalCount)
+	assert.True(t, hasRunErrorEvent(remaining))
+	assert.False(t, hasRunFinishedEvent(remaining))
+}
+
 func TestCancelDoesNotReleaseSessionUntilRunExits(t *testing.T) {
 	underlying := &blockingRunRunner{
 		entered: make(chan struct{}, 1),
