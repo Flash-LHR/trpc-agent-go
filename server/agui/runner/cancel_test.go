@@ -69,6 +69,7 @@ type finalizingTranslator struct {
 	finalizationErr    error
 	finalizationCtxErr error
 	finalizationTimed  bool
+	waitForContextDone bool
 }
 
 func (f *finalizingTranslator) Translate(context.Context, *agentevent.Event) ([]aguievents.Event, error) {
@@ -76,8 +77,14 @@ func (f *finalizingTranslator) Translate(context.Context, *agentevent.Event) ([]
 }
 
 func (f *finalizingTranslator) PostRunFinalizationEvents(ctx context.Context) ([]aguievents.Event, error) {
+	if f.waitForContextDone {
+		<-ctx.Done()
+	}
 	f.finalizationCtxErr = ctx.Err()
 	_, f.finalizationTimed = ctx.Deadline()
+	if f.waitForContextDone {
+		return nil, ctx.Err()
+	}
 	return f.finalizationEvents, f.finalizationErr
 }
 
@@ -186,9 +193,10 @@ func TestCancelClosesReasoningStream(t *testing.T) {
 		remaining = append(remaining, evt)
 	}
 
-	assert.Len(t, remaining, 2)
+	assert.Len(t, remaining, 3)
 	assert.IsType(t, (*aguievents.ReasoningMessageEndEvent)(nil), remaining[0])
 	assert.IsType(t, (*aguievents.ReasoningEndEvent)(nil), remaining[1])
+	assert.IsType(t, (*aguievents.RunFinishedEvent)(nil), remaining[2])
 }
 
 func TestCancelEmitsRunErrorWhenPostRunFinalizationFails(t *testing.T) {
@@ -248,6 +256,62 @@ func TestCancelEmitsRunErrorWhenPostRunFinalizationFails(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "post-run finalization: boom", runErr.Message)
 	assert.NoError(t, finalizer.finalizationCtxErr)
+	assert.True(t, finalizer.finalizationTimed)
+}
+
+func TestCancelEmitsTerminalRunErrorWhenPostRunFinalizationTimesOut(t *testing.T) {
+	ctxCh := make(chan context.Context, 1)
+	underlying := &waitCancelRunner{ctxCh: ctxCh}
+	finalizer := &finalizingTranslator{waitForContextDone: true}
+	r := New(
+		underlying,
+		WithPostRunFinalizationTimeout(20*time.Millisecond),
+		WithTranslatorFactory(func(context.Context, *adapter.RunAgentInput, ...translator.Option) (translator.Translator, error) {
+			return finalizer, nil
+		}),
+	).(*runner)
+
+	input := &adapter.RunAgentInput{
+		ThreadID: "thread",
+		RunID:    "run",
+		Messages: []types.Message{{Role: types.RoleUser, Content: "hi"}},
+	}
+
+	events, err := r.Run(context.Background(), input)
+	assert.NoError(t, err)
+
+	select {
+	case evt := <-events:
+		assert.IsType(t, (*aguievents.RunStartedEvent)(nil), evt)
+	case <-time.After(3 * time.Second):
+		assert.FailNow(t, "timeout waiting for RUN_STARTED")
+	}
+
+	runCtx := <-ctxCh
+	assert.NotNil(t, runCtx)
+
+	err = r.Cancel(context.Background(), input)
+	assert.NoError(t, err)
+
+	assert.Eventually(t, func() bool {
+		select {
+		case <-runCtx.Done():
+			return true
+		default:
+			return false
+		}
+	}, 5*time.Second, 10*time.Millisecond)
+
+	var remaining []aguievents.Event
+	for evt := range events {
+		remaining = append(remaining, evt)
+	}
+
+	assert.Len(t, remaining, 1)
+	runErr, ok := remaining[0].(*aguievents.RunErrorEvent)
+	assert.True(t, ok)
+	assert.Equal(t, "post-run finalization: context deadline exceeded", runErr.Message)
+	assert.ErrorIs(t, finalizer.finalizationCtxErr, context.DeadlineExceeded)
 	assert.True(t, finalizer.finalizationTimed)
 }
 

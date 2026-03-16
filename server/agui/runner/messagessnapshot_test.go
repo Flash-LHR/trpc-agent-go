@@ -276,6 +276,51 @@ func TestMessagesSnapshotAfterCancelDuringReasoningKeepsSnapshotValid(t *testing
 	require.NoError(t, snapshot.Validate())
 }
 
+func TestMessagesSnapshotFollowAfterCancelStopsAtTerminalEvent(t *testing.T) {
+	svc := &testSessionService{}
+	svc.appendTrackFn = func(ctx context.Context, sess *session.Session,
+		evt *session.TrackEvent, opts ...session.Option) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if evt != nil {
+			svc.trackEvents = append(svc.trackEvents, *evt)
+		}
+		return nil
+	}
+	r := New(
+		&reasoningWaitRunner{},
+		WithAppName("demo"),
+		WithSessionService(svc),
+		WithReasoningContentEnabled(true),
+		WithFlushInterval(time.Millisecond),
+		WithMessagesSnapshotFollowEnabled(true),
+		WithMessagesSnapshotFollowMaxDuration(20*time.Millisecond),
+	).(*runner)
+	runInput := &adapter.RunAgentInput{
+		ThreadID: "thread",
+		RunID:    "run",
+		Messages: []types.Message{{Role: types.RoleUser, Content: "hi"}},
+	}
+	runStream, err := r.Run(context.Background(), runInput)
+	require.NoError(t, err)
+	waitForAGUIEventType(t, runStream, (*aguievents.ReasoningMessageContentEvent)(nil))
+	err = r.Cancel(context.Background(), &adapter.RunAgentInput{ThreadID: "thread", RunID: "run"})
+	require.NoError(t, err)
+	waitForAGUIStreamClose(t, runStream)
+	snapshotStream, err := r.MessagesSnapshot(context.Background(), &adapter.RunAgentInput{
+		ThreadID: "thread",
+		RunID:    "snapshot",
+	})
+	require.NoError(t, err)
+	snapshotEvents := collectAGUIEvents(t, snapshotStream)
+	require.Len(t, snapshotEvents, 3)
+	snapshot, ok := snapshotEvents[1].(*aguievents.MessagesSnapshotEvent)
+	require.True(t, ok)
+	require.NoError(t, snapshot.Validate())
+	require.IsType(t, (*aguievents.RunFinishedEvent)(nil), snapshotEvents[2])
+}
+
 func TestMessagesSnapshotEmptyTrack(t *testing.T) {
 	svc := &testSessionService{}
 	tracker, err := track.New(svc)

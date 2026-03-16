@@ -450,7 +450,9 @@ func TestRunIgnoresRequestCancelButRespectsBackendTimeout(t *testing.T) {
 		return errors.Is(runCtx.Err(), context.DeadlineExceeded)
 	}, time.Second, 5*time.Millisecond)
 
-	_ = collectEvents(t, eventsCh)
+	evts := collectEvents(t, eventsCh)
+	assert.False(t, hasRunFinishedEvent(evts))
+	assert.True(t, hasRunErrorEvent(evts))
 }
 
 func TestRunCancelsOnRequestCancelWhenEnabled(t *testing.T) {
@@ -503,7 +505,9 @@ func TestRunCancelsOnRequestCancelWhenEnabled(t *testing.T) {
 		return errors.Is(runCtx.Err(), context.Canceled)
 	}, time.Second, 5*time.Millisecond)
 
-	_ = collectEvents(t, eventsCh)
+	evts := collectEvents(t, eventsCh)
+	assert.False(t, hasRunFinishedEvent(evts))
+	assert.True(t, hasRunErrorEvent(evts))
 }
 
 func TestRunTimeoutUsesMinRequestDeadlineAndBackendTimeout(t *testing.T) {
@@ -2050,6 +2054,24 @@ func collectEvents(t *testing.T, ch <-chan aguievents.Event) []aguievents.Event 
 			return out
 		}
 	}
+}
+
+func hasRunFinishedEvent(events []aguievents.Event) bool {
+	for _, evt := range events {
+		if _, ok := evt.(*aguievents.RunFinishedEvent); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRunErrorEvent(events []aguievents.Event) bool {
+	for _, evt := range events {
+		if _, ok := evt.(*aguievents.RunErrorEvent); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func TestTranslateCallbackError(t *testing.T) {
