@@ -475,6 +475,59 @@ func TestMessagesSnapshotFollowUntilTerminalEvent(t *testing.T) {
 	require.Equal(t, "req-run", finished.RunID())
 }
 
+func TestMessagesSnapshotFollowContinuesOpenReasoningFromSnapshot(t *testing.T) {
+	base := time.Now().Add(-time.Second)
+	initial := &session.TrackEvents{
+		Track: track.TrackAGUI,
+		Events: []session.TrackEvent{
+			newTrackEventAt(t, aguievents.NewReasoningMessageStartEvent("reasoning-msg-1", "assistant"), base),
+		},
+	}
+	follow := &session.TrackEvents{
+		Track: track.TrackAGUI,
+		Events: []session.TrackEvent{
+			newTrackEventAt(t, aguievents.NewReasoningMessageContentEvent("reasoning-msg-1", "thinking"),
+				base.Add(time.Millisecond)),
+			newTrackEventAt(t, aguievents.NewReasoningMessageEndEvent("reasoning-msg-1"), base.Add(2*time.Millisecond)),
+			newTrackEventAt(t, aguievents.NewRunFinishedEvent("thread", "real-run"), base.Add(3*time.Millisecond)),
+		},
+	}
+	r := &runner{
+		runner:                            noopBaseRunner{},
+		userIDResolver:                    NewOptions().UserIDResolver,
+		runAgentInputHook:                 NewOptions().RunAgentInputHook,
+		appName:                           "demo",
+		tracker:                           &sequenceTracker{first: initial, second: follow},
+		flushInterval:                     time.Millisecond,
+		timeout:                           100 * time.Millisecond,
+		messagesSnapshotFollowEnabled:     true,
+		messagesSnapshotFollowMaxDuration: 100 * time.Millisecond,
+	}
+
+	stream, err := r.MessagesSnapshot(
+		context.Background(),
+		&adapter.RunAgentInput{ThreadID: "thread", RunID: "req-run"},
+	)
+	require.NoError(t, err)
+
+	collected := collectAGUIEvents(t, stream)
+	require.Len(t, collected, 5)
+	require.IsType(t, (*aguievents.RunStartedEvent)(nil), collected[0])
+	snapshot, ok := collected[1].(*aguievents.MessagesSnapshotEvent)
+	require.True(t, ok)
+	require.Len(t, snapshot.Messages, 1)
+	assert.Equal(t, "reasoning-msg-1", snapshot.Messages[0].ID)
+	assert.Equal(t, types.RoleReasoning, snapshot.Messages[0].Role)
+	content, ok := snapshot.Messages[0].ContentString()
+	require.True(t, ok)
+	assert.Equal(t, "", content)
+	require.IsType(t, (*aguievents.ReasoningMessageContentEvent)(nil), collected[2])
+	require.IsType(t, (*aguievents.ReasoningMessageEndEvent)(nil), collected[3])
+	finished, ok := collected[4].(*aguievents.RunFinishedEvent)
+	require.True(t, ok)
+	require.Equal(t, "req-run", finished.RunID())
+}
+
 func TestTrackEndsWithTerminalRunEvent(t *testing.T) {
 	base := time.Now().Add(-time.Second)
 	nonTerminal := newTrackEventAt(t, aguievents.NewCustomEvent("node.progress", aguievents.WithValue(map[string]any{"p": 1})), base)

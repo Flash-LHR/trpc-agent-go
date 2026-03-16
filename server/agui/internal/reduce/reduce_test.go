@@ -450,13 +450,18 @@ func TestReduceReasoningEncryptedValueCreatesMessageWhenMissing(t *testing.T) {
 	assert.Equal(t, "", content)
 }
 
-func TestReduceDropsReasoningMessageWithoutContent(t *testing.T) {
+func TestReduceKeepsOpenReasoningMessageWithoutContent(t *testing.T) {
 	events := trackEventsFrom(
 		aguievents.NewReasoningMessageStartEvent("reasoning-msg-1", "assistant"),
 	)
 	msgs, err := Reduce(testAppName, testUserID, events)
 	require.NoError(t, err)
-	require.Empty(t, msgs)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "reasoning-msg-1", msgs[0].ID)
+	assert.Equal(t, types.RoleReasoning, msgs[0].Role)
+	content, ok := msgs[0].ContentString()
+	require.True(t, ok)
+	assert.Equal(t, "", content)
 }
 
 func TestReduceReasoningEncryptedValueIgnoresToolCallSubtype(t *testing.T) {

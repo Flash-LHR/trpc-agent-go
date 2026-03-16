@@ -63,6 +63,7 @@ type reasoningState struct {
 	content strings.Builder
 	phase   reasoningPhase
 	index   int
+	started bool
 }
 
 // toolPhase is the phase of the tool call.
@@ -97,7 +98,7 @@ func Reduce(appName, userID string, events []session.TrackEvent) ([]aguievents.M
 	r.finalizePartial()
 	messages := make([]aguievents.Message, 0, len(r.messages))
 	for _, message := range r.messages {
-		sanitized := sanitizeSnapshotMessage(message)
+		sanitized := r.sanitizeSnapshotMessage(message)
 		if sanitized == nil {
 			continue
 		}
@@ -237,7 +238,7 @@ func (r *reducer) finalizePartial() {
 	}
 }
 
-func sanitizeSnapshotMessage(message *aguievents.Message) *aguievents.Message {
+func (r *reducer) sanitizeSnapshotMessage(message *aguievents.Message) *aguievents.Message {
 	if message == nil {
 		return nil
 	}
@@ -247,7 +248,8 @@ func sanitizeSnapshotMessage(message *aguievents.Message) *aguievents.Message {
 	if _, ok := message.ContentString(); ok {
 		return message
 	}
-	if message.EncryptedValue == "" {
+	state, ok := r.reasonings[message.ID]
+	if message.EncryptedValue == "" && (!ok || state.phase != reasoningReceiving || !state.started) {
 		return nil
 	}
 	cloned := *message
@@ -384,10 +386,11 @@ func (r *reducer) handleReasoningMessageStart(e *aguievents.ReasoningMessageStar
 	}
 	r.messages = append(r.messages, msg)
 	r.reasonings[e.MessageID] = &reasoningState{
-		role:  role,
-		name:  name,
-		phase: reasoningReceiving,
-		index: len(r.messages) - 1,
+		role:    role,
+		name:    name,
+		phase:   reasoningReceiving,
+		index:   len(r.messages) - 1,
+		started: true,
 	}
 	return nil
 }
