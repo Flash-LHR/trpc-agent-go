@@ -47,6 +47,7 @@ nav:
   - Server:
     - AG-UI: agui.md
     - A2A: a2a.md
+    - A2UI: a2ui.md
   - Observability: observability.md
   - Ecosystem: ecosystem.md
 
@@ -105,6 +106,7 @@ plugins:
             - 服务:
               - AG-UI: agui.md
               - A2A: a2a.md
+              - A2UI: a2ui.md
             - 可观测: observability.md
             - 生态: ecosystem.md
   - git-revision-date-localized:
