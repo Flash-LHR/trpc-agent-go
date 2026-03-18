@@ -64,6 +64,8 @@ const (
 	KeyGenAIOutputMessages = "gen_ai.output.messages"
 	// KeyGenAIAgentName is the attribute key for agent name.
 	KeyGenAIAgentName = "gen_ai.agent.name"
+	// KeyGenAIAgentID is the attribute key for agent ID.
+	KeyGenAIAgentID = "gen_ai.agent.id"
 	// KeyGenAIConversationID is the attribute key for conversation ID.
 	KeyGenAIConversationID = "gen_ai.conversation.id"
 	// KeyGenAIUsageOutputTokens is the attribute key for output token count.
@@ -121,6 +123,8 @@ const (
 	KeyGenAIToolCallArguments = "gen_ai.tool.call.arguments"
 	// KeyGenAIToolCallResult is the attribute key for tool call result.
 	KeyGenAIToolCallResult = "gen_ai.tool.call.result"
+	// KeyGenAIRequestToolDefinitions is the attribute key for tool definitions.
+	KeyGenAIRequestToolDefinitions = "gen_ai.request.tool.definitions"
 
 	// KeyErrorType is the attribute key for error type.
 	// Reference: https://github.com/open-telemetry/semantic-conventions/blob/main/docs/general/recording-errors.md#recording-errors-on-spans

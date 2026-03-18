@@ -20,9 +20,11 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	openai "github.com/openai/openai-go"
@@ -30,6 +32,7 @@ import (
 	"github.com/openai/openai-go/packages/respjson"
 	"github.com/openai/openai-go/packages/ssestream"
 	"github.com/openai/openai-go/shared"
+	"trpc.group/trpc-go/trpc-agent-go/internal/fileref"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	imodel "trpc.group/trpc-go/trpc-agent-go/model/internal/model"
@@ -44,6 +47,8 @@ const (
 	//nolint:gosec
 	deepSeekAPIKeyName     string = "DEEPSEEK_API_KEY"
 	defaultDeepSeekBaseURL string = "https://api.deepseek.com"
+	deepSeekHostFragment   string = "deepseek.com"
+	deepSeekModelPrefix    string = "deepseek"
 
 	//nolint:gosec
 	qwenAPIKeyName     string = "DASHSCOPE_API_KEY"
@@ -98,6 +103,8 @@ type variantConfig struct {
 	fileUploadRequestConvertor fileUploadRequestConvertor
 	// Whether to skip file type in content parts for this variant.
 	skipFileTypeInContent bool
+	// Whether user message content must be reduced to text only.
+	textOnlyMessageContent bool
 
 	// Default base URL for this variant.
 	defaultBaseURL string
@@ -138,6 +145,7 @@ var variantConfigs = map[Variant]variantConfig{
 		filePurpose:               openai.FilePurposeUserData,
 		fileDeletionMethod:        http.MethodDelete,
 		skipFileTypeInContent:     false,
+		textOnlyMessageContent:    true,
 		fileDeletionBodyConvertor: defaultFileDeletionBodyConvertor,
 		apiKeyName:                deepSeekAPIKeyName,
 		defaultBaseURL:            defaultDeepSeekBaseURL,
@@ -240,6 +248,7 @@ type Model struct {
 
 	accumulateChunkUsage AccumulateChunkUsage
 	optimizeForCache     bool // Optimize message structure for prompt caching
+	omitFileContentParts bool
 }
 
 // New creates a new OpenAI-like model.
@@ -247,6 +256,9 @@ func New(name string, opts ...Option) *Model {
 	o := defaultOptions
 	for _, opt := range opts {
 		opt(&o)
+	}
+	if !o.variantSet {
+		o.Variant = inferVariant(name, o.BaseURL)
 	}
 
 	cfg, cfgOK := variantConfigs[o.Variant]
@@ -312,7 +324,33 @@ func New(name string, opts ...Option) *Model {
 		maxInputTokensRatio:        o.TokenTailoringConfig.MaxInputTokensRatio,
 		accumulateChunkUsage:       o.accumulateChunkUsage,
 		optimizeForCache:           o.OptimizeForCache,
+		omitFileContentParts:       o.OmitFileContentParts,
 	}
+}
+
+func inferVariant(name string, baseURL string) Variant {
+	if isDeepSeekModelName(name) || isDeepSeekBaseURL(baseURL) {
+		return VariantDeepSeek
+	}
+	return VariantOpenAI
+}
+
+func isDeepSeekModelName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	return strings.HasPrefix(normalized, deepSeekModelPrefix)
+}
+
+func isDeepSeekBaseURL(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return strings.Contains(strings.ToLower(trimmed), deepSeekHostFragment)
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return strings.Contains(host, deepSeekHostFragment)
 }
 
 // Info implements the model.Model interface.
@@ -322,42 +360,73 @@ func (m *Model) Info() model.Info {
 	}
 }
 
+// prepareChatRequest validates and mutates the request in-place before sending it to the provider.
+func (m *Model) prepareChatRequest(
+	ctx context.Context,
+	request *model.Request,
+) (*openai.ChatCompletionNewParams, []openaiopt.RequestOption, error) {
+	if request == nil {
+		return nil, nil, errors.New("request cannot be nil")
+	}
+	// Optimize message structure for cache if enabled.
+	if m.optimizeForCache {
+		request.Messages = m.optimizeMessagesForCache(request.Messages)
+	}
+	// Apply token tailoring if configured.
+	m.applyTokenTailoring(ctx, request)
+	chatRequest, opts := m.buildChatRequest(request)
+	return chatRequest, opts, nil
+}
+
 // GenerateContent implements the model.Model interface.
 func (m *Model) GenerateContent(
 	ctx context.Context,
 	request *model.Request,
 ) (<-chan *model.Response, error) {
-	if request == nil {
-		return nil, errors.New("request cannot be nil")
+	chatRequest, opts, err := m.prepareChatRequest(ctx, request)
+	if err != nil {
+		return nil, err
 	}
-
-	// Optimize message structure for cache if enabled
-	if m.optimizeForCache {
-		request.Messages = m.optimizeMessagesForCache(request.Messages)
-	}
-
-	// Apply token tailoring if configured.
-	m.applyTokenTailoring(ctx, request)
-
 	responseChan := make(chan *model.Response, m.channelBufferSize)
-
-	chatRequest, opts := m.buildChatRequest(request)
-
 	go func() {
 		defer close(responseChan)
-
 		if m.chatRequestCallback != nil {
-			m.chatRequestCallback(ctx, &chatRequest)
+			m.chatRequestCallback(ctx, chatRequest)
 		}
-
 		if request.Stream {
-			m.handleStreamingResponse(ctx, chatRequest, responseChan, opts...)
+			m.handleStreamingResponse(ctx, *chatRequest, responseChan, opts...)
 		} else {
-			m.handleNonStreamingResponse(ctx, chatRequest, responseChan, opts...)
+			m.handleNonStreamingResponse(ctx, *chatRequest, responseChan, opts...)
 		}
 	}()
-
 	return responseChan, nil
+}
+
+// GenerateContentIter implements the model.IterModel interface.
+func (m *Model) GenerateContentIter(
+	ctx context.Context,
+	request *model.Request,
+) (model.Seq[*model.Response], error) {
+	chatRequest, opts, err := m.prepareChatRequest(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return func(yield func(*model.Response) bool) {
+		if m.chatRequestCallback != nil {
+			m.chatRequestCallback(ctx, chatRequest)
+		}
+		emit := func(resp *model.Response) bool {
+			if ctx.Err() != nil {
+				return false
+			}
+			return yield(resp)
+		}
+		if request.Stream {
+			m.handleStreamingResponseWithEmitter(ctx, *chatRequest, emit, opts...)
+			return
+		}
+		m.handleNonStreamingResponseWithEmitter(ctx, *chatRequest, emit, opts...)
+	}, nil
 }
 
 // optimizeMessagesForCache reorders messages to improve cache hit rates.
@@ -435,53 +504,11 @@ func (m *Model) applyTokenTailoring(ctx context.Context, request *model.Request)
 	}
 
 	request.Messages = tailored
-
-	// Calculate remaining tokens for output based on context window.
-	usedTokens, err := m.tokenCounter.CountTokensRange(ctx, request.Messages, 0, len(request.Messages))
-	if err != nil {
-		log.WarnContext(
-			ctx,
-			"failed to count tokens after tailoring",
-			err,
-		)
-		return
-	}
-
-	// Set max output tokens only if user hasn't specified it.
-	// This respects user's explicit configuration while providing a safe default.
-	if request.GenerationConfig.MaxTokens == nil {
-		contextWindow := imodel.ResolveContextWindow(m.name)
-		var maxOutputTokens int
-		if m.protocolOverheadTokens > 0 || m.outputTokensFloor > 0 {
-			// Use custom parameters if any are set.
-			maxOutputTokens = imodel.CalculateMaxOutputTokensWithParams(
-				contextWindow,
-				usedTokens,
-				m.protocolOverheadTokens,
-				m.outputTokensFloor,
-				m.safetyMarginRatio,
-			)
-		} else {
-			// Use default parameters.
-			maxOutputTokens = imodel.CalculateMaxOutputTokens(contextWindow, usedTokens)
-		}
-		if maxOutputTokens > 0 {
-			request.GenerationConfig.MaxTokens = &maxOutputTokens
-			log.DebugfContext(
-				ctx,
-				"token tailoring: contextWindow=%d, usedTokens=%d, "+
-					"maxOutputTokens=%d",
-				contextWindow,
-				usedTokens,
-				maxOutputTokens,
-			)
-		}
-	}
 }
 
 // buildChatRequest converts our Request to OpenAI request params and options.
-func (m *Model) buildChatRequest(request *model.Request) (openai.ChatCompletionNewParams, []openaiopt.RequestOption) {
-	chatRequest := openai.ChatCompletionNewParams{
+func (m *Model) buildChatRequest(request *model.Request) (*openai.ChatCompletionNewParams, []openaiopt.RequestOption) {
+	chatRequest := &openai.ChatCompletionNewParams{
 		Model:    shared.ChatModel(m.name),
 		Messages: m.convertMessages(request.Messages),
 		Tools:    m.convertTools(request.Tools),
@@ -657,7 +684,8 @@ func (m *Model) convertSystemMessageContent(msg model.Message) openai.ChatComple
 	}
 }
 
-// convertUserMessageContent converts message content to user message content union.
+// convertUserMessageContent converts a message into an OpenAI user
+// message content union.
 func (m *Model) convertUserMessageContent(
 	msg model.Message,
 ) (openai.ChatCompletionUserMessageParamContentUnion, map[string]any) {
@@ -667,44 +695,259 @@ func (m *Model) convertUserMessageContent(
 			OfString: openai.String(msg.Content),
 		}, nil
 	}
-	var (
-		contentParts []openai.ChatCompletionContentPartUnionParam
-		extraFields  = make(map[string]any)
+
+	fileHint := m.userFileHint(msg)
+	contentParts := make(
+		[]openai.ChatCompletionContentPartUnionParam,
+		0,
+		len(msg.ContentParts)+2,
 	)
-	// Add Content as a text part if present.
 	if msg.Content != "" {
-		contentParts = append(
-			contentParts,
-			openai.ChatCompletionContentPartUnionParam{
-				OfText: &openai.ChatCompletionContentPartTextParam{
-					Text: msg.Content,
-				},
-			},
-		)
+		contentParts = append(contentParts, userTextPart(msg.Content))
 	}
-	for _, part := range msg.ContentParts {
+	if fileHint != "" {
+		contentParts = append(contentParts, userTextPart(fileHint))
+	}
+	if omittedHint := m.omittedContentHint(msg.ContentParts); omittedHint != "" {
+		contentParts = append(contentParts, userTextPart(omittedHint))
+	}
+	extraFields := m.appendUserContentParts(&contentParts, msg.ContentParts)
+
+	if strings.TrimSpace(msg.Content) == "" &&
+		fileHint != "" &&
+		onlyFileContentParts(msg.ContentParts) {
+		return openai.ChatCompletionUserMessageParamContentUnion{
+			OfArrayOfContentParts: contentParts,
+		}, extraFields
+	}
+
+	if content, ok := singleUserContentString(
+		msg.Content,
+		fileHint,
+		contentParts,
+		extraFields,
+	); ok {
+		return openai.ChatCompletionUserMessageParamContentUnion{
+			OfString: openai.String(content),
+		}, nil
+	}
+
+	return openai.ChatCompletionUserMessageParamContentUnion{
+		OfArrayOfContentParts: contentParts,
+	}, extraFields
+}
+
+func (m *Model) userFileHint(msg model.Message) string {
+	if strings.TrimSpace(msg.Content) != "" {
+		return ""
+	}
+	if !m.omitFileContentParts &&
+		!m.variantConfig.skipFileTypeInContent &&
+		!onlyInternalFileContentParts(msg.ContentParts) {
+		return ""
+	}
+	if !onlyFileContentParts(msg.ContentParts) {
+		return ""
+	}
+	return fileHintForContentParts(msg.ContentParts)
+}
+
+func onlyFileContentParts(parts []model.ContentPart) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	for _, part := range parts {
+		if part.Type != model.ContentTypeFile {
+			return false
+		}
+	}
+	return true
+}
+
+func onlyInternalFileContentParts(parts []model.ContentPart) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	for _, part := range parts {
+		if part.Type != model.ContentTypeFile || part.File == nil {
+			return false
+		}
+		if !isInternalOnlyFile(part.File) {
+			return false
+		}
+	}
+	return true
+}
+
+func userTextPart(text string) openai.ChatCompletionContentPartUnionParam {
+	return openai.ChatCompletionContentPartUnionParam{
+		OfText: &openai.ChatCompletionContentPartTextParam{
+			Text: text,
+		},
+	}
+}
+
+func (m *Model) appendUserContentParts(
+	dst *[]openai.ChatCompletionContentPartUnionParam,
+	parts []model.ContentPart,
+) map[string]any {
+	var extraFields map[string]any
+	for _, part := range parts {
+		if m.variantConfig.textOnlyMessageContent &&
+			part.Type != model.ContentTypeText {
+			continue
+		}
+		if part.Type == model.ContentTypeFile &&
+			m.omitFileContentParts {
+			continue
+		}
+		if part.Type == model.ContentTypeFile &&
+			part.File != nil &&
+			isInternalOnlyFile(part.File) {
+			continue
+		}
+		if part.Type == model.ContentTypeFile &&
+			m.variantConfig.skipFileTypeInContent {
+			extraFields = appendFileID(extraFields, part)
+			continue
+		}
 		contentPart := m.convertContentPart(part)
 		if contentPart == nil {
 			continue
 		}
-		// Handle file content parts based on variant configuration.
-		if part.Type == model.ContentTypeFile && m.variantConfig.skipFileTypeInContent {
-			const fileIDsKey = "file_ids"
-			// Collect file IDs in extraFields under "file_ids".
-			fileIDs, ok := extraFields[fileIDsKey].([]string)
-			if !ok {
-				fileIDs = []string{}
-			}
-			fileIDs = append(fileIDs, part.File.FileID)
-			extraFields[fileIDsKey] = fileIDs
+		*dst = append(*dst, *contentPart)
+	}
+	return extraFields
+}
+
+func (m *Model) omittedContentHint(parts []model.ContentPart) string {
+	if !m.variantConfig.textOnlyMessageContent {
+		return ""
+	}
+
+	var imageCount, audioCount, fileCount int
+	for _, part := range parts {
+		switch part.Type {
+		case model.ContentTypeImage:
+			imageCount++
+		case model.ContentTypeAudio:
+			audioCount++
+		case model.ContentTypeFile:
+			fileCount++
+		}
+	}
+	return omittedAttachmentHint(imageCount, audioCount, fileCount)
+}
+
+func omittedAttachmentHint(
+	imageCount int,
+	audioCount int,
+	fileCount int,
+) string {
+	const (
+		omittedHintPrefix  = "Omitted non-text attachments for this provider: "
+		omittedHintSuffix  = "."
+		omittedImageSingle = "1 image"
+		omittedImagePlural = "%d images"
+		omittedAudioSingle = "1 audio clip"
+		omittedAudioPlural = "%d audio clips"
+		omittedFileSingle  = "1 file"
+		omittedFilePlural  = "%d files"
+	)
+
+	parts := make([]string, 0, 3)
+	if imageCount == 1 {
+		parts = append(parts, omittedImageSingle)
+	} else if imageCount > 1 {
+		parts = append(parts, fmt.Sprintf(omittedImagePlural, imageCount))
+	}
+	if audioCount == 1 {
+		parts = append(parts, omittedAudioSingle)
+	} else if audioCount > 1 {
+		parts = append(parts, fmt.Sprintf(omittedAudioPlural, audioCount))
+	}
+	if fileCount == 1 {
+		parts = append(parts, omittedFileSingle)
+	} else if fileCount > 1 {
+		parts = append(parts, fmt.Sprintf(omittedFilePlural, fileCount))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return omittedHintPrefix + strings.Join(parts, ", ") + omittedHintSuffix
+}
+
+func appendFileID(
+	extraFields map[string]any,
+	part model.ContentPart,
+) map[string]any {
+	if part.File == nil || !isProviderFileID(part.File.FileID) {
+		return extraFields
+	}
+	const fileIDsKey = "file_ids"
+	if extraFields == nil {
+		extraFields = make(map[string]any)
+	}
+	fileIDs, ok := extraFields[fileIDsKey].([]string)
+	if !ok {
+		fileIDs = []string{}
+	}
+	fileIDs = append(fileIDs, part.File.FileID)
+	extraFields[fileIDsKey] = fileIDs
+	return extraFields
+}
+
+func singleUserContentString(
+	mainText string,
+	fileHint string,
+	contentParts []openai.ChatCompletionContentPartUnionParam,
+	extraFields map[string]any,
+) (string, bool) {
+	if extraFields != nil {
+		return "", false
+	}
+	if len(contentParts) != 1 {
+		return "", false
+	}
+	if contentParts[0].OfText == nil {
+		return "", false
+	}
+
+	text := contentParts[0].OfText.Text
+	if mainText != "" && text == mainText {
+		return mainText, true
+	}
+	if mainText == "" && fileHint != "" && text == fileHint {
+		return fileHint, true
+	}
+	return "", false
+}
+
+func fileHintForContentParts(parts []model.ContentPart) string {
+	const (
+		fileHintDefaultName = "attachment"
+		fileHintSingleFmt   = "Uploaded file: %s (available to tools)."
+		fileHintMultiFmt    = "Uploaded files: %s (available to tools)."
+	)
+
+	var names []string
+	for _, part := range parts {
+		if part.Type != model.ContentTypeFile || part.File == nil {
 			continue
 		}
-		// For non-file or non-skipped file types, add to contentParts.
-		contentParts = append(contentParts, *contentPart)
+		name := safeFileHintName(part.File)
+		if name == "" {
+			name = fileHintDefaultName
+		}
+		names = append(names, name)
 	}
-	return openai.ChatCompletionUserMessageParamContentUnion{
-		OfArrayOfContentParts: contentParts,
-	}, extraFields
+	if len(names) == 0 {
+		return ""
+	}
+	if len(names) == 1 {
+		return fmt.Sprintf(fileHintSingleFmt, names[0])
+	}
+	return fmt.Sprintf(fileHintMultiFmt, strings.Join(names, ", "))
 }
 
 // convertAssistantMessageContent converts message content to assistant message content union.
@@ -776,9 +1019,13 @@ func (m *Model) convertContentPart(part model.ContentPart) *openai.ChatCompletio
 		}
 	case model.ContentTypeFile:
 		if part.File != nil {
+			params, ok := fileToParamsOK(part.File)
+			if !ok {
+				return nil
+			}
 			return &openai.ChatCompletionContentPartUnionParam{
 				OfFile: &openai.ChatCompletionContentPartFileParam{
-					File: fileToParams(part.File),
+					File: params,
 				},
 			}
 		}
@@ -793,16 +1040,69 @@ func imageToURLOrBase64(image *model.Image) string {
 	return "data:image/" + image.Format + ";base64," + base64.StdEncoding.EncodeToString(image.Data)
 }
 
-func fileToParams(file *model.File) openai.ChatCompletionContentPartFileFileParam {
-	if file.FileID != "" {
+func isProviderFileID(fileID string) bool {
+	id := strings.TrimSpace(fileID)
+	if id == "" {
+		return false
+	}
+	return !fileref.IsInternalFileRef(id)
+}
+
+func isInternalOnlyFile(file *model.File) bool {
+	if file == nil {
+		return false
+	}
+	return fileref.IsInternalFileRef(file.FileID) &&
+		len(file.Data) == 0
+}
+
+func safeFileHintName(file *model.File) string {
+	if file == nil {
+		return ""
+	}
+	name := strings.TrimSpace(file.Name)
+	if name != "" {
+		return name
+	}
+	if display := fileref.DisplayName(file.FileID); display != "" {
+		return display
+	}
+	if isProviderFileID(file.FileID) {
+		return strings.TrimSpace(file.FileID)
+	}
+	return ""
+}
+
+func fileToParamsOK(
+	file *model.File,
+) (openai.ChatCompletionContentPartFileFileParam, bool) {
+	if file == nil {
+		return openai.ChatCompletionContentPartFileFileParam{}, false
+	}
+	if isProviderFileID(file.FileID) {
 		return openai.ChatCompletionContentPartFileFileParam{
 			FileID: openai.String(file.FileID),
-		}
+		}, true
 	}
+	if len(file.Data) == 0 {
+		return openai.ChatCompletionContentPartFileFileParam{}, false
+	}
+	const (
+		fileDataPrefix = "data:"
+		fileDataBase64 = ";base64,"
+	)
+	encoded := base64.StdEncoding.EncodeToString(file.Data)
+	fileData := fileDataPrefix + file.MimeType + fileDataBase64 +
+		encoded
 	return openai.ChatCompletionContentPartFileFileParam{
-		FileData: openai.String("data:" + file.MimeType + ";base64," + base64.StdEncoding.EncodeToString(file.Data)),
+		FileData: openai.String(fileData),
 		Filename: openai.String(file.Name),
-	}
+	}, true
+}
+
+func fileToParams(file *model.File) openai.ChatCompletionContentPartFileFileParam {
+	params, _ := fileToParamsOK(file)
+	return params
 }
 
 func audioToBase64(audio *model.Audio) string {
@@ -893,8 +1193,29 @@ func (m *Model) handleStreamingResponse(
 	responseChan chan<- *model.Response,
 	opts ...openaiopt.RequestOption,
 ) {
-	stream := m.client.Chat.Completions.NewStreaming(
-		ctx, chatRequest, opts...)
+	emitter := func(resp *model.Response) bool {
+		select {
+		case responseChan <- resp:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	m.handleStreamingResponseWithEmitter(ctx, chatRequest, emitter, opts...)
+}
+
+// responseEmitter emits a response and returns false to stop streaming.
+type responseEmitter func(*model.Response) bool
+
+// handleStreamingResponseWithEmitter handles streaming chat completion responses.
+// It returns early when emit returns false.
+func (m *Model) handleStreamingResponseWithEmitter(
+	ctx context.Context,
+	chatRequest openai.ChatCompletionNewParams,
+	emit responseEmitter,
+	opts ...openaiopt.RequestOption,
+) {
+	stream := m.client.Chat.Completions.NewStreaming(ctx, chatRequest, opts...)
 	defer stream.Close()
 
 	acc := openai.ChatCompletionAccumulator{}
@@ -942,15 +1263,14 @@ func (m *Model) handleStreamingResponse(
 			m.chatChunkCallback(ctx, &chatRequest, &chunk)
 		}
 
-		if err := m.sendPartialResponse(ctx, chunk, responseChan); err != nil {
+		if !emit(m.createPartialResponse(chunk)) {
 			return
 		}
 	}
 
-	// Send final response with usage information if available.
-	m.sendFinalResponse(ctx, stream, acc, idToIndexMap, extraFieldsMap, reasoningBuf.String(), responseChan)
+	m.emitStreamingFinalResponse(ctx, stream, acc, idToIndexMap, extraFieldsMap, reasoningBuf.String(), emit)
 
-	// Call the stream complete callback after final response is sent.
+	// Call the stream complete callback after final response is emitted.
 	m.handleStreamCompleteCallback(ctx, chatRequest, acc, stream.Err())
 }
 
@@ -1184,6 +1504,21 @@ func (m *Model) collectExtraFieldsFromChunk(
 	}
 }
 
+func applyOpenAISDKTokenDetailsAccumulationFix(
+	acc *openai.ChatCompletionAccumulator,
+	chunk openai.ChatCompletionChunk,
+) {
+	// Temporary workaround for token details accumulation.
+	// See https://github.com/trpc-group/trpc-agent-go/issues/1270.
+	// Remove this after upgrading openai-go to v3.10.0.
+	acc.Usage.CompletionTokensDetails.AcceptedPredictionTokens += chunk.Usage.CompletionTokensDetails.AcceptedPredictionTokens
+	acc.Usage.CompletionTokensDetails.AudioTokens += chunk.Usage.CompletionTokensDetails.AudioTokens
+	acc.Usage.CompletionTokensDetails.ReasoningTokens += chunk.Usage.CompletionTokensDetails.ReasoningTokens
+	acc.Usage.CompletionTokensDetails.RejectedPredictionTokens += chunk.Usage.CompletionTokensDetails.RejectedPredictionTokens
+	acc.Usage.PromptTokensDetails.AudioTokens += chunk.Usage.PromptTokensDetails.AudioTokens
+	acc.Usage.PromptTokensDetails.CachedTokens += chunk.Usage.PromptTokensDetails.CachedTokens
+}
+
 // accumulateChunk accumulates the chunk into the accumulator and reasoning buffer.
 func (m *Model) accumulateChunk(
 	chunk openai.ChatCompletionChunk,
@@ -1197,7 +1532,10 @@ func (m *Model) accumulateChunk(
 		// avoid known panics when JSON.ToolCalls is marked present but the
 		// typed ToolCalls slice is empty, especially on finish_reason chunks.
 		sanitizedChunk := sanitizeChunkForAccumulator(chunk)
-		acc.AddChunk(sanitizedChunk)
+		if acc.AddChunk(sanitizedChunk) {
+			applyOpenAISDKTokenDetailsAccumulationFix(acc, chunk)
+		}
+
 		if m.accumulateChunkUsage != nil {
 			accUsage, chunkUsage := completionUsageToModelUsage(acc.Usage), completionUsageToModelUsage(chunk.Usage)
 			usage := inverseOpenAISDKAddChunkUsage(accUsage, chunkUsage)
@@ -1350,7 +1688,11 @@ func extractReasoningContent(extraFields map[string]respjson.Field) string {
 	}
 	reasoningField, ok := extraFields[model.ReasoningContentKey]
 	if !ok {
-		return ""
+		// Ollama and some providers use "reasoning" instead of "reasoning_content".
+		reasoningField, ok = extraFields[model.ReasoningContentKeyAlt]
+		if !ok {
+			return ""
+		}
 	}
 	reasoningStr, err := strconv.Unquote(reasoningField.Raw())
 	if err == nil {
@@ -1448,15 +1790,15 @@ func (m *Model) createPartialResponse(chunk openai.ChatCompletionChunk) *model.R
 	return response
 }
 
-// sendFinalResponse sends the final response with accumulated data.
-func (m *Model) sendFinalResponse(
+// emitStreamingFinalResponse emits the final response with accumulated data.
+func (m *Model) emitStreamingFinalResponse(
 	ctx context.Context,
 	stream *ssestream.Stream[openai.ChatCompletionChunk],
 	acc openai.ChatCompletionAccumulator,
 	idToIndexMap map[string]int,
 	extraFieldsMap map[string]map[string]any,
 	aggregatedReasoning string,
-	responseChan chan<- *model.Response,
+	emit responseEmitter,
 ) {
 	if stream.Err() == nil {
 		// Check accumulated tool calls (batch processing after streaming is complete).
@@ -1470,7 +1812,7 @@ func (m *Model) sendFinalResponse(
 
 		// If accumulator is empty but we have aggregated reasoning, create a response with it.
 		if len(acc.Choices) == 0 && aggregatedReasoning != "" {
-			finalResponse := &model.Response{
+			emit(&model.Response{
 				Object:    model.ObjectTypeChatCompletion,
 				ID:        acc.ID,
 				Created:   acc.Created,
@@ -1487,36 +1829,21 @@ func (m *Model) sendFinalResponse(
 						},
 					},
 				},
-			}
-			select {
-			case responseChan <- finalResponse:
-			case <-ctx.Done():
-			}
+			})
 			return
 		}
-
-		finalResponse := m.createFinalResponse(acc, hasToolCall, accumulatedToolCalls, aggregatedReasoning)
-
-		select {
-		case responseChan <- finalResponse:
-		case <-ctx.Done():
-		}
-	} else {
-		// Send error response.
-		errorResponse := &model.Response{
-			Error: &model.ResponseError{
-				Message: stream.Err().Error(),
-				Type:    model.ErrorTypeStreamError,
-			},
-			Timestamp: time.Now(),
-			Done:      true,
-		}
-
-		select {
-		case responseChan <- errorResponse:
-		case <-ctx.Done():
-		}
+		emit(m.createFinalResponse(acc, hasToolCall, accumulatedToolCalls, aggregatedReasoning))
+		return
 	}
+	// Send error response.
+	emit(&model.Response{
+		Error: &model.ResponseError{
+			Message: stream.Err().Error(),
+			Type:    model.ErrorTypeStreamError,
+		},
+		Timestamp: time.Now(),
+		Done:      true,
+	})
 }
 
 // processAccumulatedToolCalls processes accumulated tool calls.
@@ -1633,29 +1960,48 @@ func (m *Model) handleNonStreamingResponse(
 	responseChan chan<- *model.Response,
 	opts ...openaiopt.RequestOption,
 ) {
-	chatCompletion, err := m.client.Chat.Completions.New(
-		ctx, chatRequest, opts...)
+	m.handleNonStreamingResponseWithEmitter(ctx, chatRequest, func(resp *model.Response) bool {
+		select {
+		case responseChan <- resp:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}, opts...)
+}
+
+// handleNonStreamingResponseWithEmitter handles non-streaming chat completion responses.
+// It returns early when emit returns false.
+func (m *Model) handleNonStreamingResponseWithEmitter(
+	ctx context.Context,
+	chatRequest openai.ChatCompletionNewParams,
+	emit responseEmitter,
+	opts ...openaiopt.RequestOption,
+) {
+	chatCompletion, err := m.client.Chat.Completions.New(ctx, chatRequest, opts...)
 	if err != nil {
-		errorResponse := &model.Response{
+		if ctx.Err() != nil {
+			return
+		}
+		emit(&model.Response{
 			Error: &model.ResponseError{
 				Message: err.Error(),
 				Type:    model.ErrorTypeAPIError,
 			},
 			Timestamp: time.Now(),
 			Done:      true,
-		}
-
-		select {
-		case responseChan <- errorResponse:
-		case <-ctx.Done():
-		}
+		})
 		return
 	}
 	// Call response callback on successful completion.
 	if m.chatResponseCallback != nil {
 		m.chatResponseCallback(ctx, &chatRequest, chatCompletion)
 	}
+	emit(m.createResponseFromCompletion(chatCompletion))
+}
 
+// createResponseFromCompletion converts a provider response into a model.Response.
+func (m *Model) createResponseFromCompletion(chatCompletion *openai.ChatCompletion) *model.Response {
 	response := &model.Response{
 		ID:        chatCompletion.ID,
 		Object:    string(chatCompletion.Object), // Convert constant to string
@@ -1718,10 +2064,7 @@ func (m *Model) handleNonStreamingResponse(
 		response.SystemFingerprint = &chatCompletion.SystemFingerprint
 	}
 
-	select {
-	case responseChan <- response:
-	case <-ctx.Done():
-	}
+	return response
 }
 
 // FileOptions is the options for file operations.
@@ -1993,4 +2336,47 @@ func (m *Model) GetFile(
 		return nil, fmt.Errorf("failed to get file: %w", err)
 	}
 	return fileObj, nil
+}
+
+// DownloadFile downloads the content for the given file ID.
+func (m *Model) DownloadFile(
+	ctx context.Context,
+	fileID string,
+) ([]byte, string, error) {
+	id := strings.TrimSpace(fileID)
+	if id == "" {
+		return nil, "", fmt.Errorf("file_id is required")
+	}
+	basePath := strings.TrimSpace(m.variantConfig.fileDeletionPath)
+	if basePath == "" {
+		basePath = strings.TrimSpace(m.variantConfig.fileUploadPath)
+	}
+	basePath = strings.TrimRight(basePath, "/")
+	mw := openaiopt.WithMiddleware(
+		func(r *http.Request, next openaiopt.MiddlewareNext) (
+			*http.Response, error,
+		) {
+			if basePath != "" {
+				r.URL.Path = basePath + "/" + id + "/content"
+			}
+			return next(r)
+		},
+	)
+	resp, err := m.client.Files.Content(ctx, id, mw)
+	if err != nil {
+		return nil, "", fmt.Errorf("download file: %w", err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("read file: %w", err)
+	}
+	mime := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if mime == "" {
+		mime = http.DetectContentType(data)
+	}
+	if mime == "" {
+		mime = "application/octet-stream"
+	}
+	return data, mime, nil
 }

@@ -170,8 +170,8 @@ func NewSessionService(options ...ServiceOpt) *SessionService {
 		s.startCleanupRoutine()
 	}
 
-	// Start async summary workers if summarizer is configured
-	if opts.summarizer != nil && opts.asyncSummaryNum > 0 {
+	// Start async summary workers if summary generation is configured.
+	if isummary.HasSummarizer(opts.summarizer) && opts.asyncSummaryNum > 0 {
 		s.asyncWorker = isummary.NewAsyncSummaryWorker(isummary.AsyncSummaryConfig{
 			Summarizer:        opts.summarizer,
 			AsyncSummaryNum:   opts.asyncSummaryNum,
@@ -319,9 +319,6 @@ func (s *SessionService) getSession(ctx context.Context, key session.Key, opt *s
 	if sess == nil {
 		return nil, nil
 	}
-
-	// Refresh TTL on access
-	sessWithTTL.expiredAt = calculateExpiredAt(s.opts.sessionTTL)
 
 	copiedSess := sess.Clone()
 

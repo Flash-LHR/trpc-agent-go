@@ -152,7 +152,20 @@ type Model interface {
 type Info struct {
     Name string // Model name.
 }
+
+// IterModel is an optional extension of Model that reduces channel overhead for streaming.
+type IterModel interface {
+    Model
+    GenerateContentIter(ctx context.Context, request *Request) (Seq[*Response], error)
+}
+
+// Seq is a callback-based sequence type that yields one value on demand.
+type Seq[T any] func(yield func(T) bool)
 ```
+
+Channel-based streaming typically requires a dedicated goroutine and incurs channel synchronization on each chunk. In high-frequency streaming, this overhead can become a measurable cost. `IterModel` is an optional iterator-style API that streams responses synchronously in the caller goroutine to reduce this overhead. 
+
+When a model implements `IterModel`, the framework uses `GenerateContentIter`; otherwise it uses `GenerateContent`. Implementations must call `yield` sequentially and stop when it returns `false`.
 
 ### Request Structure
 
@@ -480,6 +493,50 @@ model := openai.New("deepseek-chat",
     }),
 )
 ```
+
+##### Dynamically Modifying Request Body via Callback
+
+`WithChatRequestCallback` receives a `*openai.ChatCompletionNewParams` pointer,
+allowing you to dynamically add or modify fields in the HTTP request body
+before each request is sent. Use `SetExtraFields` on the params to inject
+custom JSON fields:
+
+```go
+import (
+    "context"
+
+    openai "github.com/openai/openai-go"
+    oaimodel "trpc.group/trpc-go/trpc-agent-go/model/openai"
+)
+
+model := oaimodel.New("deepseek-chat",
+    oaimodel.WithChatRequestCallback(func(ctx context.Context, req *openai.ChatCompletionNewParams) {
+        // Dynamically set extra fields based on runtime context.
+        userID, _ := ctx.Value("user_id").(string)
+        req.SetExtraFields(map[string]any{
+            "user":            userID,
+            "custom_metadata": map[string]string{"session_id": "abc"},
+        })
+    }),
+)
+```
+
+**Difference between `SetExtraFields` in callback and `WithExtraFields`**:
+
+| Aspect | `WithExtraFields` | `SetExtraFields` in `WithChatRequestCallback` |
+| --- | --- | --- |
+| Timing | Set once at model creation | Called before every request |
+| Dynamism | Static values only | Dynamic values based on `ctx` or runtime state |
+| Mechanism | Injected via `openaiopt.WithJSONSet` (RequestOption layer) | Set on the `ChatCompletionNewParams` struct (serialization layer) |
+| Same key conflict | `WithExtraFields` wins (applied later, overwrites same keys) | Overwritten by `WithExtraFields` if same key exists |
+
+When both are used with **different keys**, all fields appear in the final
+JSON body without conflict. When both set the **same key**,
+`WithExtraFields` takes precedence because `WithJSONSet` is applied after
+struct serialization.
+
+For most dynamic per-request customization, `SetExtraFields` in the callback
+is the recommended approach.
 
 #### 2. Model Switching
 

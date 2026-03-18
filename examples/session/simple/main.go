@@ -1,5 +1,6 @@
 //
-// Tencent is pleased to support the open source community by making trpc-agent-go available.
+// Tencent is pleased to support the open source community by making
+// trpc-agent-go available.
 //
 // Copyright (C) 2025 Tencent.  All rights reserved.
 //
@@ -14,12 +15,16 @@
 // Usage:
 //
 //	go run main.go -session=inmemory
+//	go run main.go -session=sqlite
 //	go run main.go -session=redis
 //	go run main.go -session=postgres
 //	go run main.go -session=mysql
 //	go run main.go -session=clickhouse
 //
 // Environment variables by session type (example usage):
+//
+//	sqlite:
+//		export SQLITE_SESSION_DSN="file:sessions.db?_busy_timeout=5000"
 //
 //	redis:
 //		export REDIS_ADDR="localhost:6379"
@@ -60,25 +65,86 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	alog "trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	"trpc.group/trpc-go/trpc-agent-go/telemetry/langfuse"
+	atrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 
 	util "trpc.group/trpc-go/trpc-agent-go/examples/session"
 )
 
+type ctxKey string
+
+const requestIDKey ctxKey = "requestID"
+
 var (
-	modelName       = flag.String("model", os.Getenv("MODEL_NAME"), "Name of the model to use (default: MODEL_NAME env var)")
-	sessServiceName = flag.String("session", "inmemory", "Name of the session service to use, inmemory / redis / postgres / mysql / clickhouse")
-	streaming       = flag.Bool("streaming", true, "Enable streaming mode for responses")
-	eventLimit      = flag.Int("event-limit", 1000, "Maximum number of events to store per session")
-	sessionTTL      = flag.Duration("session-ttl", 10*time.Second, "Session time-to-live duration")
-	debugMode       = flag.Bool("debug", true, "Enable debug mode to print session events after each turn")
+	modelName = flag.String(
+		"model",
+		os.Getenv("MODEL_NAME"),
+		"Name of the model to use (default: MODEL_NAME env var)",
+	)
+	sessServiceName = flag.String(
+		"session",
+		"redis",
+		"Name of the session service to use, inmemory / "+
+			"sqlite / redis / postgres / mysql / clickhouse",
+	)
+	streaming = flag.Bool(
+		"streaming",
+		true,
+		"Enable streaming mode for responses",
+	)
+	eventLimit = flag.Int(
+		"event-limit",
+		1000,
+		"Maximum number of events to store per session",
+	)
+	sessionTTL = flag.Duration(
+		"session-ttl",
+		10*time.Second,
+		"Session time-to-live duration",
+	)
+	debugMode = flag.Bool(
+		"debug",
+		true,
+		"Enable debug mode to print session events after each "+
+			"turn",
+	)
+	enableTrace = flag.Bool(
+		"enable-trace",
+		true,
+		"Enable Langfuse tracing for session operations. "+
+			"Requires LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, LANGFUSE_HOST env vars.",
+	)
 )
 
 func main() {
 	flag.Parse()
+
+	// Replace the default log functions to inject RequestID from context.
+	origInfofContext := alog.InfofContext
+	alog.InfofContext = func(ctx context.Context, format string, args ...any) {
+		reqID, _ := ctx.Value(requestIDKey).(string)
+		if reqID != "" {
+			format = fmt.Sprintf("[req:%s] %s", reqID, format)
+		}
+		origInfofContext(ctx, format, args...)
+	}
+
+	if *enableTrace {
+		clean, err := langfuse.Start(context.Background())
+		if err != nil {
+			log.Fatalf("failed to start langfuse tracer: %v", err)
+		}
+		defer func() {
+			if err := clean(context.Background()); err != nil {
+				log.Printf("langfuse tracer cleanup: %v", err)
+			}
+		}()
+	}
 
 	fmt.Printf("Session Management Demo\n")
 	fmt.Printf("Model: %s\n", *modelName)
@@ -106,7 +172,6 @@ type multiTurnChat struct {
 	sessionService session.Service
 	userID         string
 	sessionID      string
-	sessionIDs     []string
 }
 
 // run starts the interactive chat session.
@@ -128,10 +193,14 @@ func (c *multiTurnChat) run() error {
 func (c *multiTurnChat) setup(_ context.Context) error {
 	// Create session service using util.
 	sessionType := util.SessionType(*sessServiceName)
-	sessionService, err := util.NewSessionServiceByType(sessionType, util.SessionServiceConfig{
-		EventLimit: *eventLimit,
-		TTL:        *sessionTTL,
-	})
+	sessionService, err := util.NewSessionServiceByType(
+		sessionType,
+		util.SessionServiceConfig{
+			EventLimit:    *eventLimit,
+			TTL:           *sessionTTL,
+			EnableTracing: *enableTrace,
+		},
+	)
 	if err != nil {
 		return fmt.Errorf("failed to create session service: %w", err)
 	}
@@ -143,19 +212,15 @@ func (c *multiTurnChat) setup(_ context.Context) error {
 		Stream: c.streaming,
 	}
 
+	const agentDescription = "A helpful AI assistant demonstrating sessions."
+	const agentInstruction = "Remember context per session. " +
+		"If asked for history, list prior messages verbatim."
+
 	llmAgent := llmagent.New(
 		"session-assistant",
 		llmagent.WithModel(modelInstance),
-		llmagent.WithDescription("A helpful AI assistant demonstrating session management capabilities."),
-		llmagent.WithInstruction("You are demonstrating multi-session conversation capabilities. "+
-			"Remember context within each session and engage naturally with users. "+
-			"ONLY when users explicitly ask about conversation history (e.g., 'show history', 'what did we discuss'), "+
-			"display the complete original conversation history in a clear list format:\n"+
-			"1. Show each exchange with clear user/assistant labels\n"+
-			"2. Present the exact original messages without summarization\n"+
-			"3. Use numbered lists for clarity\n"+
-			"4. Maintain chronological order\n"+
-			"Otherwise, respond naturally to user queries without repeating history."),
+		llmagent.WithDescription(agentDescription),
+		llmagent.WithInstruction(agentInstruction),
 		llmagent.WithGenerationConfig(genConfig),
 	)
 
@@ -167,7 +232,6 @@ func (c *multiTurnChat) setup(_ context.Context) error {
 
 	c.userID = "user"
 	c.sessionID = fmt.Sprintf("session-%d", time.Now().Unix())
-	c.rememberSession(c.sessionID)
 
 	fmt.Printf("Chat ready! Session: %s\n\n", c.sessionID)
 	return nil
@@ -178,11 +242,11 @@ func (c *multiTurnChat) startChat(ctx context.Context) error {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	fmt.Println("Session commands:")
-	fmt.Println("   /history   - Ask the assistant to recap our conversation")
-	fmt.Println("   /new       - Start a brand-new session ID")
-	fmt.Println("   /sessions  - List known session IDs")
-	fmt.Println("   /use <id>  - Switch to an existing (or new) session")
-	fmt.Println("   /exit      - End the conversation")
+	fmt.Println("   /history      - Ask the assistant to recap our conversation")
+	fmt.Println("   /new [id]     - Start a new session (optional: specify custom ID)")
+	fmt.Println("   /sessions     - List known session IDs")
+	fmt.Println("   /use <id>     - Switch to an existing (or new) session")
+	fmt.Println("   /exit         - End the conversation")
 	fmt.Println()
 
 	for {
@@ -204,8 +268,9 @@ func (c *multiTurnChat) startChat(ctx context.Context) error {
 			return nil
 		case lowerInput == "/history":
 			userInput = "show our conversation history"
-		case lowerInput == "/new":
-			c.startNewSession()
+		case strings.HasPrefix(lowerInput, "/new"):
+			customID := strings.TrimSpace(userInput[4:])
+			c.startNewSession(customID)
 			continue
 		case lowerInput == "/sessions":
 			c.listSessions()
@@ -226,7 +291,13 @@ func (c *multiTurnChat) startChat(ctx context.Context) error {
 
 		// Print session events in debug mode.
 		if *debugMode {
-			if err := util.PrintSessionEvents(ctx, c.sessionService, "session-demo", c.userID, c.sessionID); err != nil {
+			if err := util.PrintSessionEvents(
+				ctx,
+				c.sessionService,
+				"session-demo",
+				c.userID,
+				c.sessionID,
+			); err != nil {
 				fmt.Printf("Debug error: %v\n", err)
 			}
 		}
@@ -242,12 +313,34 @@ func (c *multiTurnChat) startChat(ctx context.Context) error {
 }
 
 // processMessage handles a single message exchange.
-func (c *multiTurnChat) processMessage(ctx context.Context, userMessage string) error {
+func (c *multiTurnChat) processMessage(
+	ctx context.Context,
+	userMessage string,
+) error {
 	message := model.NewUserMessage(userMessage)
 
 	requestID := uuid.New().String()
+
+	// Inject requestID into context for logging.
+	ctx = context.WithValue(ctx, requestIDKey, requestID)
+
+	// Create a root span if tracing is enabled. The session service
+	// will attach its child spans (create_session, get_session, append_event)
+	// to this root span automatically via context propagation.
+	if *enableTrace {
+		spanCtx, span := atrace.Tracer.Start(ctx, "session_demo_request")
+		defer span.End()
+		ctx = spanCtx
+	}
+
 	// Run the agent through the runner.
-	eventChan, err := c.runner.Run(ctx, c.userID, c.sessionID, message, agent.WithRequestID(requestID))
+	eventChan, err := c.runner.Run(
+		ctx,
+		c.userID,
+		c.sessionID,
+		message,
+		agent.WithRequestID(requestID),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to run agent: %w", err)
 	}
@@ -256,7 +349,8 @@ func (c *multiTurnChat) processMessage(ctx context.Context, userMessage string) 
 	return c.processResponse(eventChan)
 }
 
-// processResponse handles both streaming and non-streaming responses with tool call visualization.
+// processResponse handles streaming and non-streaming responses, with
+// tool call visualization.
 func (c *multiTurnChat) processResponse(eventChan <-chan *event.Event) error {
 	fmt.Print("Assistant: ")
 
@@ -267,12 +361,18 @@ func (c *multiTurnChat) processResponse(eventChan <-chan *event.Event) error {
 	)
 
 	for event := range eventChan {
-		if err := c.handleEvent(event, &toolCallsDetected, &assistantStarted, &fullContent); err != nil {
+		if err := c.handleEvent(
+			event,
+			&toolCallsDetected,
+			&assistantStarted,
+			&fullContent,
+		); err != nil {
 			return err
 		}
 
 		// Check if this is the final event.
-		// Do not break on tool response events (Done=true but not final assistant response).
+		// Do not break on tool response events (Done=true but not the
+		// final assistant response).
 		if event.IsFinalResponse() {
 			fmt.Printf("\n")
 			break
@@ -317,22 +417,28 @@ func (c *multiTurnChat) handleToolCalls(
 	toolCallsDetected *bool,
 	assistantStarted *bool,
 ) bool {
-	if len(event.Response.Choices) > 0 && len(event.Response.Choices[0].Message.ToolCalls) > 0 {
-		*toolCallsDetected = true
-		if *assistantStarted {
-			fmt.Printf("\n")
-		}
-		fmt.Printf("Tool calls initiated:\n")
-		for _, toolCall := range event.Response.Choices[0].Message.ToolCalls {
-			fmt.Printf("   - %s (ID: %s)\n", toolCall.Function.Name, toolCall.ID)
-			if len(toolCall.Function.Arguments) > 0 {
-				fmt.Printf("     Args: %s\n", string(toolCall.Function.Arguments))
-			}
-		}
-		fmt.Printf("\nExecuting tools...\n")
-		return true
+	if event.Response == nil || len(event.Response.Choices) == 0 {
+		return false
 	}
-	return false
+
+	toolCalls := event.Response.Choices[0].Message.ToolCalls
+	if len(toolCalls) == 0 {
+		return false
+	}
+
+	*toolCallsDetected = true
+	if *assistantStarted {
+		fmt.Printf("\n")
+	}
+	fmt.Printf("Tool calls initiated:\n")
+	for _, toolCall := range toolCalls {
+		fmt.Printf("   - %s (ID: %s)\n", toolCall.Function.Name, toolCall.ID)
+		if len(toolCall.Function.Arguments) > 0 {
+			fmt.Printf("     Args: %s\n", string(toolCall.Function.Arguments))
+		}
+	}
+	fmt.Printf("\nExecuting tools...\n")
+	return true
 }
 
 // handleToolResponses detects and displays tool responses.
@@ -398,10 +504,13 @@ func (c *multiTurnChat) displayContent(
 	*fullContent += content
 }
 
-func (c *multiTurnChat) startNewSession() {
+func (c *multiTurnChat) startNewSession(customID string) {
 	oldSessionID := c.sessionID
-	c.sessionID = fmt.Sprintf("session-%d", time.Now().Unix())
-	c.rememberSession(c.sessionID)
+	if customID != "" {
+		c.sessionID = customID
+	} else {
+		c.sessionID = fmt.Sprintf("session-%d", time.Now().Unix())
+	}
 	fmt.Printf("Started new session!\n")
 	fmt.Printf("   Previous: %s\n", oldSessionID)
 	fmt.Printf("   Current:  %s\n", c.sessionID)
@@ -409,32 +518,34 @@ func (c *multiTurnChat) startNewSession() {
 	fmt.Println()
 }
 
-func (c *multiTurnChat) rememberSession(id string) {
-	id = strings.TrimSpace(id)
-	if id == "" {
+func (c *multiTurnChat) listSessions() {
+	ctx := context.Background()
+	userKey := session.UserKey{
+		AppName: "session-demo",
+		UserID:  c.userID,
+	}
+	sessions, err := c.sessionService.ListSessions(ctx, userKey)
+	if err != nil {
+		fmt.Printf("Failed to list sessions: %v\n\n", err)
 		return
 	}
-	for _, existing := range c.sessionIDs {
-		if existing == id {
-			return
-		}
-	}
-	c.sessionIDs = append(c.sessionIDs, id)
-}
-
-func (c *multiTurnChat) listSessions() {
-	if len(c.sessionIDs) == 0 {
+	if len(sessions) == 0 {
 		fmt.Println("(no sessions recorded yet)")
 		fmt.Println()
 		return
 	}
 	fmt.Println("Session roster:")
-	for _, id := range c.sessionIDs {
+	for _, sess := range sessions {
 		marker := " "
-		if id == c.sessionID {
+		if sess.ID == c.sessionID {
 			marker = "*"
 		}
-		fmt.Printf("   %s %s\n", marker, id)
+		fmt.Printf(
+			"   %s %s (updated: %s)\n",
+			marker,
+			sess.ID,
+			sess.UpdatedAt.Format(time.RFC3339),
+		)
 	}
 	fmt.Println()
 }
@@ -450,6 +561,5 @@ func (c *multiTurnChat) switchSession(target string) {
 		return
 	}
 	c.sessionID = target
-	c.rememberSession(target)
 	fmt.Printf("Switched to session %s\n", target)
 }

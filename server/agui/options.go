@@ -128,6 +128,13 @@ func WithFlushInterval(d time.Duration) Option {
 	}
 }
 
+// WithPostRunFinalizationTimeout sets the maximum duration allowed for post-run finalization.
+func WithPostRunFinalizationTimeout(d time.Duration) Option {
+	return func(o *options) {
+		o.aguiRunnerOptions = append(o.aguiRunnerOptions, aguirunner.WithPostRunFinalizationTimeout(d))
+	}
+}
+
 // WithGraphNodeLifecycleActivityEnabled controls whether the AG-UI server emits graph node lifecycle activity events.
 func WithGraphNodeLifecycleActivityEnabled(enabled bool) Option {
 	return func(o *options) {
@@ -146,6 +153,20 @@ func WithGraphNodeInterruptActivityEnabled(enabled bool) Option {
 func WithGraphNodeInterruptActivityTopLevelOnly(enabled bool) Option {
 	return func(o *options) {
 		o.aguiRunnerOptions = append(o.aguiRunnerOptions, aguirunner.WithGraphNodeInterruptActivityTopLevelOnly(enabled))
+	}
+}
+
+// WithReasoningContentEnabled controls whether the AG-UI server emits reasoning content events.
+func WithReasoningContentEnabled(enabled bool) Option {
+	return func(o *options) {
+		o.aguiRunnerOptions = append(o.aguiRunnerOptions, aguirunner.WithReasoningContentEnabled(enabled))
+	}
+}
+
+// WithToolResultInputTranslationEnabled controls whether echoed tool-result inputs pass through the AG-UI translator.
+func WithToolResultInputTranslationEnabled(enabled bool) Option {
+	return func(o *options) {
+		o.aguiRunnerOptions = append(o.aguiRunnerOptions, aguirunner.WithToolResultInputTranslationEnabled(enabled))
 	}
 }
 

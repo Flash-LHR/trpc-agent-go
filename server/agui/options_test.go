@@ -86,6 +86,12 @@ func TestWithFlushInterval(t *testing.T) {
 	assert.Equal(t, 2*time.Second, ro.FlushInterval)
 }
 
+func TestWithPostRunFinalizationTimeout(t *testing.T) {
+	opts := newOptions(WithPostRunFinalizationTimeout(2 * time.Second))
+	ro := aguirunner.NewOptions(opts.aguiRunnerOptions...)
+	assert.Equal(t, 2*time.Second, ro.PostRunFinalizationTimeout)
+}
+
 func TestWithGraphNodeLifecycleActivityEnabled(t *testing.T) {
 	opts := newOptions(WithGraphNodeLifecycleActivityEnabled(true))
 	ro := aguirunner.NewOptions(opts.aguiRunnerOptions...)
@@ -102,6 +108,18 @@ func TestWithGraphNodeInterruptActivityTopLevelOnly(t *testing.T) {
 	opts := newOptions(WithGraphNodeInterruptActivityTopLevelOnly(true))
 	ro := aguirunner.NewOptions(opts.aguiRunnerOptions...)
 	assert.True(t, ro.GraphNodeInterruptActivityTopLevelOnly)
+}
+
+func TestWithReasoningContentEnabled(t *testing.T) {
+	opts := newOptions(WithReasoningContentEnabled(true))
+	ro := aguirunner.NewOptions(opts.aguiRunnerOptions...)
+	assert.True(t, ro.ReasoningContentEnabled)
+}
+
+func TestWithToolResultInputTranslationEnabled(t *testing.T) {
+	opts := newOptions(WithToolResultInputTranslationEnabled(true))
+	ro := aguirunner.NewOptions(opts.aguiRunnerOptions...)
+	assert.True(t, ro.ToolResultInputTranslationEnabled)
 }
 
 func TestWithMessagesSnapshotFollowEnabled(t *testing.T) {

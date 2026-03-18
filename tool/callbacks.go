@@ -107,6 +107,9 @@ type AfterToolArgs struct {
 	Result any
 	// Error is the error occurred during tool execution (may be nil).
 	Error error
+	// Meta contains optional metadata from the tool result.
+	// For MCP tools, this includes the _meta field from CallToolResult.
+	Meta map[string]any
 }
 
 // AfterToolResult contains the return value for after tool callback.
@@ -509,7 +512,29 @@ func (c *Callbacks) runAfterToolCallback(
 		toolName,
 		&err,
 	)
+	restore := normalizeAfterToolArgsResult(args)
+	defer restore()
 	return cb(ctx, args)
+}
+
+// normalizeAfterToolArgsResult temporarily rewrites args.Result to the
+// callback-facing result shape and returns a restore function.
+func normalizeAfterToolArgsResult(args *AfterToolArgs) func() {
+	if args == nil {
+		return func() {}
+	}
+	type callbackResultGetter interface {
+		GetCallbackResult() any
+	}
+	rg, ok := args.Result.(callbackResultGetter)
+	if !ok {
+		return func() {}
+	}
+	original := args.Result
+	args.Result = rg.GetCallbackResult()
+	return func() {
+		args.Result = original
+	}
 }
 
 // RunAfterTool runs all after tool callbacks in order.

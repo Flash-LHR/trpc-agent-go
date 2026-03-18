@@ -134,8 +134,8 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 		s.startAsyncPersistWorker()
 	}
 
-	// Start async summary workers if summarizer is configured.
-	if opts.summarizer != nil && opts.asyncSummaryNum > 0 {
+	// Start async summary workers if summary generation is configured.
+	if isummary.HasSummarizer(opts.summarizer) && opts.asyncSummaryNum > 0 {
 		s.asyncWorker = isummary.NewAsyncSummaryWorker(isummary.AsyncSummaryConfig{
 			Summarizer:        opts.summarizer,
 			AsyncSummaryNum:   opts.asyncSummaryNum,
@@ -293,7 +293,7 @@ func (s *Service) CreateSession(
 				WHERE app_name = ? AND user_id = ? AND session_id = ? AND deleted_at IS NULL`,
 				s.tableSessionStates,
 			),
-			sessBytes, sessState.CreatedAt, sessState.UpdatedAt, expiresAt,
+			string(sessBytes), sessState.CreatedAt, sessState.UpdatedAt, expiresAt,
 			key.AppName, key.UserID, key.SessionID,
 		)
 	} else {
@@ -303,7 +303,7 @@ func (s *Service) CreateSession(
 				VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				s.tableSessionStates,
 			),
-			key.AppName, key.UserID, key.SessionID, sessBytes,
+			key.AppName, key.UserID, key.SessionID, string(sessBytes),
 			sessState.CreatedAt, sessState.UpdatedAt, expiresAt,
 		)
 	}
@@ -361,18 +361,6 @@ func (s *Service) GetSession(
 				"mysql session service get session state failed: %w",
 				err,
 			)
-		}
-
-		// Refresh session TTL if configured and session exists.
-		if sess != nil && s.opts.sessionTTL > 0 {
-			if err := s.refreshSessionTTL(c.Context, c.Key); err != nil {
-				log.WarnfContext(
-					c.Context,
-					"failed to refresh session TTL: %v",
-					err,
-				)
-				// Do not fail GetSession; just log a warning.
-			}
 		}
 		return sess, nil
 	}
@@ -644,7 +632,7 @@ func (s *Service) UpdateSessionState(ctx context.Context, key session.Key, state
 	_, err = s.mysqlClient.Exec(ctx,
 		fmt.Sprintf(`UPDATE %s SET state = ?, updated_at = ?, expires_at = ?
 		 WHERE app_name = ? AND user_id = ? AND session_id = ? AND deleted_at IS NULL`, s.tableSessionStates),
-		updatedStateBytes, now, expiresAt,
+		string(updatedStateBytes), now, expiresAt,
 		key.AppName, key.UserID, key.SessionID)
 
 	if err != nil {

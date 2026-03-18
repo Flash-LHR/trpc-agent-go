@@ -38,6 +38,11 @@ func New() evalresult.Manager {
 	}
 }
 
+// Close implements evalresult.Manager.
+func (m *manager) Close() error {
+	return nil
+}
+
 // Save stores a evaluation result keyed by EvalSetResultID.
 // If the eval set result id is empty, it will be generated.
 // Returns an error if the app name is empty or the eval set result is nil or the eval set id is empty.
@@ -55,7 +60,7 @@ func (m *manager) Save(_ context.Context, appName string, evalSetResult *evalres
 	if evalSetResultID == "" {
 		evalSetResultID = fmt.Sprintf("%s_%s_%s", appName, evalSetResult.EvalSetID, uuid.New().String())
 	}
-	cloned, err := clone.Clone(evalSetResult)
+	cloned, err := clone.CloneEvalSetResult(evalSetResult)
 	if err != nil {
 		return "", fmt.Errorf("clone result: %w", err)
 	}
@@ -93,7 +98,7 @@ func (m *manager) Get(_ context.Context, appName, evalSetResultID string) (*eval
 	if !ok {
 		return nil, fmt.Errorf("eval set result %s.%s not found: %w", appName, evalSetResultID, os.ErrNotExist)
 	}
-	cloned, err := clone.Clone(evalSetResult)
+	cloned, err := clone.CloneEvalSetResult(evalSetResult)
 	if err != nil {
 		return nil, fmt.Errorf("clone eval set result %s.%s: %w", appName, evalSetResultID, err)
 	}

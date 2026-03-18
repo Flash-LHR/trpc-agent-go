@@ -135,6 +135,11 @@ tools := []tool.Tool{
 `NewFSRepository` 也支持传入 HTTP(S) URL（例如 `.zip` / `.tar.gz` 压缩包），
 会自动下载并缓存到本地（可通过 `SKILLS_CACHE_DIR` 覆盖缓存目录）。
 
+如果你通过 `LLMAgent` 配置 Skills，并使用
+`llmagent.WithCodeExecutor(...)` 只是为了给 `skill_run` 提供运行时，
+建议同时设置 `llmagent.WithEnableCodeExecutionResponseProcessor(false)`，
+避免在启用 `skill_run` 时自动执行 assistant 文本里的 Markdown 围栏代码块。
+
 </td>
 <td valign="top">
 
@@ -183,6 +188,7 @@ _ = result.OverallStatus
     - [11. Agent Skills](#11-agent-skills)
     - [12. Artifacts](#12-artifacts)
     - [13. A2A 互通](#13-a2a-互通)
+    - [14. Gateway 服务](#14-gateway-服务)
   - [架构概览](#架构概览)
     - [**执行流程**](#执行流程)
   - [使用内置 Agents](#使用内置-agents)
@@ -532,6 +538,12 @@ sg.SetFinishPoint("A").SetFinishPoint("B")
 - Skill 是一个包含 `SKILL.md` 规范的文件夹，可附带 docs/scripts。
 - 内置工具：`skill_load`、`skill_list_docs`、`skill_select_docs`、`skill_run`（在隔离工作空间里执行命令）。
 - 建议 `skill_run` 尽量只用于执行所选 Skill 文档里要求的命令，而不是用于通用的 Shell 探查。
+- 如果 `LLMAgent` 配置 `WithCodeExecutor(...)` 的目的只是支持
+  `skill_run`，建议关闭响应阶段的代码执行处理器：
+  `llmagent.WithEnableCodeExecutionResponseProcessor(false)`。当前
+  `examples/skill`、`examples/skillrun`、`examples/skilldynamicschema` 与
+  `examples/structuredoutputskills`
+  都采用了这种配置，避免自动执行 assistant 文本里的围栏代码块。
 
 ### 12. Artifacts
 
@@ -546,6 +558,15 @@ sg.SetFinishPoint("A").SetFinishPoint("B")
 
 - Agent-to-Agent（A2A）与 ADK Python A2A Server 的互通示例。
 - 演示跨运行时的流式输出、工具调用与代码执行。
+
+### 14. Gateway 服务
+
+示例：[openclaw](openclaw)
+
+- 一个最小的 OpenClaw-like gateway 服务。
+- 稳定的 session id，以及同一 session 串行执行。
+- 基础安全控制：allowlist + mention gating。
+- OpenClaw-like 实现（Telegram + gateway）：[openclaw](openclaw)
 
 其他值得关注的示例：
 
@@ -585,7 +606,7 @@ sg.SetFinishPoint("A").SetFinishPoint("B")
 | `skill`     | 管理并执行以 `SKILL.md` 定义的可复用 Agent Skills。                   |
 | `event`     | 定义 Runner 与各类服务使用的事件结构与流式载荷。                        |
 | `evaluation`| 提供 EvalSet/Metric 驱动的评测框架并管理评测结果。                     |
-| `server`    | 提供 AG-UI、A2A 等 HTTP 服务端能力。                                |
+| `server`    | 提供 Gateway、AG-UI、A2A 等 HTTP 服务端能力。                       |
 | `telemetry` | OpenTelemetry 的 tracing/metrics 采集与接入。                      |
 
 ## 使用内置 Agents

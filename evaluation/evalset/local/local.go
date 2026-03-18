@@ -47,6 +47,11 @@ func New(opt ...evalset.Option) evalset.Manager {
 	}
 }
 
+// Close implements evalset.Manager.
+func (m *manager) Close() error {
+	return nil
+}
+
 // Get gets an EvalSet identified by evalSetID.
 // Returns an error if the EvalSet does not exist.
 func (m *manager) Get(_ context.Context, appName, evalSetID string) (*evalset.EvalSet, error) {
@@ -178,7 +183,7 @@ func (m *manager) AddCase(_ context.Context, appName, evalSetID string, evalCase
 			return fmt.Errorf("eval case %s.%s.%s already exists", appName, evalSetID, evalCase.EvalID)
 		}
 	}
-	cloned, err := clone.Clone(evalCase)
+	cloned, err := clone.CloneEvalCase(evalCase)
 	if err != nil {
 		return fmt.Errorf("clone evalcase: %w", err)
 	}

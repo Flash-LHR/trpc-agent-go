@@ -23,6 +23,9 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 )
 
+var _ SessionSummarizer = (*sessionSummarizer)(nil)
+var _ ContextAwareSummarizer = (*sessionSummarizer)(nil)
+
 // Common metadata field keys.
 const (
 	// metadataKeyModelName is the key for model name in metadata.
@@ -51,6 +54,8 @@ const (
 
 	// authorUser is the user author.
 	authorUser = "user"
+	// authorSystem is the system author.
+	authorSystem = "system"
 	// authorUnknown is the unknown author.
 	authorUnknown = "unknown"
 )
@@ -145,7 +150,7 @@ type sessionSummarizer struct {
 	model           model.Model
 	name            string
 	prompt          string
-	checks          []Checker
+	checks          []ContextChecker
 	maxSummaryWords int
 	skipRecentFunc  SkipRecentFunc
 
@@ -165,10 +170,10 @@ type sessionSummarizer struct {
 // NewSummarizer creates a new session summarizer.
 func NewSummarizer(m model.Model, opts ...Option) SessionSummarizer {
 	s := &sessionSummarizer{
-		prompt:          "",          // Will be set after processing options.
-		checks:          []Checker{}, // No default checks - summarization only when explicitly configured.
-		maxSummaryWords: 0,           // 0 means no word limit.
-		skipRecentFunc:  nil,         // nil means no events are skipped.
+		prompt:          "",                 // Will be set after processing options.
+		checks:          []ContextChecker{}, // No default checks - summarization only when explicitly configured.
+		maxSummaryWords: 0,                  // 0 means no word limit.
+		skipRecentFunc:  nil,                // nil means no events are skipped.
 	}
 	s.model = m
 
@@ -188,12 +193,21 @@ func NewSummarizer(m model.Model, opts ...Option) SessionSummarizer {
 
 // ShouldSummarize checks if the session should be summarized.
 func (s *sessionSummarizer) ShouldSummarize(sess *session.Session) bool {
-	if len(sess.Events) == 0 {
+	return s.ShouldSummarizeWithContext(context.Background(), sess)
+}
+
+// ShouldSummarizeWithContext evaluates configured checks using the current
+// request context when available.
+func (s *sessionSummarizer) ShouldSummarizeWithContext(
+	ctx context.Context,
+	sess *session.Session,
+) bool {
+	if sess == nil || len(sess.Events) == 0 {
 		return false
 	}
 
 	for _, check := range s.checks {
-		if !check(sess) {
+		if !check(ctx, sess) {
 			return false
 		}
 	}
@@ -276,7 +290,7 @@ func (s *sessionSummarizer) recordLastIncludedTimestamp(sess *session.Session, e
 }
 
 // filterEventsForSummary filters events for summarization, excluding recent events
-// and ensuring at least one user message is included for context.
+// and ensuring that retained events still have enough context to summarize.
 func (s *sessionSummarizer) filterEventsForSummary(events []event.Event) []event.Event {
 	if s.skipRecentFunc == nil {
 		return events
@@ -292,19 +306,101 @@ func (s *sessionSummarizer) filterEventsForSummary(events []event.Event) []event
 
 	filteredEvents := events[:len(events)-skipCount]
 
-	// Ensure the filtered events contain at least one user message for context.
-	for _, e := range filteredEvents {
-		if e.Author == authorUser && e.Response != nil &&
-			len(e.Response.Choices) > 0 &&
-			e.Response.Choices[0].Message.Content != "" {
-			// Found at least one user message, return all filtered events
-			return filteredEvents
-		}
+	if hasUserMessageForSummary(filteredEvents) {
+		return filteredEvents
 	}
 
-	// If no user message found in filtered events, return empty slice.
-	// This prevents generating summaries without proper context.
+	// Delta summarization can prepend the previous summary as a synthetic
+	// system event. Preserve assistant/tool follow-ups when that summary is
+	// still present and at least one real event remains after it.
+	if s.hasPrependedSummaryContext(filteredEvents) {
+		return filteredEvents
+	}
+
 	return []event.Event{}
+}
+
+func hasUserMessageForSummary(events []event.Event) bool {
+	for _, e := range events {
+		if e.Author != authorUser || !eventHasTextContent(e) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func eventHasTextContent(e event.Event) bool {
+	if e.Response == nil || len(e.Response.Choices) == 0 {
+		return false
+	}
+	for _, choice := range e.Response.Choices {
+		if strings.TrimSpace(choice.Message.Content) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func eventHasSummarizableContent(
+	e event.Event,
+	toolCallFmt ToolCallFormatter,
+	toolResultFmt ToolResultFormatter,
+) bool {
+	if e.Response == nil || len(e.Response.Choices) == 0 {
+		return false
+	}
+	for _, choice := range e.Response.Choices {
+		msg := choice.Message
+		for _, tc := range msg.ToolCalls {
+			if toolCallFmt(tc) != "" {
+				return true
+			}
+		}
+		if msg.ToolID != "" {
+			if toolResultFmt(msg) != "" {
+				return true
+			}
+			continue
+		}
+		if strings.TrimSpace(msg.Content) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *sessionSummarizer) hasSummarizableContent(events []event.Event) bool {
+	toolCallFmt := s.toolCallFormatter
+	if toolCallFmt == nil {
+		toolCallFmt = defaultToolCallFormatter
+	}
+	toolResultFmt := s.toolResultFormatter
+	if toolResultFmt == nil {
+		toolResultFmt = defaultToolResultFormatter
+	}
+	for _, e := range events {
+		if eventHasSummarizableContent(e, toolCallFmt, toolResultFmt) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *sessionSummarizer) hasPrependedSummaryContext(events []event.Event) bool {
+	if len(events) < 2 {
+		return false
+	}
+	first := events[0]
+	if first.Author != authorSystem || !eventHasTextContent(first) {
+		return false
+	}
+	// prependPrevSummary inserts a synthetic system event at the head while
+	// preserving the original delta event timestamps after it.
+	if first.Timestamp.Before(events[1].Timestamp) {
+		return false
+	}
+	return s.hasSummarizableContent(events[1:])
 }
 
 // SetPrompt updates the summarizer's prompt dynamically.
@@ -382,36 +478,42 @@ func extractConversationText(
 		if e.Response == nil || len(e.Response.Choices) == 0 {
 			continue
 		}
-		msg := e.Response.Choices[0].Message
 		author := e.Author
 		if author == "" {
 			author = authorUnknown
 		}
 
-		// Handle tool calls from assistant.
-		// Note: A message may contain both ToolCalls and Content (e.g., "Let me check
-		// the weather" + tool call), so we process both without using continue.
-		if len(msg.ToolCalls) > 0 {
-			for _, tc := range msg.ToolCalls {
-				toolCallText := toolCallFmt(tc)
-				if toolCallText != "" {
-					parts = append(parts, fmt.Sprintf("%s: %s", author, toolCallText))
+		// Iterate over all choices, not just the first one.
+		// When model returns multiple tool call results, they may be distributed
+		// across different choices (len(e.Response.Choices) > 1).
+		for _, choice := range e.Response.Choices {
+			msg := choice.Message
+
+			// Handle tool calls from assistant.
+			// Note: A message may contain both ToolCalls and Content (e.g., "Let me check
+			// the weather" + tool call), so we process both without using continue.
+			if len(msg.ToolCalls) > 0 {
+				for _, tc := range msg.ToolCalls {
+					toolCallText := toolCallFmt(tc)
+					if toolCallText != "" {
+						parts = append(parts, fmt.Sprintf("%s: %s", author, toolCallText))
+					}
 				}
 			}
-		}
 
-		// Handle tool response.
-		if msg.ToolID != "" {
-			toolRespText := toolResultFmt(msg)
-			if toolRespText != "" {
-				parts = append(parts, fmt.Sprintf("%s: %s", author, toolRespText))
+			// Handle tool response.
+			if msg.ToolID != "" {
+				toolRespText := toolResultFmt(msg)
+				if toolRespText != "" {
+					parts = append(parts, fmt.Sprintf("%s: %s", author, toolRespText))
+				}
+				continue // Tool responses don't have additional content.
 			}
-			continue // Tool responses don't have additional content.
-		}
 
-		// Handle regular message content.
-		if trimmed := strings.TrimSpace(msg.Content); trimmed != "" {
-			parts = append(parts, fmt.Sprintf("%s: %s", author, trimmed))
+			// Handle regular message content.
+			if trimmed := strings.TrimSpace(msg.Content); trimmed != "" {
+				parts = append(parts, fmt.Sprintf("%s: %s", author, trimmed))
+			}
 		}
 	}
 

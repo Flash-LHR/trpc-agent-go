@@ -49,6 +49,11 @@ func New(opt ...evalresult.Option) evalresult.Manager {
 	return m
 }
 
+// Close implements evalresult.Manager.
+func (m *manager) Close() error {
+	return nil
+}
+
 // Save stores an evaluation result.
 // Returns an error if the eval set result is nil or the eval set id is empty.
 func (m *manager) Save(_ context.Context, appName string, evalSetResult *evalresult.EvalSetResult) (string, error) {
@@ -67,7 +72,7 @@ func (m *manager) Save(_ context.Context, appName string, evalSetResult *evalres
 	if evalSetResultID == "" {
 		evalSetResultID = fmt.Sprintf("%s_%s_%s", appName, evalSetResult.EvalSetID, uuid.New().String())
 	}
-	cloned, err := clone.Clone(evalSetResult)
+	cloned, err := clone.CloneEvalSetResult(evalSetResult)
 	if err != nil {
 		return "", fmt.Errorf("clone eval set result: %w", err)
 	}

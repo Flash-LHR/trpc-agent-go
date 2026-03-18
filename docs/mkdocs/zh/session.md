@@ -16,10 +16,10 @@ Session 用于管理当前会话的上下文，隔离维度为 `<appName, userID
 - **会话摘要**：使用 LLM 自动压缩长对话历史，在保留关键上下文的同时显著降低 token 消耗
 - **事件限制**：控制每个会话存储的最大事件数量，防止内存溢出
 - **TTL 管理**：支持会话数据的自动过期清理
-- **多存储后端**：支持内存、Redis、PostgreSQL、MySQL 存储
+- **多存储后端**：支持内存、SQLite、Redis、PostgreSQL、MySQL、ClickHouse 存储
 - **并发安全**：内置读写锁保证并发访问安全
 - **自动管理**：集成 Runner 后自动处理会话创建、加载和更新
-- **软删除支持**：PostgreSQL/MySQL 支持软删除，数据可恢复
+- **软删除支持**：PostgreSQL/MySQL/SQLite 支持软删除，数据可恢复
 
 ## 快速开始
 
@@ -27,7 +27,7 @@ Session 用于管理当前会话的上下文，隔离维度为 `<appName, userID
 
 tRPC-Agent-Go 的会话管理通过 `runner.WithSessionService` 集成到 Runner 中，Runner 会自动处理会话的创建、加载、更新和持久化。
 
-**支持的存储后端：** 内存（Memory）、Redis、PostgreSQL、MySQL、ClickHouse
+**支持的存储后端：** 内存（Memory）、SQLite、Redis、PostgreSQL、MySQL、ClickHouse
 
 **默认行为：** 如果不配置 `runner.WithSessionService`，Runner 会默认使用内存存储（Memory），数据在进程重启后会丢失。
 
@@ -413,16 +413,18 @@ sessionService := inmemory.NewSessionService(
 | ---------- | -------------------------- | -------- |
 | 内存存储   | 定期扫描 + 访问时检查      | 是       |
 | Redis 存储 | Redis 原生 TTL             | 是       |
+| SQLite     | 定期扫描（软删除或硬删除） | 是       |
 | PostgreSQL | 定期扫描（软删除或硬删除） | 是       |
 | MySQL      | 定期扫描（软删除或硬删除） | 是       |
 
 ## 存储后端对比
 
-tRPC-Agent-Go 提供五种会话存储后端，满足不同场景需求：
+tRPC-Agent-Go 提供六种会话存储后端，满足不同场景需求：
 
 | 存储类型   | 适用场景           |
 | ---------- | ------------------ |
 | 内存存储   | 开发测试、小规模   |
+| SQLite     | 本地持久化、单机   |
 | Redis 存储 | 生产环境、分布式   |
 | PostgreSQL | 生产环境、复杂查询 |
 | MySQL      | 生产环境、复杂查询 |
@@ -497,26 +499,118 @@ sessionService := inmemory.NewSessionService(
 )
 ```
 
-## Redis 存储
+## SQLite 存储
 
-适用于生产环境和分布式应用，提供高性能和自动过期能力。
+SQLite 是一种嵌入式数据库，数据保存在单个文件中，适合：
+
+- 本地开发和 Demo（不需要额外部署数据库）
+- 单机部署但希望进程重启后仍保留会话数据
+- 轻量级 CLI/小服务的持久化
+
+### 依赖与构建要求
+
+该后端使用 `github.com/mattn/go-sqlite3` 驱动，需要开启 CGO（需要 C 编译器）。
+
+### 基础配置示例
+
+```go
+import (
+    "database/sql"
+    "time"
+
+    _ "github.com/mattn/go-sqlite3"
+    sessionsqlite "trpc.group/trpc-go/trpc-agent-go/session/sqlite"
+)
+
+db, err := sql.Open("sqlite3", "file:sessions.db?_busy_timeout=5000")
+if err != nil {
+    // handle error
+}
+
+sessionService, err := sessionsqlite.NewService(
+    db,
+    sessionsqlite.WithSessionEventLimit(1000),
+    sessionsqlite.WithSessionTTL(30*time.Minute),
+    sessionsqlite.WithSoftDelete(true),
+)
+if err != nil {
+    // handle error
+}
+defer sessionService.Close()
+```
+
+**注意事项**：
+
+- `NewService` 接收 `*sql.DB`。Session Service 会在 `Close()` 时关闭该 DB，避免重复关闭。
+- 如果单机并发较高，可以考虑在 DSN 中开启 WAL（例如 `_journal_mode=WAL`）并设置 `_busy_timeout`。
 
 ### 配置选项
 
+- TTL 与清理：`WithSessionTTL`、`WithAppStateTTL`、`WithUserStateTTL`、`WithCleanupInterval`
+- 保留策略：`WithSessionEventLimit`
+- 异步持久化：`WithEnableAsyncPersist`、`WithAsyncPersisterNum`
+- 软删除：`WithSoftDelete`（默认开启）
+- 摘要：`WithSummarizer`、`WithAsyncSummaryNum`、`WithSummaryQueueSize`、`WithSummaryJobTimeout`
+- DDL/命名：`WithSkipDBInit`、`WithTablePrefix`
+- Hooks：`WithAppendEventHook`、`WithGetSessionHook`
+
+## Redis 存储
+
+适用于生产环境和分布式应用，提供高性能和自动过期能力。Redis Session Service 内部维护两套存储引擎：**HashIdx**（新，默认）和 **ZSet**（旧），通过兼容模式（CompatMode）实现平滑迁移。
+
+### 配置选项
+
+**连接配置：**
+
 - **`WithRedisClientURL(url string)`**：通过 URL 创建 Redis 客户端。格式：`redis://[username:password@]host:port[/database]`。
 - **`WithRedisInstance(instanceName string)`**：使用预配置的 Redis 实例。注意：`WithRedisClientURL` 的优先级高于 `WithRedisInstance`。
+- **`WithExtraOptions(extraOptions ...interface{})`**：为 Redis 客户端设置额外选项，会传递给底层的 client builder。
+
+**会话配置：**
+
 - **`WithSessionEventLimit(limit int)`**：设置每个会话存储的最大事件数量。默认值为 1000。
-- **`WithSessionTTL(ttl time.Duration)`**：设置会话状态和事件的 TTL。默认值为 0（不过期）。
+- **`WithSessionTTL(ttl time.Duration)`**：设置会话状态和事件的 TTL。默认值为 0（不过期）。负值等同于 0。
 - **`WithAppStateTTL(ttl time.Duration)`**：设置应用级状态的 TTL。默认值为 0（不过期）。
 - **`WithUserStateTTL(ttl time.Duration)`**：设置用户级状态的 TTL。默认值为 0（不过期）。
-- **`WithEnableAsyncPersist(enable bool)`**：启用异步持久化。默认值为 `false`。
-- **`WithAsyncPersisterNum(num int)`**：异步持久化 worker 数量。默认值为 10。
-- **`WithSummarizer(s summary.SessionSummarizer)`**：注入会话摘要器。
+- **`WithKeyPrefix(prefix string)`**：设置 Redis key 前缀。所有 key 将以 `prefix:` 开头。默认无前缀。适用于多应用共享同一 Redis 实例的场景。
+- **`WithCompatMode(mode CompatMode)`**：设置存储兼容模式。可选值：`CompatModeNone`、`CompatModeLegacy`（默认）、`CompatModeTransition`。详见下方[存储方式与版本迁移](#存储方式与版本迁移)。
+
+**异步持久化配置：**
+
+- **`WithEnableAsyncPersist(enable bool)`**：启用异步持久化。默认值为 `false`。启用后，`AppendEvent` 和 `AppendTrackEvent` 会将事件写入内部 channel，由后台 worker 异步写入 Redis，降低请求延迟。
+- **`WithAsyncPersisterNum(num int)`**：异步持久化 worker 数量。默认值为 10。每个 worker 同时处理 Event 和 TrackEvent 各一个 channel，channel 缓冲区大小为 100。
+
+**摘要配置：**
+
+- **`WithSummarizer(s summary.SessionSummarizer)`**：注入会话摘要器。未设置时摘要相关操作为空操作。
 - **`WithAsyncSummaryNum(num int)`**：设置摘要处理 worker 数量。默认值为 3。
 - **`WithSummaryQueueSize(size int)`**：设置摘要任务队列大小。默认值为 100。
 - **`WithSummaryJobTimeout(timeout time.Duration)`**：设置单个摘要任务超时时间。默认值为 60 秒。
-- **`WithKeyPrefix(prefix string)`**：设置 Redis key 前缀。所有 key 将以 `prefix:` 开头。默认无前缀。
-- **`WithExtraOptions(extraOptions ...interface{})`**：为 Redis 客户端设置额外选项。
+
+**链路追踪配置：**
+
+- **`WithEnableTracing(enable bool)`**：启用 OpenTelemetry 链路追踪。默认值为 `false`。启用后，`CreateSession`、`GetSession`、`AppendEvent`、`DeleteSession`、`AppendTrackEvent`、`CreateSessionSummary`、`GetSessionSummaryText` 等操作会自动创建 span。
+
+!!! note "关于 Root Span"
+    Session 的操作由 Runner 执行，发生在 Agent 的 `Run()` 调用前后。而 Agent 的 root span 是在 `agent.Run()` 内部创建的，Session span 不会自动挂载到 Agent span 下。因此，如果需要在 Langfuse 等可观测平台中看到完整的 Session span 链路，需要在调用 `runner.Run()` 之前手动创建一个 root span：
+
+    ```go
+    import atrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
+
+    // Create a root span before runner.Run(), so that session spans
+    // (create_session, get_session, append_event, etc.) become children
+    // of this root span via context propagation.
+    ctx, span := atrace.Tracer.Start(ctx, "my_request")
+    defer span.End()
+
+    eventChan, err := r.Run(ctx, userID, sessionID, message)
+    ```
+
+**Hook 配置：**
+
+- **`WithAppendEventHook(hooks ...session.AppendEventHook)`**：添加 `AppendEvent` 钩子。
+- **`WithGetSessionHook(hooks ...session.GetSessionHook)`**：添加 `GetSession` 钩子。
+- Hook 机制是所有 Session 后端的通用能力，详见[高级用法 - Hook 能力](#hook-能力appendget)。
 
 ### 基础配置示例
 
@@ -580,26 +674,127 @@ sessionService, err := redis.NewService(
     redis.WithSummarizer(summarizer),
     redis.WithAsyncSummaryNum(4),
     redis.WithSummaryQueueSize(200),
+    redis.WithSummaryJobTimeout(120*time.Second),
 )
 ```
 
-### 存储结构
+### 异步持久化
+
+启用异步持久化后，`AppendEvent` 和 `AppendTrackEvent` 不再同步写入 Redis，而是将事件投递到内部 channel，由后台 worker 协程消费并写入 Redis。这样可以显著降低请求延迟，适用于对写入延迟敏感的场景。
+
+```go
+sessionService, err := redis.NewService(
+    redis.WithRedisClientURL("redis://localhost:6379"),
+    redis.WithEnableAsyncPersist(true),
+    redis.WithAsyncPersisterNum(10), // 10 个 worker 协程
+)
+```
+
+工作原理：
+
+- 每个 worker 协程持有一个 Event channel 和一个 TrackEvent channel（缓冲区大小 100）。
+- `AppendEvent` 根据 `session.Hash % workerNum` 选择 channel，保证同一会话的事件有序写入。
+- 如果 channel 已满且 context 被取消，会返回 `context.Canceled` 错误。
+- 异步写入超时时间为 2 秒（`defaultAsyncPersistTimeout`）。
+- 调用 `Close()` 时会关闭所有 channel 并等待 worker 完成剩余任务。
+
+!!! warning "注意"
+异步持久化模式下，如果服务进程异常退出，channel 中尚未消费的事件可能会丢失。请根据业务对数据一致性的要求评估是否启用。
+
+### 存储方式与版本迁移
+
+Redis Session 存储有两种数据存储引擎，内部通过 `ServiceMeta` 中的 `storage_type` 标记每个 session 所属的存储版本，实现操作路由：
+
+
+| 存储方式    | 版本             | Hash Tag    | 特点                                                                                                                                            |
+| ------------- | ------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **ZSet**    | 旧版（legacy）   | `{appName}` | 所有用户数据集中在同一 Cluster slot，大规模下有热点风险。数据结构简单，Event 直接存储完整 JSON 在 SortedSet 中。                                |
+| **HashIdx** | **新版（默认）** | `{userID}`  | 按用户散列，消除热点；数据与索引分离（Hash 存数据 + ZSet 存索引），ZSet 中只存 eventID 避免内存膨胀；Session 元数据独立存储，支持更灵活的查询。 |
+
+* !!! info "如何区分新旧模式"
+    - **HashIdx 是新模式**：Session 相关 key 以 `hashidx:` 为前缀，使用 `{userID}` 作为 hash tag，按用户维度散列到不同的 Redis Cluster slot。
+    - **ZSet 是旧模式**：Session 相关 key 使用 `{appName}` 作为 hash tag，同一应用的所有用户数据集中在同一个 slot。
+    - **AppState 是例外**：`appstate:{appName}` 在两种模式下格式完全一致（没有 `hashidx:` 前缀），因此 AppState 不受存储版本迁移影响，零迁移成本。
+    - 新创建的 session 在 `CompatModeLegacy`（默认）和 `CompatModeNone` 模式下使用 HashIdx 存储。
+
+新版本通过 **CompatMode**（兼容模式）实现从旧存储方式到新存储方式的平滑迁移，无需停服。
+
+#### 三种兼容模式
+
+
+| 模式 | Session 读行为 | Session 写行为 | UserState 行为 | 适用阶段 |
+| --- | --- | --- | --- | --- |
+| `CompatModeTransition` | Pipeline 同时检查 HashIdx 和 ZSet 是否存在；若 ZSet 存在则读 ZSet，否则读 HashIdx | 仅 ZSet | 写：双写（HashIdx + ZSet）；读：HashIdx 优先，为空回退 ZSet | 滚动升级中，新旧版本实例混合部署 |
+| `CompatModeLegacy` **（默认）** | Pipeline 同时检查 HashIdx 和 ZSet 是否存在；若 ZSet 存在则读 ZSet，否则读 HashIdx | 仅 HashIdx | 写：仅 HashIdx；读：HashIdx 优先，为空回退 ZSet | 所有实例已升级，但旧 ZSet 数据尚未过期 |
+| `CompatModeNone` | 仅 HashIdx（不检查 ZSet） | 仅 HashIdx | 写：仅 HashIdx；读：仅 HashIdx | ZSet 数据已全部过期，纯新存储模式 |
+
+#### 迁移步骤
 
 ```
-# 应用数据
-appdata:{appName} -> Hash {key: value}
+Phase 1                      Phase 2                      Phase 3
+CompatModeTransition         CompatModeLegacy (default)   CompatModeNone
+┌─────────────────────┐      ┌─────────────────────┐      ┌────────────────────┐
+│ Mixed old/new nodes │  →   │ All nodes upgraded  │  →   │ ZSet data expired  │
+│ New nodes write ZSet│      │ New sessions: HIdx  │      │ Pure HashIdx mode  │
+│ Same as old nodes   │      │ Old sessions: fbk   │      │ No ZSet overhead   │
+└─────────────────────┘      └─────────────────────┘      └────────────────────┘
+```
 
-# 用户数据
-userdata:{appName}:{userID} -> Hash {key: value}
+**阶段 1：滚动升级（新旧实例共存）**
 
-# 会话数据
-session:{appName}:{userID} -> Hash {sessionID: SessionData(JSON)}
+使用 `CompatModeTransition`，新实例的读写行为与旧实例完全一致（Session 创建走 ZSet，UserState 双写），保证混合部署下数据完全兼容。
 
-# 事件记录
-events:{appName}:{userID}:{sessionID} -> SortedSet {score: timestamp, value: Event(JSON)}
+```go
+sessionService, err := redis.NewService(
+    redis.WithRedisClientURL("redis://localhost:6379"),
+    redis.WithCompatMode(redis.CompatModeTransition),
+)
+```
 
-# 摘要数据（可选）
-summary:{appName}:{userID}:{sessionID}:{filterKey} -> String (JSON)
+!!! tip "何时需要阶段 1"
+    只有在**灰度发布或新旧版本混合部署**场景下才需要使用 `CompatModeTransition`。如果能够一次性将所有实例升级到新版本（例如全量发布），可以跳过阶段 1，直接使用默认的 `CompatModeLegacy` 即可。
+
+**UserState 注意事项：** 新旧存储方式的 UserState 使用了**不同的 Redis Key**（旧：`userstate:{appName}:{userID}`，新：`hashidx:userstate:appName:{userID}`）。升级到新版本后，通过 HashIdx 创建的新 session 在合并 UserState 时**只会读取新 key**，无法读到旧 key 中的数据。
+
+- 在 `CompatModeTransition` 模式下，`UpdateUserState` 会**同时写入新旧两种 key**，确保新旧实例都能读取。因此**建议在 Transition 阶段通过 `UpdateUserState` 重新写入一次 UserState**，将数据同步到新 key 中。
+- 直接调用 `ListUserStates` API 在 Transition 和 Legacy 模式下会先尝试新 key，为空时自动回退到旧 key。但 `CreateSession`/`GetSession` 内部合并 UserState 时不经过此回退逻辑，仅读取新 key。
+- **AppState 不受影响**——两种存储方式的 `appstate:{appName}` Key 格式完全一致，无需额外处理。
+
+**阶段 2：全部升级完成**
+
+所有实例均已升级后，切换到 `CompatModeLegacy`（默认值，不需要显式设置）。此后新创建的 session 使用 HashIdx 存储方式，已有的 ZSet 数据仍可通过回退读取访问。
+
+```go
+sessionService, err := redis.NewService(
+    redis.WithRedisClientURL("redis://localhost:6379"),
+    // CompatModeLegacy 是默认值，可省略
+    // redis.WithCompatMode(redis.CompatModeLegacy),
+)
+```
+
+!!! warning "注意"
+    此处的兼容问题仅发生在**多节点部署且同一用户的请求可能被分发到新旧版本 Session Service 实例**的场景下。如果是单节点部署，或者能通过路由策略保证同一用户始终命中同一版本实例，则无需关注此限制。
+
+**阶段 3：清理完成**
+
+等待 ZSet 数据根据 TTL 自然过期后（如果未设置 TTL，需手动清理），切换到 `CompatModeNone`，完全移除 ZSet 兼容层，获得最佳性能。
+
+```go
+sessionService, err := redis.NewService(
+    redis.WithRedisClientURL("redis://localhost:6379"),
+    redis.WithCompatMode(redis.CompatModeNone),
+)
+```
+
+#### 新部署（无历史数据）
+
+如果是全新部署，没有旧版本数据，建议使用 `CompatModeNone`，跳过不必要的 ZSet 兼容逻辑：
+
+```go
+sessionService, err := redis.NewService(
+    redis.WithRedisClientURL("redis://localhost:6379"),
+    redis.WithCompatMode(redis.CompatModeNone),
+)
 ```
 
 ## PostgreSQL 存储
@@ -1248,7 +1443,7 @@ COMMENT 'User states table';
 - **AppendEventHook**：事件写入前的拦截/修改/终止。可用于内容安全、审计打标（如写入 `violation=<word>`），或直接阻断存储。关于 filterKey 的赋值请见下文“会话摘要 / FilterKey 与 AppendEventHook”。
 - **GetSessionHook**：会话读取后的拦截/修改/过滤。可用来剔除带特定标签的事件，或动态补充返回的 Session 状态。
 - **责任链执行**：Hook 通过 `next()` 形成链式调用，可提前返回以短路后续逻辑，错误会向上传递。
-- **跨后端一致**：内存、Redis、MySQL、PostgreSQL 实现已统一接入 Hook，构造服务时注入 Hook 切片即可。
+- **跨后端一致**：内存、SQLite、Redis、MySQL、PostgreSQL 实现已统一接入 Hook，构造服务时注入 Hook 切片即可。
 - **示例**：见 `examples/session/hook`（[代码](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/session/hook)）
 
 ### 直接使用 Session Service API

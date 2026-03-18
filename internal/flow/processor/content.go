@@ -16,13 +16,17 @@ package processor
 import (
 	"context"
 	"fmt"
+	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/codeexecutor"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
+	"trpc.group/trpc-go/trpc-agent-go/internal/fileref"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -33,6 +37,13 @@ import (
 const (
 	// BranchFilterModePrefix Prefix matching pattern
 	BranchFilterModePrefix = "prefix"
+	// BranchFilterModeSubtree includes only events whose FilterKey is the
+	// same as the current filter key or is a descendant of it.
+	//
+	// Unlike BranchFilterModePrefix, it does not include ancestor FilterKeys.
+	// This is useful for isolating history across independent scopes
+	// (e.g., permission/tenant views) within the same session.
+	BranchFilterModeSubtree = "subtree"
 	// BranchFilterModeAll include all
 	BranchFilterModeAll = "all"
 	// BranchFilterModeExact exact match
@@ -96,8 +107,13 @@ type ContentRequestProcessor struct {
 	// conversations. Default is ReasoningContentModeDiscardPreviousTurns, which is
 	// recommended for DeepSeek thinking mode.
 	ReasoningContentMode string
-	// PreloadMemory sets the number of memories to preload into system prompt.
-	// When > 0, the specified number of most recent memories are loaded.
+	// PreloadMemory controls framework-side memory preload.
+	// When > 0, it acts as an adaptive preload budget:
+	//   - If total memories <= N, preload all memories.
+	//   - If total memories > N, preload top-N search results.
+	//   - If query extraction is empty, the search fails, or the search
+	//     returns no matches, fall back to loading up to N memories
+	//     directly.
 	// When 0, no memories are preloaded (use tools instead).
 	// When < 0 (default), all memories are loaded.
 	PreloadMemory int
@@ -112,7 +128,9 @@ type ContentOption func(*ContentRequestProcessor)
 // WithBranchFilterMode sets how to include content from session events.
 func WithBranchFilterMode(mode string) ContentOption {
 	return func(p *ContentRequestProcessor) {
-		if mode != BranchFilterModeAll && mode != BranchFilterModeExact {
+		if mode != BranchFilterModeAll &&
+			mode != BranchFilterModeExact &&
+			mode != BranchFilterModeSubtree {
 			mode = BranchFilterModePrefix
 		}
 		p.BranchFilterMode = mode
@@ -177,13 +195,16 @@ func WithReasoningContentMode(mode string) ContentOption {
 	}
 }
 
-// WithPreloadMemory sets the number of memories to preload into system prompt.
+// WithPreloadMemory sets the framework-side memory preload behavior.
 //   - Set to 0 (default) to disable preloading (use tools instead).
-//   - Set to N (N > 0) to load the most recent N memories.
+//   - Set to N (N > 0) to use adaptive preload with budget N.
+//     Small memory sets are preloaded in full. Larger sets use search and
+//     fall back to loading up to N memories directly when search cannot
+//     provide usable results.
 //   - Set to -1 to load all memories.
 //     WARNING: Loading all memories may significantly increase token usage
 //     and API costs, especially for users with many stored memories.
-//     Consider using a positive limit (e.g., 10-50) for production use.
+//     Consider using a positive budget (e.g., 10-50) for production use.
 func WithPreloadMemory(limit int) ContentOption {
 	return func(p *ContentRequestProcessor) {
 		p.PreloadMemory = limit
@@ -200,6 +221,18 @@ func WithSummaryFormatter(formatter func(summary string) string) ContentOption {
 const (
 	mergedUserSeparator = "\n\n"
 	contextPrefix       = "For context:"
+
+	contentHasSessionSummaryStateKey       = "processor:content:has_session_summary"
+	contentHasCompactedToolResultsStateKey = "processor:content:has_compacted_tool_results"
+	compactedToolResultPlaceholder         = "Tool result omitted from raw history; details are captured in the session summary above."
+)
+
+const (
+	attachedFilesAnnotationPrefix = "Attached files"
+	attachedFileNameFallbackFmt   = "upload_%d"
+	attachedFilesMaxPreview       = 20
+	hostRefPrefix                 = "host://"
+	ignoredAttachmentMimeType     = "application/octet-stream"
 )
 
 // NewContentRequestProcessor creates a new content request processor.
@@ -245,6 +278,7 @@ func (p *ContentRequestProcessor) ProcessRequest(
 	if invocation == nil {
 		return
 	}
+	invocation.DeleteState(contentHasCompactedToolResultsStateKey)
 
 	// Honor per-invocation include_contents flag from runtime state when
 	// present. This allows callers (including GraphAgent subgraphs) to
@@ -273,38 +307,20 @@ func (p *ContentRequestProcessor) ProcessRequest(
 		if !skipHistory && p.AddSessionSummary && p.TimelineFilterMode == TimelineFilterAll {
 			// Fetch session summary early so we can insert it after other
 			// semi-stable system blocks (for example, preloaded memories).
-			summaryMsg, summaryUpdatedAt =
-				p.getSessionSummaryMessage(invocation)
+			summaryMsg, summaryUpdatedAt = p.getSessionSummaryMessage(invocation)
 		}
 
 		// Preload memories into system prompt if configured.
-		// PreloadMemory: 0 = disabled, -1 = all, N > 0 = most recent N.
+		// PreloadMemory: 0 = disabled, -1 = all, N > 0 = adaptive preload budget.
 		if p.PreloadMemory != 0 && invocation.MemoryService != nil {
 			if memMsg := p.getPreloadMemoryMessage(ctx, invocation); memMsg != nil {
-				// Insert memory as a system message after the last system
-				// message to keep stable instructions cacheable.
-				systemMsgIndex := findLastSystemMessageIndex(
-					req.Messages,
-				)
-				if systemMsgIndex >= 0 {
-					req.Messages = append(req.Messages[:systemMsgIndex+1],
-						append([]model.Message{*memMsg}, req.Messages[systemMsgIndex+1:]...)...)
-				} else {
-					req.Messages = append([]model.Message{*memMsg}, req.Messages...)
-				}
+				p.injectSystemContextMessage(req, *memMsg)
 			}
 		}
 
 		if summaryMsg != nil {
-			// Insert summary as a separate system message after the last
-			// system message to keep stable instructions cacheable.
-			systemMsgIndex := findLastSystemMessageIndex(req.Messages)
-			if systemMsgIndex >= 0 {
-				req.Messages = append(req.Messages[:systemMsgIndex+1],
-					append([]model.Message{*summaryMsg}, req.Messages[systemMsgIndex+1:]...)...)
-			} else {
-				req.Messages = append([]model.Message{*summaryMsg}, req.Messages...)
-			}
+			invocation.SetState(contentHasSessionSummaryStateKey, true)
+			p.injectSystemContextMessage(req, *summaryMsg)
 		}
 
 		if skipHistory {
@@ -315,13 +331,23 @@ func (p *ContentRequestProcessor) ProcessRequest(
 			messages = p.getCurrentInvocationMessages(invocation)
 		} else {
 			messages = p.getIncrementMessages(invocation, summaryUpdatedAt)
+			if p.hasCompactedCurrentInvocationToolResults(
+				invocation,
+				summaryUpdatedAt,
+			) {
+				invocation.SetState(
+					contentHasCompactedToolResultsStateKey,
+					true,
+				)
+			}
 		}
 		req.Messages = append(req.Messages, messages...)
 		needToAddInvocationMessage = len(messages) == 0
 	}
 
 	if model.HasPayload(invocation.Message) && needToAddInvocationMessage {
-		req.Messages = append(req.Messages, invocation.Message)
+		msg := annotateUserMessageWithAttachedFiles(invocation.Message)
+		req.Messages = append(req.Messages, msg)
 		log.DebugfContext(
 			ctx,
 			"Content request processor: added invocation message with "+
@@ -336,6 +362,28 @@ func (p *ContentRequestProcessor) ProcessRequest(
 		invocation.AgentName,
 		event.WithObject(model.ObjectTypePreprocessingContent),
 	))
+}
+
+// injectSystemContextMessage injects summary or memory context into request.
+// It merges the content into an existing system message if one exists,
+// or prepends as a new system message if none exists.
+func (p *ContentRequestProcessor) injectSystemContextMessage(
+	req *model.Request,
+	msg model.Message,
+) {
+	if msg.Role != model.RoleSystem {
+		return
+	}
+	systemMsgIndex := findSystemMessageIndex(req.Messages)
+	if systemMsgIndex >= 0 {
+		if req.Messages[systemMsgIndex].Content == "" {
+			req.Messages[systemMsgIndex].Content = msg.Content
+			return
+		}
+		req.Messages[systemMsgIndex].Content += "\n\n" + msg.Content
+		return
+	}
+	req.Messages = append([]model.Message{msg}, req.Messages...)
 }
 
 // injectInjectedContextMessages inserts per-run context messages into the request
@@ -451,6 +499,16 @@ func (p *ContentRequestProcessor) getIncrementMessages(inv *agent.Invocation, si
 	var events []event.Event
 	inv.Session.EventMu.RLock()
 	for _, evt := range inv.Session.Events {
+		if compactedEvt, ok := p.compactCurrentInvocationEvent(
+			evt,
+			inv,
+			filter,
+			isZeroTime,
+			since,
+		); ok {
+			events = append(events, compactedEvt)
+			continue
+		}
 		shouldInclude, isInvocationMessage := p.shouldIncludeEvent(evt, inv, filter, isZeroTime, since)
 		if !shouldInclude {
 			continue
@@ -502,14 +560,307 @@ func (p *ContentRequestProcessor) getIncrementMessages(inv *agent.Invocation, si
 
 	messages = p.mergeUserMessages(messages)
 
-	// Apply MaxHistoryRuns limit if set MaxHistoryRuns and
-	// AddSessionSummary is false.
-	if !p.AddSessionSummary && p.MaxHistoryRuns > 0 &&
-		len(messages) > p.MaxHistoryRuns {
-		startIdx := len(messages) - p.MaxHistoryRuns
-		messages = messages[startIdx:]
+	// Apply MaxHistoryRuns limit when AddSessionSummary is false.
+	if !p.AddSessionSummary && p.MaxHistoryRuns > 0 {
+		messages = applyMaxHistoryRuns(messages, p.MaxHistoryRuns)
+	}
+	messages = annotateUserMessagesWithAttachedFiles(messages)
+	return messages
+}
+
+// compactCurrentInvocationEvent preserves the minimum structured state needed
+// for same-turn tool loops after a summary has already absorbed earlier
+// invocation history. Assistant tool-call messages are kept intact, while tool
+// results are replaced with a small placeholder that points the model at the
+// summary for details.
+func (p *ContentRequestProcessor) compactCurrentInvocationEvent(
+	evt event.Event,
+	inv *agent.Invocation,
+	filter string,
+	isZeroTime bool,
+	since time.Time,
+) (event.Event, bool) {
+	if isZeroTime || inv == nil {
+		return event.Event{}, false
+	}
+	if evt.RequestID != inv.RunOptions.RequestID ||
+		evt.InvocationID != inv.InvocationID {
+		return event.Event{}, false
+	}
+	if evt.Timestamp.After(since) {
+		return event.Event{}, false
+	}
+	if !isEventEligibleForInclusion(evt) {
+		return event.Event{}, false
+	}
+	if !p.passTimelineFilter(evt, inv) || !p.passBranchFilter(evt, filter) {
+		return event.Event{}, false
+	}
+
+	var compactedChoices []model.Choice
+	for _, choice := range evt.Choices {
+		msg, ok := compactedCurrentInvocationMessage(choice.Message)
+		if !ok {
+			continue
+		}
+		compactedChoices = append(compactedChoices, model.Choice{
+			Index:   choice.Index,
+			Message: msg,
+		})
+	}
+	if len(compactedChoices) == 0 {
+		return event.Event{}, false
+	}
+
+	compacted := evt
+	compacted.Response = &model.Response{
+		Done:    evt.Response.Done,
+		Object:  evt.Response.Object,
+		Choices: compactedChoices,
+	}
+	return compacted, true
+}
+
+func compactedCurrentInvocationMessage(
+	msg model.Message,
+) (model.Message, bool) {
+	switch {
+	case len(msg.ToolCalls) > 0:
+		return model.Message{
+			Role:         msg.Role,
+			Content:      msg.Content,
+			ContentParts: msg.ContentParts,
+			ToolCalls:    msg.ToolCalls,
+		}, true
+	case msg.Role == model.RoleTool && msg.ToolID != "":
+		return model.Message{
+			Role:     msg.Role,
+			Content:  compactedToolResultPlaceholder,
+			ToolID:   msg.ToolID,
+			ToolName: msg.ToolName,
+		}, true
+	default:
+		return model.Message{}, false
+	}
+}
+
+func annotateUserMessagesWithAttachedFiles(
+	messages []model.Message,
+) []model.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	for i := range messages {
+		messages[i] = annotateUserMessageWithAttachedFiles(messages[i])
 	}
 	return messages
+}
+
+func annotateUserMessageWithAttachedFiles(
+	msg model.Message,
+) model.Message {
+	if msg.Role != model.RoleUser && msg.Role != "" {
+		return msg
+	}
+	if len(msg.ContentParts) == 0 {
+		return msg
+	}
+	if hasAttachedFilesAnnotation(msg.ContentParts) {
+		return msg
+	}
+	text := buildAttachedFilesAnnotationText(msg.ContentParts)
+	if text == "" {
+		return msg
+	}
+	annotation := model.ContentPart{
+		Type: model.ContentTypeText,
+		Text: &text,
+	}
+	parts := make([]model.ContentPart, 0, len(msg.ContentParts)+1)
+	parts = append(parts, annotation)
+	parts = append(parts, msg.ContentParts...)
+	msg.ContentParts = parts
+	return msg
+}
+
+func hasAttachedFilesAnnotation(parts []model.ContentPart) bool {
+	for _, part := range parts {
+		if part.Type != model.ContentTypeText || part.Text == nil {
+			continue
+		}
+		if strings.HasPrefix(
+			strings.TrimSpace(*part.Text),
+			attachedFilesAnnotationPrefix,
+		) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildAttachedFilesAnnotationText(
+	parts []model.ContentPart,
+) string {
+	names, count := fileNamesForAnnotation(parts)
+	if count == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(
+		&b,
+		"%s (%d): ",
+		attachedFilesAnnotationPrefix,
+		count,
+	)
+	b.WriteString(strings.Join(names, ", "))
+	if count > len(names) {
+		fmt.Fprintf(&b, " (+%d more)", count-len(names))
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+func fileNamesForAnnotation(
+	parts []model.ContentPart,
+) ([]string, int) {
+	names := make([]string, 0, len(parts))
+	count := 0
+	for _, part := range parts {
+		if part.Type != model.ContentTypeFile || part.File == nil {
+			continue
+		}
+		count++
+		if len(names) >= attachedFilesMaxPreview {
+			continue
+		}
+		names = append(names, fileLabelForAnnotation(part.File, count))
+	}
+	return names, count
+}
+
+func fileLabelForAnnotation(file *model.File, count int) string {
+	if file == nil {
+		return fmt.Sprintf(attachedFileNameFallbackFmt, count)
+	}
+
+	name := strings.TrimSpace(file.Name)
+	if name == "" {
+		name = fileNameFromAnnotationRef(file.FileID)
+	}
+	if name == "" {
+		name = fmt.Sprintf(attachedFileNameFallbackFmt, count)
+	}
+	if mimeType := fileMimeLabel(file); mimeType != "" {
+		name = fmt.Sprintf("%s (%s)", name, mimeType)
+	}
+
+	ref := annotationRefDisplay(file.FileID)
+	if ref == "" || ref == name {
+		return name
+	}
+	return fmt.Sprintf("%s @ %s", name, ref)
+}
+
+func fileMimeLabel(file *model.File) string {
+	if file == nil {
+		return ""
+	}
+	mimeType := strings.TrimSpace(file.MimeType)
+	if mimeType == "" || mimeType == ignoredAttachmentMimeType {
+		return ""
+	}
+	return mimeType
+}
+
+func fileNameFromAnnotationRef(fileID string) string {
+	if name := fileNameFromArtifactRef(fileID); name != "" {
+		return name
+	}
+	ref := strings.TrimSpace(fileID)
+	if strings.HasPrefix(ref, hostRefPrefix) {
+		return baseNameForAnnotation(strings.TrimPrefix(ref, hostRefPrefix))
+	}
+	if filepath.IsAbs(ref) {
+		return baseNameForAnnotation(ref)
+	}
+	return ""
+}
+
+func annotationRefDisplay(fileID string) string {
+	ref := strings.TrimSpace(fileID)
+	if ref == "" {
+		return ""
+	}
+	if strings.HasPrefix(ref, fileref.ArtifactPrefix) ||
+		strings.HasPrefix(ref, fileref.WorkspacePrefix) {
+		return ref
+	}
+	return ""
+}
+
+func baseNameForAnnotation(raw string) string {
+	base := path.Base(strings.TrimSpace(raw))
+	if base == "." || base == "/" || base == ".." {
+		return ""
+	}
+	return base
+}
+
+func fileNameFromArtifactRef(fileID string) string {
+	s := strings.TrimSpace(fileID)
+	if !strings.HasPrefix(s, fileref.ArtifactPrefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(s, fileref.ArtifactPrefix)
+	name, _, err := codeexecutor.ParseArtifactRef(rest)
+	if err != nil {
+		return ""
+	}
+	base := path.Base(strings.TrimSpace(name))
+	if base == "." || base == "/" || base == ".." {
+		return ""
+	}
+	return base
+}
+
+// applyMaxHistoryRuns trims messages to at most maxRuns entries from the tail.
+// If the trim boundary falls on a tool-result message whose corresponding
+// tool_use was truncated, the boundary is advanced past any such orphaned
+// results to prevent API 400 "unexpected tool_use_id" errors.
+func applyMaxHistoryRuns(messages []model.Message, maxRuns int) []model.Message {
+	if len(messages) <= maxRuns {
+		return messages
+	}
+	startIdx := len(messages) - maxRuns
+
+	// Only scan the truncated prefix when the boundary actually falls on a
+	// tool-result message; otherwise there's nothing to skip.
+	if messages[startIdx].Role != model.RoleTool || messages[startIdx].ToolID == "" {
+		return messages[startIdx:]
+	}
+
+	// Collect tool-call IDs that will be truncated (before startIdx).
+	truncatedToolIDs := make(map[string]struct{})
+	for i := 0; i < startIdx; i++ {
+		for _, tc := range messages[i].ToolCalls {
+			if tc.ID != "" {
+				truncatedToolIDs[tc.ID] = struct{}{}
+			}
+		}
+	}
+
+	// Skip orphaned tool results whose corresponding call was truncated.
+	for startIdx < len(messages) &&
+		messages[startIdx].Role == model.RoleTool &&
+		messages[startIdx].ToolID != "" {
+		if _, orphaned := truncatedToolIDs[messages[startIdx].ToolID]; orphaned {
+			startIdx++
+			continue
+		}
+		break
+	}
+
+	return messages[startIdx:]
 }
 
 // processReasoningContent applies reasoning content stripping based on the
@@ -619,6 +970,7 @@ func (p *ContentRequestProcessor) getCurrentInvocationMessages(inv *agent.Invoca
 	}
 
 	messages = p.mergeUserMessages(messages)
+	messages = annotateUserMessagesWithAttachedFiles(messages)
 	return messages
 }
 
@@ -705,52 +1057,148 @@ func (p *ContentRequestProcessor) mergeUserMessages(
 	return merged
 }
 
+// shouldIncludeEvent decides whether an event should be included in the model
+// request and whether that event should be treated as the invocation message.
+//
+// The second return value (isInvocationMessage) is intentionally strict: only
+// exact invocation-message matches return true. Mid-turn user-message
+// protection may still include an event, but returns false for this flag to
+// avoid conflating inclusion with strict message equality.
 func (p *ContentRequestProcessor) shouldIncludeEvent(evt event.Event, inv *agent.Invocation, filter string,
 	isZeroTime bool, since time.Time) (bool, bool) {
-	if evt.Response == nil || evt.IsPartial || !evt.IsValidContent() {
+	// Fast reject malformed, partial, or empty-content events.
+	if !isEventEligibleForInclusion(evt) {
 		return false, false
 	}
-
-	// check is invocation message
-	if inv.RunOptions.RequestID == evt.RequestID &&
-		len(evt.Choices) > 0 &&
-		invocationMessageEqual(inv.Message, evt.Choices[0].Message) {
+	// Exact invocation message match keeps existing semantics.
+	if isStrictInvocationMessage(evt, inv) {
 		return true, true
 	}
-
+	// Keep the current invocation user message even when summary UpdatedAt
+	// would otherwise exclude it. This preserves the original request while
+	// still allowing same-turn tool/assistant history already covered by the
+	// summary to be compacted out of the next prompt.
+	if isCurrentInvocationUserMessage(evt, inv) {
+		return true, false
+	}
 	// Use strict After so events stamped exactly at summary UpdatedAt are
 	// treated as already summarized and not re-sent.
 	if !isZeroTime && !evt.Timestamp.After(since) {
 		return false, false
 	}
+	if !p.passTimelineFilter(evt, inv) {
+		return false, false
+	}
+	if !p.passBranchFilter(evt, filter) {
+		return false, false
+	}
+	return true, false
+}
 
-	// Check timeline filter
+// isEventEligibleForInclusion checks basic event validity before expensive
+// filtering logic runs.
+func isEventEligibleForInclusion(evt event.Event) bool {
+	return evt.Response != nil && !evt.IsPartial && evt.IsValidContent()
+}
+
+// isStrictInvocationMessage checks whether the event exactly matches the
+// current invocation message, including content equality semantics.
+func isStrictInvocationMessage(evt event.Event, inv *agent.Invocation) bool {
+	return inv.RunOptions.RequestID == evt.RequestID &&
+		len(evt.Choices) > 0 &&
+		invocationMessageEqual(inv.Message, evt.Choices[0].Message)
+}
+
+// isCurrentInvocationUserMessage keeps the current invocation's user message
+// even when summary UpdatedAt would exclude it by timestamp.
+//
+// RequestID + InvocationID matching avoids preserving unrelated user messages
+// from other invocations that may share the same request scope.
+func isCurrentInvocationUserMessage(evt event.Event, inv *agent.Invocation) bool {
+	return inv.RunOptions.RequestID != "" &&
+		inv.RunOptions.RequestID == evt.RequestID &&
+		inv.InvocationID != "" &&
+		inv.InvocationID == evt.InvocationID &&
+		len(evt.Choices) > 0 &&
+		evt.Choices[0].Message.Role == model.RoleUser
+}
+
+// hasCompactedCurrentInvocationToolResults reports whether same-invocation tool
+// result events exist before the active summary cutoff and were therefore
+// compacted out of the raw prompt history.
+func (p *ContentRequestProcessor) hasCompactedCurrentInvocationToolResults(
+	inv *agent.Invocation,
+	since time.Time,
+) bool {
+	if inv == nil || inv.Session == nil || since.IsZero() {
+		return false
+	}
+	if inv.RunOptions.RequestID == "" || inv.InvocationID == "" {
+		return false
+	}
+
+	filter := inv.GetEventFilterKey()
+
+	inv.Session.EventMu.RLock()
+	defer inv.Session.EventMu.RUnlock()
+
+	for _, evt := range inv.Session.Events {
+		if evt.RequestID != inv.RunOptions.RequestID ||
+			evt.InvocationID != inv.InvocationID {
+			continue
+		}
+		if evt.Timestamp.After(since) {
+			continue
+		}
+		if !isEventEligibleForInclusion(evt) ||
+			len(evt.Choices) == 0 ||
+			evt.Choices[0].Message.Role != model.RoleTool {
+			continue
+		}
+		if !p.passBranchFilter(evt, filter) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// passTimelineFilter applies request/invocation timeline constraints.
+func (p *ContentRequestProcessor) passTimelineFilter(evt event.Event, inv *agent.Invocation) bool {
 	switch p.TimelineFilterMode {
 	case TimelineFilterCurrentRequest:
-		if inv.RunOptions.RequestID != evt.RequestID {
-			return false, false
-		}
+		return inv.RunOptions.RequestID == evt.RequestID
 	case TimelineFilterCurrentInvocation:
-		if evt.InvocationID != inv.InvocationID {
-			return false, false
-		}
+		return evt.InvocationID == inv.InvocationID
 	default:
+		return true
 	}
+}
 
-	// Check branch filter
+// passBranchFilter applies branch-scoping constraints.
+func (p *ContentRequestProcessor) passBranchFilter(evt event.Event, filter string) bool {
 	switch p.BranchFilterMode {
 	case BranchFilterModeExact:
-		if evt.FilterKey != filter {
-			return false, false
-		}
+		return evt.FilterKey == filter
 	case BranchFilterModePrefix:
-		if !evt.Filter(filter) {
-			return false, false
-		}
+		return evt.Filter(filter)
+	case BranchFilterModeSubtree:
+		return filterSubtree(evt.FilterKey, filter)
 	default:
+		return true
 	}
+}
 
-	return true, false
+func filterSubtree(eventFilterKey, filterKey string) bool {
+	if filterKey == "" || eventFilterKey == "" {
+		return true
+	}
+	if eventFilterKey == filterKey {
+		return true
+	}
+	filterKey += agent.EventFilterKeyDelimiter
+	eventFilterKey += agent.EventFilterKeyDelimiter
+	return strings.HasPrefix(eventFilterKey, filterKey)
 }
 
 func invocationMessageEqual(invMsg model.Message, evtMsg model.Message) bool {
@@ -798,54 +1246,76 @@ func (p *ContentRequestProcessor) convertForeignEvent(evt *event.Event) event.Ev
 	convertedEvent.Author = "user"
 
 	// Build content parts for context.
-	var contentParts []string
+	var contents []string
+	var contentParts []model.ContentPart
 	if p.AddContextPrefix {
-		contentParts = append(contentParts, contextPrefix)
+		prefix := contextPrefix
+		contents = append(contents, contextPrefix)
+		contentParts = append(contentParts, model.ContentPart{
+			Type: model.ContentTypeText,
+			Text: &prefix,
+		})
 	}
 
 	for _, choice := range evt.Choices {
+		if len(choice.Message.ContentParts) > 0 {
+			if p.AddContextPrefix {
+				prefix := fmt.Sprintf("[%s] said:", evt.Author)
+				contentParts = append(contentParts, model.ContentPart{
+					Type: model.ContentTypeText,
+					Text: &prefix,
+				})
+			}
+			contentParts = append(contentParts, choice.Message.ContentParts...)
+		}
+
 		if choice.Message.Content != "" {
 			if p.AddContextPrefix {
-				contentParts = append(contentParts,
-					fmt.Sprintf("[%s] said: %s", evt.Author, choice.Message.Content))
+				contents = append(contents, fmt.Sprintf("[%s] said: %s", evt.Author, choice.Message.Content))
 			} else {
 				// When prefix is disabled, pass the content directly.
-				contentParts = append(contentParts, choice.Message.Content)
+				contents = append(contents, choice.Message.Content)
 			}
 		} else if len(choice.Message.ToolCalls) > 0 {
 			for _, toolCall := range choice.Message.ToolCalls {
 				if p.AddContextPrefix {
-					contentParts = append(contentParts,
+					contents = append(contents,
 						fmt.Sprintf("[%s] called tool `%s` with parameters: %s",
 							evt.Author, toolCall.Function.Name, string(toolCall.Function.Arguments)))
 				} else {
 					// When prefix is disabled, pass tool call info directly.
-					contentParts = append(contentParts,
+					contents = append(contents,
 						fmt.Sprintf("Tool `%s` called with parameters: %s",
 							toolCall.Function.Name, string(toolCall.Function.Arguments)))
 				}
 			}
 		} else if choice.Message.ToolID != "" {
 			if p.AddContextPrefix {
-				contentParts = append(contentParts,
+				contents = append(contents,
 					fmt.Sprintf("[%s] `%s` tool returned result: %s",
 						evt.Author, choice.Message.ToolID, choice.Message.Content))
 			} else {
 				// When prefix is disabled, pass tool result directly.
-				contentParts = append(contentParts, choice.Message.Content)
+				contents = append(contents, choice.Message.Content)
 			}
 		}
 	}
 
 	// Set the converted message.
-	if len(contentParts) > 0 {
+	if len(contents) > 0 || len(contentParts) > 0 {
+		msg := model.Message{
+			Role: model.RoleUser,
+		}
+		if len(contents) > 0 {
+			msg.Content = strings.Join(contents, " ")
+		}
+		if len(contentParts) > 0 {
+			msg.ContentParts = contentParts
+		}
 		convertedEvent.Response.Choices = []model.Choice{
 			{
-				Index: 0,
-				Message: model.Message{
-					Role:    model.RoleUser,
-					Content: strings.Join(contentParts, " "),
-				},
+				Index:   0,
+				Message: msg,
 			},
 		}
 	}
@@ -1050,20 +1520,82 @@ func (p *ContentRequestProcessor) getPreloadMemoryMessage(
 	if userKey.AppName == "" || userKey.UserID == "" {
 		return nil
 	}
-	// Handle PreloadMemory: 0 = disabled, -1 = all, N > 0 = most recent N.
+	// Handle PreloadMemory: 0 = disabled, -1 = all, N > 0 = adaptive budget.
 	if p.PreloadMemory == 0 {
-		// PreloadMemory = 0 means disabled, return nil.
 		return nil
 	}
-	// PreloadMemory = -1 means all memories, use 0 for ReadMemories (no limit).
-	// PreloadMemory = N > 0 means most recent N memories.
-	// Here we use max to handle the case when PreloadMemory is negative.
-	limit := max(p.PreloadMemory, 0)
+	if p.PreloadMemory < 0 {
+		return p.loadPreloadMemoryMessage(ctx, inv, userKey, 0)
+	}
+	return p.getAdaptivePreloadMemoryMessage(ctx, inv, userKey, p.PreloadMemory)
+}
+
+// getAdaptivePreloadMemoryMessage preloads all memories for small memory sets
+// and falls back to query-aware search for larger sets.
+func (p *ContentRequestProcessor) getAdaptivePreloadMemoryMessage(
+	ctx context.Context,
+	inv *agent.Invocation,
+	userKey memory.UserKey,
+	budget int,
+) *model.Message {
+	const preloadProbeExtra = 1
+	probeLimit := budget + preloadProbeExtra
+	probeEntries, err := inv.MemoryService.ReadMemories(ctx, userKey, probeLimit)
+	if err != nil {
+		log.WarnfContext(ctx, "Failed to probe memories for preload: %v", err)
+		return nil
+	}
+	if len(probeEntries) == 0 {
+		return nil
+	}
+	if len(probeEntries) <= budget {
+		return newPreloadMemoryMessage(probeEntries)
+	}
+
+	query := buildPreloadSearchQuery(inv.Message)
+	if query == "" {
+		return p.loadPreloadMemoryMessage(ctx, inv, userKey, budget)
+	}
+
+	searchOpts := memory.SearchOptions{
+		Query:        query,
+		MaxResults:   budget,
+		Deduplicate:  true,
+		HybridSearch: true,
+	}
+	memories, err := inv.MemoryService.SearchMemories(
+		ctx,
+		userKey,
+		query,
+		memory.WithSearchOptions(searchOpts),
+	)
+	if err != nil {
+		log.WarnfContext(ctx, "Failed to search memories for preload: %v", err)
+		return p.loadPreloadMemoryMessage(ctx, inv, userKey, budget)
+	}
+	if len(memories) == 0 {
+		return p.loadPreloadMemoryMessage(ctx, inv, userKey, budget)
+	}
+	return newPreloadMemoryMessage(memories)
+}
+
+// loadPreloadMemoryMessage loads memories directly and formats them as a
+// system message.
+func (p *ContentRequestProcessor) loadPreloadMemoryMessage(
+	ctx context.Context,
+	inv *agent.Invocation,
+	userKey memory.UserKey,
+	limit int,
+) *model.Message {
 	memories, err := inv.MemoryService.ReadMemories(ctx, userKey, limit)
 	if err != nil {
 		log.WarnfContext(ctx, "Failed to preload memories: %v", err)
 		return nil
 	}
+	return newPreloadMemoryMessage(memories)
+}
+
+func newPreloadMemoryMessage(memories []*memory.Entry) *model.Message {
 	if len(memories) == 0 {
 		return nil
 	}
@@ -1073,17 +1605,59 @@ func (p *ContentRequestProcessor) getPreloadMemoryMessage(
 	}
 }
 
+// buildPreloadSearchQuery extracts the current user text used for adaptive
+// preload search.
+func buildPreloadSearchQuery(msg model.Message) string {
+	parts := make([]string, 0, 1+len(msg.ContentParts))
+	if text := strings.TrimSpace(msg.Content); text != "" {
+		parts = append(parts, text)
+	}
+	for _, part := range msg.ContentParts {
+		if part.Type != model.ContentTypeText || part.Text == nil {
+			continue
+		}
+		text := strings.TrimSpace(*part.Text)
+		if text == "" {
+			continue
+		}
+		parts = append(parts, text)
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
 // formatMemoryContent formats memories for system prompt injection.
 func formatMemoryContent(memories []*memory.Entry) string {
 	var sb strings.Builder
 	sb.WriteString("## User Memories\n\n")
-	sb.WriteString("The following are memories about the user:\n\n")
+	sb.WriteString("The following are stored memories about the user. ")
+	sb.WriteString("Use these to answer questions. Episodic memories include ")
+	sb.WriteString("event details (time, participants, location).\n\n")
 	for _, mem := range memories {
 		if mem == nil || mem.Memory == nil {
 			continue
 		}
-		fmt.Fprintf(&sb, "ID: %s\n", mem.ID)
-		fmt.Fprintf(&sb, "Memory: %s\n\n", mem.Memory.Memory)
+		fmt.Fprintf(&sb, "- [%s] %s", mem.ID, mem.Memory.Memory)
+		// Append metadata inline for richer context.
+		var meta []string
+		if mem.Memory.Kind != "" {
+			meta = append(meta, fmt.Sprintf("kind=%s", mem.Memory.Kind))
+		}
+		if mem.Memory.EventTime != nil {
+			meta = append(meta, fmt.Sprintf("date=%s", mem.Memory.EventTime.Format("2006-01-02")))
+		}
+		if len(mem.Memory.Participants) > 0 {
+			meta = append(meta, fmt.Sprintf("with=%s", strings.Join(mem.Memory.Participants, ", ")))
+		}
+		if mem.Memory.Location != "" {
+			meta = append(meta, fmt.Sprintf("at=%s", mem.Memory.Location))
+		}
+		if len(mem.Memory.Topics) > 0 {
+			meta = append(meta, fmt.Sprintf("topics=%s", strings.Join(mem.Memory.Topics, ", ")))
+		}
+		if len(meta) > 0 {
+			fmt.Fprintf(&sb, " (%s)", strings.Join(meta, "; "))
+		}
+		sb.WriteString("\n")
 	}
 	return sb.String()
 }

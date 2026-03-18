@@ -50,6 +50,16 @@ const (
 	// appenderStateKey is the invocation state key used by internal appender
 	// attachment (see internal/state/appender).
 	appenderStateKey = "__append_event__"
+
+	// streamHubStateKey is the invocation state key used by the graph to
+	// share ephemeral streams across node invocations within the same run.
+	streamHubStateKey = "__graph_stream_hub__"
+
+	// SyncSummaryIntraRunStateKey is set on the invocation by the
+	// flow when sync intra-run summary is active.
+	// Runner checks this key to skip redundant async summary
+	// enqueue during the same run.
+	SyncSummaryIntraRunStateKey = "__sync_summary_intra_run__"
 )
 
 // TransferInfo contains information about a pending agent transfer.
@@ -75,6 +85,8 @@ type Invocation struct {
 	EndInvocation bool
 	// Session is the session that is being used for the invocation.
 	Session *session.Session
+	// SessionService is the session service used by this invocation.
+	SessionService session.Service
 	// Model is the model that is being used for the invocation.
 	Model model.Model
 	// Message is the message that is being sent to the agent.
@@ -306,10 +318,56 @@ func WithStreamMode(modes ...StreamMode) RunOption {
 	}
 }
 
+// WithDisableTracing requests supported agent and flow execution paths to skip
+// creating OpenTelemetry spans for this run.
+func WithDisableTracing(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableTracing = disable
+	}
+}
+
+// WithDisableResponseUsageTracking disables attaching usage and timing info to streaming responses.
+func WithDisableResponseUsageTracking(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableResponseUsageTracking = disable
+	}
+}
+
+// WithDisableModelExecutionEvents disables emitting model execution events for this run.
+func WithDisableModelExecutionEvents(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableModelExecutionEvents = disable
+	}
+}
+
+// WithDisablePartialEventIDs disables generating IDs for partial response events.
+func WithDisablePartialEventIDs(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisablePartialEventIDs = disable
+	}
+}
+
+// WithDisablePartialEventTimestamps disables generating timestamps for partial response events.
+func WithDisablePartialEventTimestamps(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisablePartialEventTimestamps = disable
+	}
+}
+
 // WithRequestID sets the request id for the RunOptions.
 func WithRequestID(requestID string) RunOption {
 	return func(opts *RunOptions) {
 		opts.RequestID = requestID
+	}
+}
+
+// WithEventFilterKey sets the invocation event filter key for this run.
+//
+// This controls the FilterKey injected into emitted events and the default
+// filter prefix used by ContentRequestProcessor when building LLM context.
+func WithEventFilterKey(filterKey string) RunOption {
+	return func(opts *RunOptions) {
+		opts.EventFilterKey = filterKey
 	}
 }
 
@@ -540,6 +598,15 @@ type RunOptions struct {
 	// (e.g., room ID, user context) without modifying the agent's base initial state.
 	RuntimeState map[string]any
 
+	// EventFilterKey overrides the invocation's event filter key used for
+	// scoping session events (event.FilterKey) included in LLM context.
+	//
+	// Runner applies this value via WithInvocationEventFilterKey when it
+	// constructs the invocation. When using Runner, the value should
+	// typically start with the runner app name (e.g., "<appName>/...") so
+	// sessions hooks and summaries continue to work as expected.
+	EventFilterKey string
+
 	// KnowledgeFilter contains metadata key-value pairs for the knowledge filter
 	KnowledgeFilter map[string]any
 
@@ -588,6 +655,22 @@ type RunOptions struct {
 	// When StreamModeEnabled is false, runners should not apply any stream
 	// filtering and preserve the existing behavior.
 	StreamModes []StreamMode
+
+	// DisableTracing requests supported agent and flow execution paths to skip
+	// creating OpenTelemetry spans for this run.
+	DisableTracing bool
+
+	// DisableResponseUsageTracking disables attaching usage and timing info to streaming responses.
+	DisableResponseUsageTracking bool
+
+	// DisableModelExecutionEvents disables emitting model execution start/complete events.
+	DisableModelExecutionEvents bool
+
+	// DisablePartialEventIDs disables generating IDs for partial response events.
+	DisablePartialEventIDs bool
+
+	// DisablePartialEventTimestamps disables generating timestamps for partial response events.
+	DisablePartialEventTimestamps bool
 
 	// RequestID is the request id of the request.
 	RequestID string
@@ -703,6 +786,13 @@ func NewInvocation(invocationOpts ...InvocationOptions) *Invocation {
 		opt(inv)
 	}
 
+	if inv.Message.Role == "" && model.HasPayload(inv.Message) {
+		log.Warnf(
+			"agent.NewInvocation received a message with empty role; defaulting to user",
+		)
+		inv.Message.Role = model.RoleUser
+	}
+
 	if inv.Branch == "" {
 		inv.Branch = inv.AgentName
 	}
@@ -722,6 +812,7 @@ func (inv *Invocation) Clone(invocationOpts ...InvocationOptions) *Invocation {
 	newInv := &Invocation{
 		InvocationID:    uuid.NewString(),
 		Session:         inv.Session,
+		SessionService:  inv.SessionService,
 		Message:         inv.Message,
 		RunOptions:      inv.RunOptions,
 		MemoryService:   inv.MemoryService,
@@ -770,6 +861,9 @@ func (inv *Invocation) cloneState() map[string]any {
 	}
 	if holder, ok := inv.state[appenderStateKey]; ok {
 		copied[appenderStateKey] = holder
+	}
+	if hub, ok := inv.state[streamHubStateKey]; ok {
+		copied[streamHubStateKey] = hub
 	}
 	return copied
 }

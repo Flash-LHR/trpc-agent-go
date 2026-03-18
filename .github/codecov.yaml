@@ -1,5 +1,7 @@
 ignore:
+  - ".github/scripts/**"
   - "examples/**"
+  - "openclaw/examples/**"
   - "benchmark/**"
 
 coverage: # https://docs.codecov.com/docs/codecovyml-reference#coverage

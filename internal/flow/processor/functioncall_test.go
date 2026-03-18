@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
@@ -29,6 +31,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/plugin"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 	"trpc.group/trpc-go/trpc-agent-go/tool/transfer"
@@ -68,6 +71,21 @@ func (m *mockModel) GenerateContent(ctx context.Context, req *model.Request) (<-
 	return respChan, nil
 }
 
+func useSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	originalProvider := trace.TracerProvider
+	originalTracer := trace.Tracer
+	trace.TracerProvider = provider
+	trace.Tracer = provider.Tracer("function-call-disable-tracing-test")
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+		trace.TracerProvider = originalProvider
+		trace.Tracer = originalTracer
+	})
+	return recorder
+}
+
 // Minimal callable tool used by tests above
 type mockCallableTool struct {
 	declaration *tool.Declaration
@@ -77,6 +95,139 @@ type mockCallableTool struct {
 func (m *mockCallableTool) Declaration() *tool.Declaration { return m.declaration }
 func (m *mockCallableTool) Call(ctx context.Context, args []byte) (any, error) {
 	return m.callFn(ctx, args)
+}
+
+type mockCallbackCompatibleResult struct {
+	callbackResult any
+	meta           map[string]any
+}
+
+func (m *mockCallbackCompatibleResult) GetCallbackResult() any {
+	return m.callbackResult
+}
+
+func (m *mockCallbackCompatibleResult) GetMeta() map[string]any {
+	return m.meta
+}
+
+func TestExecuteSingleToolCallSequential_DisableTracingSkipsSpanCreation(t *testing.T) {
+	recorder := useSpanRecorder(t)
+	p := NewFunctionCallResponseProcessor(false, nil)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableTracing: true,
+		}),
+	)
+	invocation.AgentName = "test-agent"
+	response := &model.Response{}
+	toolCall := model.ToolCall{
+		ID: "call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "echo",
+			Arguments: []byte(`{"message":"hello"}`),
+		},
+	}
+	tools := map[string]tool.Tool{
+		"echo": &mockCallableTool{
+			declaration: &tool.Declaration{Name: "echo"},
+			callFn: func(context.Context, []byte) (any, error) {
+				return "ok", nil
+			},
+		},
+	}
+	eventChan := make(chan *event.Event, 1)
+	toolEvent, err := p.executeSingleToolCallSequential(context.Background(), invocation, response, tools, eventChan, 0, toolCall)
+	require.NoError(t, err)
+	require.NotNil(t, toolEvent)
+	require.Empty(t, recorder.Ended())
+}
+
+func TestExecuteToolCallsInParallel_DisableTracingSkipsSpanCreation(t *testing.T) {
+	recorder := useSpanRecorder(t)
+	p := NewFunctionCallResponseProcessor(true, nil)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableTracing: true,
+		}),
+	)
+	invocation.AgentName = "test-agent"
+	response := &model.Response{}
+	toolCalls := []model.ToolCall{
+		{
+			ID: "call-1",
+			Function: model.FunctionDefinitionParam{
+				Name:      "tool1",
+				Arguments: []byte(`{}`),
+			},
+		},
+		{
+			ID: "call-2",
+			Function: model.FunctionDefinitionParam{
+				Name:      "tool2",
+				Arguments: []byte(`{}`),
+			},
+		},
+	}
+	tools := map[string]tool.Tool{
+		"tool1": &mockCallableTool{
+			declaration: &tool.Declaration{Name: "tool1"},
+			callFn: func(context.Context, []byte) (any, error) {
+				return "ok-1", nil
+			},
+		},
+		"tool2": &mockCallableTool{
+			declaration: &tool.Declaration{Name: "tool2"},
+			callFn: func(context.Context, []byte) (any, error) {
+				return "ok-2", nil
+			},
+		},
+	}
+	eventChan := make(chan *event.Event, 2)
+	mergedEvent, err := p.executeToolCallsInParallel(context.Background(), invocation, response, toolCalls, tools, eventChan)
+	require.NoError(t, err)
+	require.NotNil(t, mergedEvent)
+	require.Empty(t, recorder.Ended())
+}
+
+type mockInvocationStateDeltaTool struct {
+	declaration *tool.Declaration
+	delta       map[string][]byte
+}
+
+func (m *mockInvocationStateDeltaTool) Declaration() *tool.Declaration {
+	if m.declaration != nil {
+		return m.declaration
+	}
+	return &tool.Declaration{Name: "mock"}
+}
+
+func (m *mockInvocationStateDeltaTool) StateDeltaForInvocation(
+	_ *agent.Invocation,
+	_ string,
+	_ []byte,
+	_ []byte,
+) map[string][]byte {
+	return m.delta
+}
+
+type mockStateDeltaTool struct {
+	declaration *tool.Declaration
+	delta       map[string][]byte
+}
+
+func (m *mockStateDeltaTool) Declaration() *tool.Declaration {
+	if m.declaration != nil {
+		return m.declaration
+	}
+	return &tool.Declaration{Name: "mock"}
+}
+
+func (m *mockStateDeltaTool) StateDelta(
+	_ string,
+	_ []byte,
+	_ []byte,
+) map[string][]byte {
+	return m.delta
 }
 
 func TestExecuteToolCall_MapsSubAgentToTransfer(t *testing.T) {
@@ -126,6 +277,47 @@ func TestExecuteToolCall_MapsSubAgentToTransfer(t *testing.T) {
 	require.NoError(t, json.Unmarshal(capturedArgs, &got))
 	assert.Equal(t, "weather-agent", got.AgentName)
 	assert.Equal(t, "What's the weather like in Tokyo?", got.Message)
+}
+
+func TestFunctionCallResponseProcessor_AttachStateDelta(t *testing.T) {
+	const (
+		deltaKey1 = "k1"
+		deltaVal1 = "v1"
+		deltaKey2 = "k2"
+		deltaVal2 = "v2"
+	)
+
+	p := &FunctionCallResponseProcessor{}
+	inv := &agent.Invocation{AgentName: "tester"}
+	args := []byte(`{"ok":true}`)
+	choice := &model.Choice{
+		Message: model.Message{
+			ToolID:   "call-1",
+			Content:  `{"result":"ok"}`,
+			ToolName: "tool",
+			Role:     model.RoleTool,
+		},
+	}
+
+	ev := &event.Event{}
+	tl := &mockInvocationStateDeltaTool{
+		declaration: &tool.Declaration{Name: "tool"},
+		delta: map[string][]byte{
+			deltaKey1: []byte(deltaVal1),
+		},
+	}
+	p.attachStateDelta(inv, tl, args, choice, ev)
+	require.Equal(t, []byte(deltaVal1), ev.StateDelta[deltaKey1])
+
+	ev2 := &event.Event{}
+	tl2 := &mockStateDeltaTool{
+		declaration: &tool.Declaration{Name: "tool"},
+		delta: map[string][]byte{
+			deltaKey2: []byte(deltaVal2),
+		},
+	}
+	p.attachStateDelta(inv, tl2, args, choice, ev2)
+	require.Equal(t, []byte(deltaVal2), ev2.StateDelta[deltaKey2])
 }
 
 func TestExecuteToolCall(t *testing.T) {
@@ -2116,7 +2308,7 @@ func (d *deltaTool) Declaration() *tool.Declaration {
 func (d *deltaTool) Call(ctx context.Context, _ []byte) (any, error) {
 	return "ok", nil
 }
-func (d *deltaTool) StateDelta(_ []byte, _ []byte) map[string][]byte {
+func (d *deltaTool) StateDelta(_ string, _ []byte, _ []byte) map[string][]byte {
 	return map[string][]byte{"x": []byte("y")}
 }
 
@@ -2130,7 +2322,7 @@ func (e *errorDeltaTool) Call(_ context.Context, _ []byte) (any, error) {
 	return nil, errors.New("boom")
 }
 
-func (e *errorDeltaTool) StateDelta(_ []byte, _ []byte) map[string][]byte {
+func (e *errorDeltaTool) StateDelta(_ string, _ []byte, _ []byte) map[string][]byte {
 	return map[string][]byte{"x": []byte("y")}
 }
 
@@ -2326,9 +2518,10 @@ func TestProcessStreamChunk_ForwardsEvent(t *testing.T) {
 	ev := event.New("i", "a")
 	ch := make(chan *event.Event, 1)
 	var contents []any
+	var finalResult any
 	err := f.processStreamChunk(ctx, inv,
 		model.ToolCall{ID: "x"},
-		tool.StreamChunk{Content: ev}, ch, &contents,
+		tool.StreamChunk{Content: ev}, ch, &contents, &finalResult,
 	)
 	require.NoError(t, err)
 	select {
@@ -2337,6 +2530,7 @@ func TestProcessStreamChunk_ForwardsEvent(t *testing.T) {
 	default:
 		t.Fatal("expected an event forwarded")
 	}
+	require.Nil(t, finalResult)
 }
 
 func TestExecuteToolCall_MarshalErrorIgnored(t *testing.T) {
@@ -2811,6 +3005,58 @@ func TestExecuteStreamableTool_ChunkStructJSON(t *testing.T) {
 	require.Equal(t, `{"a":1}{"b":"x"}`, res.(string))
 }
 
+type finalResultStreamTool struct{ name string }
+
+func (s *finalResultStreamTool) Declaration() *tool.Declaration {
+	return &tool.Declaration{Name: s.name}
+}
+
+func (s *finalResultStreamTool) StreamableCall(
+	ctx context.Context,
+	_ []byte,
+) (*tool.StreamReader, error) {
+	st := tool.NewStream(4)
+	go func() {
+		defer st.Writer.Close()
+		st.Writer.Send(tool.StreamChunk{Content: "line-1"}, nil)
+		st.Writer.Send(tool.StreamChunk{
+			Content: tool.FinalResultChunk{
+				Result: map[string]any{"status": "ok"},
+			},
+		}, nil)
+	}()
+	return st.Reader, nil
+}
+
+func TestExecuteStreamableTool_PreservesFinalResultChunk(t *testing.T) {
+	f := NewFunctionCallResponseProcessor(false, nil)
+	ctx := context.Background()
+	inv := &agent.Invocation{
+		InvocationID: "inv-final-result",
+		AgentName:    "tester",
+		Branch:       "br",
+		Model:        &mockModel{},
+	}
+	tc := model.ToolCall{
+		ID:       "c1",
+		Function: model.FunctionDefinitionParam{Name: "final"},
+	}
+	st := &finalResultStreamTool{name: "final"}
+	ch := make(chan *event.Event, 4)
+	res, err := f.executeStreamableTool(ctx, inv, tc, st, ch)
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{"status": "ok"}, res)
+
+	select {
+	case evt := <-ch:
+		require.NotNil(t, evt)
+		require.True(t, evt.IsPartial)
+		require.Equal(t, "line-1", evt.Choices[0].Delta.Content)
+	default:
+		t.Fatalf("expected a partial event from streamed output")
+	}
+}
+
 // stream tool forwarding inner *event.Event
 type innerEventStreamTool struct{ name string }
 
@@ -3093,14 +3339,22 @@ func TestProcessStreamChunk_EmptyText_NoEvent(t *testing.T) {
 	inv := &agent.Invocation{Model: &mockModel{}}
 	tc := model.ToolCall{ID: "x", Function: model.FunctionDefinitionParam{Name: "t"}}
 	out := make([]any, 0)
+	var finalResult any
 	ch := make(chan *event.Event, 1)
 	// Empty string chunk should be ignored.
 	err := f.processStreamChunk(
-		ctx, inv, tc, tool.StreamChunk{Content: ""}, ch, &out,
+		ctx,
+		inv,
+		tc,
+		tool.StreamChunk{Content: ""},
+		ch,
+		&out,
+		&finalResult,
 	)
 	require.NoError(t, err)
 	require.Empty(t, out)
 	require.Len(t, ch, 0)
+	require.Nil(t, finalResult)
 }
 
 func TestExecuteToolWithCallbacks_BeforeCustomResult(t *testing.T) {
@@ -3249,6 +3503,103 @@ func TestExecuteToolWithCallbacks_PluginAfterToolOverrides(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, localAfterCalled)
 	require.Equal(t, map[string]any{"p": true}, res)
+}
+
+func TestExecuteToolWithCallbacks_AfterToolReceivesNormalizedResultAndMeta(t *testing.T) {
+	var (
+		gotResult any
+		gotMeta   map[string]any
+	)
+
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		gotResult = args.Result
+		gotMeta = args.Meta
+		return nil, nil
+	})
+
+	expectedResult := []map[string]string{{"type": "text", "text": "hello"}}
+	expectedMeta := map[string]any{"source": "mcp"}
+	rawResult := &mockCallbackCompatibleResult{
+		callbackResult: expectedResult,
+		meta:           expectedMeta,
+	}
+
+	proc := NewFunctionCallResponseProcessor(false, callbacks)
+	tl := &mockCallableTool{
+		declaration: &tool.Declaration{Name: "t"},
+		callFn: func(_ context.Context, _ []byte) (any, error) {
+			return rawResult, nil
+		},
+	}
+
+	_, res, _, err := proc.executeToolWithCallbacks(
+		context.Background(),
+		nil,
+		model.ToolCall{Function: model.FunctionDefinitionParam{Name: "t"}},
+		tl,
+		nil,
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, expectedResult, gotResult)
+	require.Equal(t, expectedMeta, gotMeta)
+	require.Same(t, rawResult, res)
+}
+
+func TestExecuteToolWithCallbacks_PluginAfterToolReceivesNormalizedResultAndMeta(t *testing.T) {
+	var (
+		gotResult any
+		gotMeta   map[string]any
+	)
+
+	p := &hookPlugin{
+		name: "p",
+		reg: func(r *plugin.Registry) {
+			r.AfterTool(func(
+				ctx context.Context,
+				args *tool.AfterToolArgs,
+			) (*tool.AfterToolResult, error) {
+				gotResult = args.Result
+				gotMeta = args.Meta
+				return nil, nil
+			})
+		},
+	}
+
+	pm := plugin.MustNewManager(p)
+	proc := NewFunctionCallResponseProcessor(false, nil)
+	inv := &agent.Invocation{Plugins: pm}
+
+	expectedResult := []map[string]string{{"type": "text", "text": "hello"}}
+	expectedMeta := map[string]any{"source": "mcp"}
+	rawResult := &mockCallbackCompatibleResult{
+		callbackResult: expectedResult,
+		meta:           expectedMeta,
+	}
+
+	tl := &mockCallableTool{
+		declaration: &tool.Declaration{Name: "t"},
+		callFn: func(_ context.Context, _ []byte) (any, error) {
+			return rawResult, nil
+		},
+	}
+
+	_, res, _, err := proc.executeToolWithCallbacks(
+		context.Background(),
+		inv,
+		model.ToolCall{Function: model.FunctionDefinitionParam{Name: "t"}},
+		tl,
+		nil,
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, expectedResult, gotResult)
+	require.Equal(t, expectedMeta, gotMeta)
+	require.Same(t, rawResult, res)
 }
 
 func TestExecuteToolWithCallbacks_PluginBeforeToolError(t *testing.T) {
@@ -3644,4 +3995,58 @@ func TestExecuteSingleToolCallSequential_SetsTransferTag(t *testing.T) {
 	require.NotNil(t, evt)
 	require.Equal(t, event.TransferTag, evt.Tag)
 	require.Equal(t, transfer.TransferToolName, evt.Response.Choices[0].Message.ToolName)
+}
+
+// mockMetaGetter is a test type that implements the GetMeta interface.
+type mockMetaGetter struct {
+	meta map[string]any
+}
+
+func (m *mockMetaGetter) GetMeta() map[string]any {
+	return m.meta
+}
+
+// mockNonMetaGetter is a test type that does not implement GetMeta.
+type mockNonMetaGetter struct {
+	value string
+}
+
+func TestExtractMetaFromResult_Nil(t *testing.T) {
+	meta := extractMetaFromResult(nil)
+	assert.Nil(t, meta)
+}
+
+func TestExtractMetaFromResult_NonMetaGetter(t *testing.T) {
+	// Test with a type that does not implement GetMeta
+	result := &mockNonMetaGetter{value: "test"}
+	meta := extractMetaFromResult(result)
+	assert.Nil(t, meta)
+}
+
+func TestExtractMetaFromResult_WithMetaGetter(t *testing.T) {
+	// Test with a type that implements GetMeta
+	expectedMeta := map[string]any{
+		"tokenCount": 42,
+		"model":      "gpt-4",
+	}
+	result := &mockMetaGetter{meta: expectedMeta}
+	meta := extractMetaFromResult(result)
+	assert.NotNil(t, meta)
+	assert.Equal(t, expectedMeta["tokenCount"], meta["tokenCount"])
+	assert.Equal(t, expectedMeta["model"], meta["model"])
+}
+
+func TestExtractMetaFromResult_WithNilMeta(t *testing.T) {
+	// Test with a MetaGetter that returns nil meta
+	result := &mockMetaGetter{meta: nil}
+	meta := extractMetaFromResult(result)
+	assert.Nil(t, meta)
+}
+
+func TestExtractMetaFromResult_WithEmptyMeta(t *testing.T) {
+	// Test with a MetaGetter that returns empty map
+	result := &mockMetaGetter{meta: map[string]any{}}
+	meta := extractMetaFromResult(result)
+	assert.NotNil(t, meta)
+	assert.Empty(t, meta)
 }

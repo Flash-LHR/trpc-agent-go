@@ -301,9 +301,11 @@ Memory 模块采用分层设计，由以下核心组件组成：
 ┌─────────────────────────────────────────────────────────────┐
 │                   Storage Backends                           │
 │  • InMemory: 内存存储（开发/测试）                          │
+│  • SQLite: 本地文件数据库（单机持久化）                     │
 │  • Redis: 高性能缓存（生产环境）                            │
 │  • MySQL: 关系型数据库（ACID 保证）                        │
 │  • PostgreSQL: 关系型数据库（JSONB 支持）                  │
+│  • pgvector: PostgreSQL + 向量检索（语义搜索）              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -325,7 +327,7 @@ Memory 模块采用分层设计，由以下核心组件组成：
 | **Memory ID**       | 记忆的唯一标识符                          | 基于内容 + 主题的 SHA256 哈希，相同内容产生相同 ID |
 | **Topics**          | 记忆的主题标签                            | 用于分类和检索，支持多个标签                       |
 | **Memory Tools**    | Agent 可调用的记忆操作工具                | 包括 add、update、delete、search、load、clear      |
-| **Storage Backend** | 存储后端实现                              | 支持 InMemory、Redis、MySQL、PostgreSQL            |
+| **Storage Backend** | 存储后端实现                              | 支持 InMemory、SQLite、SQLiteVec、Redis、MySQL、PostgreSQL、pgvector |
 
 ### 关键流程
 
@@ -343,7 +345,7 @@ Memory 模块采用分层设计，由以下核心组件组成：
        │
        ↓
 ┌──────────────┐
-│ 3. 存储记忆   │  Entry → Storage Backend（InMemory/Redis/MySQL/PostgreSQL）
+│ 3. 存储记忆   │  Entry → Storage Backend（InMemory/SQLite/SQLiteVec/Redis/MySQL/PostgreSQL/pgvector）
 └──────┬───────┘
        │
        ↓
@@ -437,7 +439,7 @@ appRunner := runner.NewRunner(
 
 ### 记忆服务 (Memory Service)
 
-记忆服务支持五种存储后端，可根据场景选择。
+记忆服务支持多种存储后端（InMemory、SQLite、SQLiteVec、Redis、MySQL、PostgreSQL、pgvector），可根据场景选择。
 
 #### 配置示例
 
@@ -867,6 +869,108 @@ memoryService := memoryinmemory.NewMemoryService()
 
 **特点**：零配置，高性能，无持久化
 
+### SQLite 存储
+
+**适用场景**：本地持久化、单机部署、Demo
+
+SQLite 将数据保存在单个文件中，适用于不想运维 MySQL/PostgreSQL/Redis
+但希望进程重启后仍能保留记忆数据的场景。
+
+```go
+import (
+    "database/sql"
+
+    _ "github.com/mattn/go-sqlite3"
+    memorysqlite "trpc.group/trpc-go/trpc-agent-go/memory/sqlite"
+)
+
+db, err := sql.Open("sqlite3", "file:memories.db?_busy_timeout=5000")
+if err != nil {
+    // 处理错误
+}
+
+memoryService, err := memorysqlite.NewService(
+    db,
+    memorysqlite.WithSoftDelete(true),
+    memorysqlite.WithMemoryLimit(200),
+)
+if err != nil {
+    // 处理错误
+}
+defer memoryService.Close()
+```
+
+**配置选项**：
+
+- `WithTableName(name)`: 表名（默认 "memories"）
+- `WithSoftDelete(enabled)`: 软删除（默认 false）
+- `WithMemoryLimit(limit)`: 每用户记忆上限
+- `WithSkipDBInit(skip)`: 跳过表初始化
+- Auto 模式：`WithExtractor`、`WithAsyncMemoryNum`、`WithMemoryQueueSize`、`WithMemoryJobTimeout`
+- 工具：`WithCustomTool`、`WithToolEnabled`
+
+**注意事项**：
+
+- 该后端使用 `github.com/mattn/go-sqlite3`，需要 CGO。
+- `NewService` 会在 `Close()` 时关闭传入的 `*sql.DB`。
+
+### SQLiteVec（sqlite-vec）存储
+
+**适用场景**：本地持久化 + 语义检索（单机）
+
+SQLiteVec 将记忆保存在 SQLite 文件中，并通过 `sqlite-vec` 提供向量相似度
+检索（语义检索）。相比普通 SQLite 后端，它需要配置 **embedder** 来为
+记忆和查询生成 embedding。
+
+```go
+import (
+    "database/sql"
+
+    _ "github.com/mattn/go-sqlite3"
+    openaiembedder "trpc.group/trpc-go/trpc-agent-go/knowledge/embedder/openai"
+    memorysqlitevec "trpc.group/trpc-go/trpc-agent-go/memory/sqlitevec"
+)
+
+db, err := sql.Open("sqlite3", "file:memories_vec.db?_busy_timeout=5000")
+if err != nil {
+    // 处理错误
+}
+
+emb := openaiembedder.New(
+    openaiembedder.WithModel("text-embedding-3-small"),
+)
+
+memoryService, err := memorysqlitevec.NewService(
+    db,
+    memorysqlitevec.WithEmbedder(emb),
+    memorysqlitevec.WithSoftDelete(true),
+    memorysqlitevec.WithMemoryLimit(200),
+)
+if err != nil {
+    // 处理错误
+}
+defer memoryService.Close()
+```
+
+**配置选项**：
+
+- `WithTableName(name)`: 表名（默认 "memories"）
+- `WithEmbedder(embedder)`: 文本 embedder（必填）
+- `WithIndexDimension(dim)`: 向量维度（默认与 embedder 维度一致）
+- `WithMaxResults(limit)`: 搜索返回的最大条数（默认 10）
+- `WithSoftDelete(enabled)`: 软删除（默认 false）
+- `WithMemoryLimit(limit)`: 每用户记忆上限
+- `WithSkipDBInit(skip)`: 跳过表初始化
+- Auto 模式：`WithExtractor`、`WithAsyncMemoryNum`、`WithMemoryQueueSize`、
+  `WithMemoryJobTimeout`
+- 工具：`WithCustomTool`、`WithToolEnabled`
+
+**注意事项**：
+
+- 该后端使用 `github.com/mattn/go-sqlite3`，需要 CGO。
+- `sqlite-vec` 扩展通过 Go 绑定在进程内编译与注册，运行时无需额外下载
+  `.so/.dylib` 文件。
+
 ### Redis 存储
 
 **适用场景**：生产环境、高并发、分布式部署
@@ -884,11 +988,21 @@ redisService, err := memoryredis.NewService(
 - `WithRedisClientURL(url)`: Redis 连接 URL（推荐）
 - `WithRedisInstance(name)`: 使用预注册的 Redis 实例
 - `WithMemoryLimit(limit)`: 每用户记忆上限
+- `WithKeyPrefix(prefix)`: 设置 Redis key 前缀。设置后所有 key 都会以 `prefix:` 开头。例如 `prefix` 为 `"myapp"` 时，key `mem:{app:user}` 变为 `myapp:mem:{app:user}`。默认为空（无前缀）。适用于多环境或多服务共享同一 Redis 实例的场景
 - `WithCustomTool(toolName, creator)`: 注册自定义工具
 - `WithToolEnabled(toolName, enabled)`: 启用/禁用工具
 - `WithExtraOptions(...options)`: 传递给 Redis 客户端的额外选项
 
 **注意**：`WithRedisClientURL` 优先级高于 `WithRedisInstance`
+
+**Key 前缀示例**：
+
+```go
+redisService, err := memoryredis.NewService(
+    memoryredis.WithRedisClientURL("redis://localhost:6379"),
+    memoryredis.WithKeyPrefix("prod"),
+)
+```
 
 ### MySQL 存储
 
@@ -1074,27 +1188,29 @@ defer pgvectorService.Close()
 
 ### 后端对比与选择
 
-| 特性         | InMemory | Redis  | MySQL    | PostgreSQL | pgvector |
-| ------------ | -------- | ------ | -------- | ---------- | -------- |
-| **持久化**   | ❌       | ✅     | ✅       | ✅         | ✅       |
-| **分布式**   | ❌       | ✅     | ✅       | ✅         | ✅       |
-| **事务**     | ❌       | 部分   | ✅ ACID  | ✅ ACID    | ✅ ACID  |
-| **查询**     | 简单     | 中等   | SQL      | SQL        | SQL+向量 |
-| **JSON**     | ❌       | 基础   | JSON     | JSONB      | JSONB    |
-| **性能**     | 极高     | 高     | 中高     | 中高       | 中高     |
-| **配置**     | 零配置   | 简单   | 中等     | 中等       | 中等     |
-| **软删除**   | ❌       | ❌     | ✅       | ✅         | ✅       |
-| **适用场景** | 开发测试 | 高并发 | 企业应用 | 高级特性   | 向量搜索 |
+| 特性         | InMemory | SQLite     | SQLiteVec | Redis  | MySQL    | PostgreSQL | pgvector |
+| ------------ | -------- | ---------- | -------- | ------ | -------- | ---------- | -------- |
+| **持久化**   | ❌       | ✅         | ✅       | ✅     | ✅       | ✅         | ✅       |
+| **分布式**   | ❌       | ❌         | ❌       | ✅     | ✅       | ✅         | ✅       |
+| **事务**     | ❌       | ✅ ACID    | ✅ ACID  | 部分   | ✅ ACID  | ✅ ACID    | ✅ ACID  |
+| **查询**     | 简单     | SQL        | SQL+向量 | 中等   | SQL      | SQL        | SQL+向量 |
+| **JSON**     | ❌       | 基础       | 基础     | 基础   | JSON     | JSONB      | JSONB    |
+| **性能**     | 极高     | 中高       | 中高     | 高     | 中高     | 中高       | 中高     |
+| **配置**     | 零配置   | 简单       | 中等     | 简单   | 中等     | 中等       | 中等     |
+| **软删除**   | ❌       | ✅         | ✅       | ❌     | ✅       | ✅         | ✅       |
+| **适用场景** | 开发测试 | 本地持久化 | 本地向量 | 高并发 | 企业应用 | 高级特性   | 向量搜索 |
 
 **选择建议**：
 
 ```
 开发/测试 → InMemory（零配置，快速启动）
+本地持久化 → SQLite（单文件数据库，易部署）
+本地向量检索 → SQLiteVec（单文件数据库 + embedding）
 高并发读写 → Redis（内存级性能）
 需要 ACID → MySQL/PostgreSQL（事务保证）
 复杂 JSON → PostgreSQL（JSONB 索引和查询）
 向量搜索 → pgvector（基于 embedding 的相似度搜索）
-审计追踪 → MySQL/PostgreSQL/pgvector（软删除支持）
+审计追踪 → MySQL/PostgreSQL/pgvector/SQLite/SQLiteVec（软删除支持）
 ```
 
 ## 常见问题
@@ -1189,7 +1305,7 @@ memory.AddMemory(ctx, userKey, "用户喜欢编程", []string{"爱好"})
 
 **支持情况**：
 
-- ✅ MySQL、PostgreSQL、pgvector：支持软删除
+- ✅ MySQL、PostgreSQL、pgvector、SQLite、SQLiteVec：支持软删除
 - ❌ InMemory、Redis：不支持（只有硬删除）
 
 **软删除配置**：
@@ -1419,16 +1535,26 @@ llmAgent := llmagent.New(
     llmagent.WithTools(memoryService.Tools()),
     // 预加载选项：
     // llmagent.WithPreloadMemory(0),   // 禁用预加载（默认）。
-    // llmagent.WithPreloadMemory(10),  // 加载最近 10 条（推荐用于生产环境）。
+    // llmagent.WithPreloadMemory(10),  // 自适应预加载预算 10。
+    //                                  // 记忆总量 <= 10 时全量注入，
+    //                                  // 否则注入当前问题相关的前 10 条检索结果。
     // llmagent.WithPreloadMemory(-1),  // 加载全部。
     //                                  // ⚠️ 警告：全量加载可能显著增加 token 使用量和 API 成本，
-    //                                  //     特别是对于存储了大量记忆的用户。生产环境建议使用正数限制。
+    //                                  //     特别是对于存储了大量记忆的用户。生产环境建议使用正数预算。
 )
 ```
 
 启用预加载后，记忆会自动注入到系统提示词中，让 Agent 无需显式工具调用就能获得用户上下文。
 
-**⚠️ 重要提示**：配置为 `-1` 会加载所有记忆，这可能会显著增加**Token 使用量**和**API 成本**。默认情况下预加载是禁用的（`0`），推荐使用正数限制（如 `10-50`）来平衡性能和成本。
+当 `WithPreloadMemory(N)` 使用正数时，框架会先探测用户当前的 memory 总量。
+如果总量不超过 `N`，则直接全量注入；如果总量超过 `N`，则在框架内部切换为
+基于当前用户问题的 `memory_search` 语义，只注入最相关的前 `N` 条结果。
+如果当前 `query` 为空、检索报错，或检索结果为空，则会回退为直接加载最多
+`N` 条记忆。
+
+**注入机制**：预加载的记忆会**合并**到现有的系统提示词中，而不是作为独立的 system message 插入。这确保了请求中始终只有一个 system message，兼容某些对多个 system message 支持不完善的模型（如 Qwen3.5 系列可能会返回 "System message must be at the beginning" 错误）。
+
+**⚠️ 重要提示**：配置为 `-1` 会加载所有记忆，这可能会显著增加**Token 使用量**和**API 成本**。默认情况下预加载是禁用的（`0`），推荐使用正数预算（如 `10-50`）来平衡性能和成本。
 
 ### 混合方案
 
@@ -1448,7 +1574,7 @@ llmAgent := llmagent.New(
     "assistant",
     llmagent.WithModel(model),
     llmagent.WithTools(memoryService.Tools()),  // 默认只有 search（load 可选）。
-    llmagent.WithPreloadMemory(10),             // 预加载最近记忆。
+    llmagent.WithPreloadMemory(10),             // 自适应预加载预算。
 )
 ```
 

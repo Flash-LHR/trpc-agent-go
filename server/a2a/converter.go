@@ -11,10 +11,13 @@ package a2a
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"strings"
 
 	"trpc.group/trpc-go/trpc-a2a-go/protocol"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/graph"
 	ia2a "trpc.group/trpc-go/trpc-agent-go/internal/a2a"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -89,45 +92,10 @@ func (c *defaultA2AMessageToAgentMessage) ConvertToAgentMessage(
 			} else {
 				continue
 			}
-			// Convert FilePart to model.ContentPart
-			switch fileData := filePart.File.(type) {
-			case *protocol.FileWithBytes:
-				// Handle file with bytes data
-				fileName := ""
-				mimeType := ""
-				if fileData.Name != nil {
-					fileName = *fileData.Name
-				}
-				if fileData.MimeType != nil {
-					mimeType = *fileData.MimeType
-				}
-				contentParts = append(contentParts, model.ContentPart{
-					Type: model.ContentTypeFile,
-					File: &model.File{
-						Name:     fileName,
-						Data:     []byte(fileData.Bytes),
-						MimeType: mimeType,
-					},
-				})
-			case *protocol.FileWithURI:
-				// Handle file with URI
-				fileName := ""
-				mimeType := ""
-				if fileData.Name != nil {
-					fileName = *fileData.Name
-				}
-				if fileData.MimeType != nil {
-					mimeType = *fileData.MimeType
-				}
-				contentParts = append(contentParts, model.ContentPart{
-					Type: model.ContentTypeFile,
-					File: &model.File{
-						Name:     fileName,
-						FileID:   fileData.URI,
-						MimeType: mimeType,
-					},
-				})
-			}
+			// Convert FilePart to model.ContentPart.
+			// The original content type is primarily preserved by metadata["content_type"].
+			// MimeType and Name are only fallback signals for compatibility.
+			contentParts = append(contentParts, convertFilePart(filePart)...)
 		case protocol.KindData:
 			var dataPart *protocol.DataPart
 			if d, ok := part.(*protocol.DataPart); ok {
@@ -157,23 +125,119 @@ func (c *defaultA2AMessageToAgentMessage) ConvertToAgentMessage(
 
 // defaultEventToA2AMessage is the default implementation of EventToA2AMessageConverter.
 type defaultEventToA2AMessage struct {
-	adkCompatibility bool // Enable ADK-compatible metadata keys (e.g., "adk_type" instead of "type")
+	// Enable ADK-compatible metadata keys (for example, "adk_type" instead
+	// of "type").
+	adkCompatibility          bool
+	graphEventObjectAllowlist []string
+	streamingEventType        StreamingEventType
 }
 
-// getMetadataTypeKey returns the appropriate metadata type key based on ADK compatibility setting
-func (c *defaultEventToA2AMessage) getMetadataTypeKey() string {
-	if c.adkCompatibility {
-		return ia2a.GetADKMetadataKey(ia2a.DataPartMetadataTypeKey)
-	}
-	return ia2a.DataPartMetadataTypeKey
+const graphObjectPrefix = "graph."
+
+var defaultAllowedGraphObjectTypes = []string{
+	graph.ObjectTypeGraphExecution,
 }
 
-// getThoughtMetadataKey returns the appropriate thought metadata key based on ADK compatibility setting
-func (c *defaultEventToA2AMessage) getThoughtMetadataKey() string {
+// setMetadata writes value under the standard key, and additionally under the
+// ADK-prefixed key when ADK compatibility is enabled.
+func (c *defaultEventToA2AMessage) setMetadata(m map[string]any, key string, value any) {
+	m[key] = value
 	if c.adkCompatibility {
-		return ia2a.GetADKMetadataKey(ia2a.TextPartMetadataThoughtKey)
+		m[ia2a.GetADKMetadataKey(key)] = value
 	}
-	return ia2a.TextPartMetadataThoughtKey
+}
+
+// setPartTypeMetadata sets the DataPart type metadata.
+func (c *defaultEventToA2AMessage) setPartTypeMetadata(dataPart *protocol.DataPart, typeValue string) {
+	if dataPart.Metadata == nil {
+		dataPart.Metadata = make(map[string]any)
+	}
+	c.setMetadata(dataPart.Metadata, ia2a.DataPartMetadataTypeKey, typeValue)
+}
+
+// setThoughtMetadata sets the thought metadata on a TextPart.
+func (c *defaultEventToA2AMessage) setThoughtMetadata(textPart *protocol.TextPart) {
+	if textPart.Metadata == nil {
+		textPart.Metadata = make(map[string]any)
+	}
+	c.setMetadata(textPart.Metadata, ia2a.TextPartMetadataThoughtKey, true)
+}
+
+func (c *defaultEventToA2AMessage) buildMessageMetadata(evt *event.Event) map[string]any {
+	if evt == nil || evt.Response == nil {
+		return nil
+	}
+
+	metadata := make(map[string]any, 4)
+	if evt.Response.Object != "" {
+		metadata[ia2a.MessageMetadataObjectTypeKey] = evt.Response.Object
+	}
+	if evt.Tag != "" {
+		metadata[ia2a.MessageMetadataTagKey] = evt.Tag
+	}
+	if evt.Response.ID != "" {
+		metadata[ia2a.MessageMetadataResponseIDKey] = evt.Response.ID
+	}
+
+	if stateDelta := ia2a.EncodeStateDeltaMetadata(evt.StateDelta); len(stateDelta) > 0 {
+		metadata[ia2a.MessageMetadataStateDeltaKey] = stateDelta
+	}
+
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
+}
+
+func hasStructuredMetadata(metadata map[string]any) bool {
+	return len(metadata) > 0
+}
+
+// hasContentfulMetadata reports whether metadata contains fields that are
+// meaningful enough to warrant emitting an otherwise-empty A2A message.
+// A message that carries only llm_response_id (and nothing else) is not
+// useful to downstream consumers, so we exclude that key from the check.
+func hasContentfulMetadata(metadata map[string]any) bool {
+	for k := range metadata {
+		if k != ia2a.MessageMetadataResponseIDKey {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAllowedGraphObjectType(objectType string, allowedObjectTypes []string) bool {
+	for _, allowed := range allowedObjectTypes {
+		if allowed == objectType || allowed == "*" {
+			return true
+		}
+		if strings.HasSuffix(allowed, "*") {
+			prefix := strings.TrimSuffix(allowed, "*")
+			if strings.HasPrefix(objectType, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (c *defaultEventToA2AMessage) shouldEmitEvent(evt *event.Event) bool {
+	if evt == nil || evt.Response == nil {
+		return true
+	}
+	objectType := evt.Response.Object
+	if objectType == "" {
+		return true
+	}
+	if !strings.HasPrefix(objectType, graphObjectPrefix) {
+		return true
+	}
+
+	allowedObjectTypes := c.graphEventObjectAllowlist
+	if allowedObjectTypes == nil {
+		allowedObjectTypes = defaultAllowedGraphObjectTypes
+	}
+	return matchesAllowedGraphObjectType(objectType, allowedObjectTypes)
 }
 
 // ConvertToA2AMessage converts an Agent event to an A2A protocol message.
@@ -185,6 +249,9 @@ func (c *defaultEventToA2AMessage) ConvertToA2AMessage(
 	options EventToA2AUnaryOptions,
 ) (protocol.UnaryMessageResult, error) {
 	if event.Response == nil {
+		return nil, nil
+	}
+	if !c.shouldEmitEvent(event) {
 		return nil, nil
 	}
 
@@ -199,6 +266,9 @@ func (c *defaultEventToA2AMessage) ConvertToA2AMessage(
 
 	// Additional safety check for choices array bounds.
 	if len(event.Response.Choices) == 0 {
+		if result := c.convertMetadataOnlyToA2AMessageResult(event); result != nil {
+			return result, nil
+		}
 		log.DebugfContext(
 			ctx,
 			"no choices in response, event: %v",
@@ -227,7 +297,7 @@ func (c *defaultEventToA2AMessage) convertCodeExecutionToA2AMessage(
 	evt *event.Event,
 ) (protocol.UnaryMessageResult, error) {
 	if len(evt.Response.Choices) == 0 {
-		return nil, nil
+		return c.convertMetadataOnlyToA2AMessageResult(evt), nil
 	}
 
 	choice := evt.Response.Choices[0]
@@ -235,52 +305,28 @@ func (c *defaultEventToA2AMessage) convertCodeExecutionToA2AMessage(
 		return nil, nil
 	}
 
-	var parts []protocol.Part
 	var dataPart protocol.DataPart
-	metadataTypeKey := c.getMetadataTypeKey()
 
 	if evt.ContainsTag(event.CodeExecutionResultTag) {
-		// Code execution result event
-		if c.adkCompatibility {
-			dataPart = protocol.NewDataPart(map[string]any{
-				ia2a.CodeExecutionFieldOutcome: "",
-				ia2a.CodeExecutionFieldOutput:  choice.Message.Content,
-			})
-		} else {
-			dataPart = protocol.NewDataPart(map[string]any{
-				ia2a.CodeExecutionFieldContent: choice.Message.Content,
-			})
-		}
-		// set metadata type key
-		dataPart.Metadata = map[string]any{
-			metadataTypeKey: ia2a.DataPartMetadataTypeCodeExecutionResult,
-		}
+		dataPart = protocol.NewDataPart(map[string]any{
+			ia2a.CodeExecutionFieldOutput:  choice.Message.Content,
+			ia2a.CodeExecutionFieldOutcome: "",
+		})
+		c.setPartTypeMetadata(&dataPart, ia2a.DataPartMetadataTypeCodeExecutionResult)
 	} else if evt.ContainsTag(event.CodeExecutionTag) {
-		// Code execution event
-		if c.adkCompatibility {
-			dataPart = protocol.NewDataPart(map[string]any{
-				ia2a.CodeExecutionFieldCode:     choice.Message.Content,
-				ia2a.CodeExecutionFieldLanguage: "unknown",
-			})
-		} else {
-			dataPart = protocol.NewDataPart(map[string]any{
-				ia2a.CodeExecutionFieldContent: choice.Message.Content,
-			})
-		}
-		// set metadata type key
-		dataPart.Metadata = map[string]any{
-			metadataTypeKey: ia2a.DataPartMetadataTypeExecutableCode,
-		}
+		dataPart = protocol.NewDataPart(map[string]any{
+			ia2a.CodeExecutionFieldCode:     choice.Message.Content,
+			ia2a.CodeExecutionFieldLanguage: "unknown",
+		})
+		c.setPartTypeMetadata(&dataPart, ia2a.DataPartMetadataTypeExecutableCode)
+	} else {
+		return nil, nil
 	}
 
-	parts = append(parts, &dataPart)
+	parts := []protocol.Part{&dataPart}
 	msg := protocol.NewMessage(protocol.MessageRoleAgent, parts)
 
-	// Pass Tag field to A2A metadata for client to restore event tag
-	msg.Metadata = map[string]any{
-		ia2a.MessageMetadataObjectTypeKey: evt.Response.Object,
-		ia2a.MessageMetadataTagKey:        evt.Tag,
-	}
+	msg.Metadata = c.buildMessageMetadata(evt)
 	return &msg, nil
 }
 
@@ -298,9 +344,7 @@ func (c *defaultEventToA2AMessage) convertContentToA2AMessage(
 	// Following ADK pattern: thought content is stored in TextPart metadata
 	if choice.Message.ReasoningContent != "" {
 		reasoningPart := protocol.NewTextPart(choice.Message.ReasoningContent)
-		reasoningPart.Metadata = map[string]any{
-			c.getThoughtMetadataKey(): true,
-		}
+		c.setThoughtMetadata(&reasoningPart)
 		parts = append(parts, reasoningPart)
 	}
 
@@ -309,12 +353,10 @@ func (c *defaultEventToA2AMessage) convertContentToA2AMessage(
 		parts = append(parts, protocol.NewTextPart(choice.Message.Content))
 	}
 
-	if len(parts) > 0 {
+	metadata := c.buildMessageMetadata(event)
+	if len(parts) > 0 || hasStructuredMetadata(metadata) {
 		msg := protocol.NewMessage(protocol.MessageRoleAgent, parts)
-		msg.Metadata = map[string]any{
-			ia2a.MessageMetadataObjectTypeKey: event.Response.Object,
-			ia2a.MessageMetadataTagKey:        event.Tag,
-		}
+		msg.Metadata = metadata
 		return &msg, nil
 	}
 
@@ -326,14 +368,21 @@ func (c *defaultEventToA2AMessage) convertContentToA2AMessage(
 	return nil, nil
 }
 
-// ConvertStreamingToA2AMessage converts an Agent event to an A2A protocol message for streaming.
-// For streaming responses, it returns delta content as task artifact updates and converts tool calls.
+// ConvertStreamingToA2AMessage converts an Agent event to an A2A protocol
+// message for streaming.
+//
+// For streaming responses, it converts delta content, tool calls, and code
+// execution events into A2A streaming results. The concrete A2A type can be
+// configured via WithStreamingEventType.
 func (c *defaultEventToA2AMessage) ConvertStreamingToA2AMessage(
 	ctx context.Context,
 	evt *event.Event,
 	options EventToA2AStreamingOptions,
 ) (protocol.StreamingMessageResult, error) {
 	if evt.Response == nil {
+		return nil, nil
+	}
+	if !c.shouldEmitEvent(evt) {
 		return nil, nil
 	}
 
@@ -348,6 +397,9 @@ func (c *defaultEventToA2AMessage) ConvertStreamingToA2AMessage(
 
 	// Additional safety check for choices array bounds
 	if len(evt.Response.Choices) == 0 {
+		if result, ok := c.convertMetadataOnlyToA2AStreamingMessage(evt, options); ok {
+			return result, nil
+		}
 		log.DebugfContext(
 			ctx,
 			"no choices in response, event: %v",
@@ -368,8 +420,89 @@ func (c *defaultEventToA2AMessage) ConvertStreamingToA2AMessage(
 	return c.convertDeltaContentToA2AStreamingMessage(ctx, evt, options)
 }
 
-// convertDeltaContentToA2AStreamingMessage converts delta content to A2A streaming message.
-// It creates a task artifact update event for incremental content updates.
+func (c *defaultEventToA2AMessage) convertMetadataOnlyToA2AMessageResult(
+	evt *event.Event,
+) protocol.UnaryMessageResult {
+	metadata := c.buildMessageMetadata(evt)
+	if !hasContentfulMetadata(metadata) {
+		return nil
+	}
+
+	msg := protocol.NewMessage(protocol.MessageRoleAgent, nil)
+	msg.Metadata = metadata
+	return &msg
+}
+
+func (c *defaultEventToA2AMessage) convertMetadataOnlyToA2AStreamingMessage(
+	evt *event.Event,
+	options EventToA2AStreamingOptions,
+) (protocol.StreamingMessageResult, bool) {
+	metadata := c.buildMessageMetadata(evt)
+	if !hasContentfulMetadata(metadata) {
+		return nil, false
+	}
+	return c.convertPartsToA2AStreamingResultWithMetadata(evt, options, nil, metadata), true
+}
+
+func (c *defaultEventToA2AMessage) convertPartsToA2AStreamingResult(
+	evt *event.Event,
+	options EventToA2AStreamingOptions,
+	parts []protocol.Part,
+) protocol.StreamingMessageResult {
+	metadata := c.buildMessageMetadata(evt)
+	if len(parts) == 0 && !hasStructuredMetadata(metadata) {
+		return nil
+	}
+
+	return c.convertPartsToA2AStreamingResultWithMetadata(
+		evt,
+		options,
+		parts,
+		metadata,
+	)
+}
+
+func (c *defaultEventToA2AMessage) convertPartsToA2AStreamingResultWithMetadata(
+	evt *event.Event,
+	options EventToA2AStreamingOptions,
+	parts []protocol.Part,
+	metadata map[string]any,
+) protocol.StreamingMessageResult {
+	if evt == nil || evt.Response == nil || (len(parts) == 0 && !hasStructuredMetadata(metadata)) {
+		return nil
+	}
+
+	if c.streamingEventType == StreamingEventTypeMessage {
+		ctxID := options.CtxID
+		taskID := options.TaskID
+		msg := protocol.NewMessageWithContext(
+			protocol.MessageRoleAgent,
+			parts,
+			&taskID,
+			&ctxID,
+		)
+		if evt.Response.ID != "" {
+			msg.MessageID = evt.Response.ID
+		}
+		msg.Metadata = metadata
+		return &msg
+	}
+
+	taskArtifact := protocol.NewTaskArtifactUpdateEvent(
+		options.TaskID,
+		options.CtxID,
+		protocol.Artifact{
+			ArtifactID: evt.Response.ID,
+			Parts:      parts,
+		},
+		false,
+	)
+	taskArtifact.Metadata = metadata
+	return &taskArtifact
+}
+
+// convertDeltaContentToA2AStreamingMessage converts delta content to an A2A
+// streaming result.
 func (c *defaultEventToA2AMessage) convertDeltaContentToA2AStreamingMessage(
 	ctx context.Context,
 	event *event.Event,
@@ -382,9 +515,7 @@ func (c *defaultEventToA2AMessage) convertDeltaContentToA2AStreamingMessage(
 	// Add reasoning content as a separate TextPart with thought metadata
 	if choice.Delta.ReasoningContent != "" {
 		reasoningPart := protocol.NewTextPart(choice.Delta.ReasoningContent)
-		reasoningPart.Metadata = map[string]any{
-			c.getThoughtMetadataKey(): true,
-		}
+		c.setThoughtMetadata(&reasoningPart)
 		parts = append(parts, reasoningPart)
 	}
 
@@ -394,22 +525,11 @@ func (c *defaultEventToA2AMessage) convertDeltaContentToA2AStreamingMessage(
 	}
 
 	if len(parts) > 0 {
-		// Send as task artifact update (not status update) for incremental content
-		// This follows ADK pattern: artifacts for content, status for state changes
-		taskArtifact := protocol.NewTaskArtifactUpdateEvent(
-			options.TaskID,
-			options.CtxID,
-			protocol.Artifact{
-				ArtifactID: event.Response.ID,
-				Parts:      parts,
-			},
-			false,
-		)
-		taskArtifact.Metadata = map[string]any{
-			ia2a.MessageMetadataObjectTypeKey: event.Response.Object,
-			ia2a.MessageMetadataTagKey:        event.Tag,
-		}
-		return &taskArtifact, nil
+		return c.convertPartsToA2AStreamingResult(event, options, parts), nil
+	}
+
+	if result, ok := c.convertMetadataOnlyToA2AStreamingMessage(event, options); ok {
+		return result, nil
 	}
 
 	log.DebugfContext(
@@ -479,12 +599,8 @@ func (c *defaultEventToA2AMessage) convertToolCallToA2AMessage(
 				ia2a.ToolCallFieldArgs: string(toolCall.Function.Arguments),
 			}
 
-			// Create DataPart with metadata indicating this is a function call
 			dataPart := protocol.NewDataPart(toolCallData)
-
-			dataPart.Metadata = map[string]any{
-				c.getMetadataTypeKey(): ia2a.DataPartMetadataTypeFunctionCall,
-			}
+			c.setPartTypeMetadata(&dataPart, ia2a.DataPartMetadataTypeFunctionCall)
 			parts = append(parts, dataPart)
 		}
 	}
@@ -505,12 +621,8 @@ func (c *defaultEventToA2AMessage) convertToolCallToA2AMessage(
 				toolResponseData[ia2a.ToolCallFieldResponse] = choice.Message.Content
 			}
 
-			// Create DataPart with metadata indicating this is a function response
 			dataPart := protocol.NewDataPart(toolResponseData)
-
-			dataPart.Metadata = map[string]any{
-				c.getMetadataTypeKey(): ia2a.DataPartMetadataTypeFunctionResp,
-			}
+			c.setPartTypeMetadata(&dataPart, ia2a.DataPartMetadataTypeFunctionResp)
 			parts = append(parts, dataPart)
 		}
 	}
@@ -520,20 +632,15 @@ func (c *defaultEventToA2AMessage) convertToolCallToA2AMessage(
 	}
 
 	msg := protocol.NewMessage(protocol.MessageRoleAgent, parts)
-	msg.Metadata = map[string]any{
-		ia2a.MessageMetadataObjectTypeKey: event.Response.Object,
-		ia2a.MessageMetadataTagKey:        event.Tag,
-	}
+	msg.Metadata = c.buildMessageMetadata(event)
 	return &msg, nil
 }
 
 // convertToolCallToA2AStreamingMessage converts tool call events to A2A streaming messages.
-// For streaming mode, tool calls are sent as TaskArtifactUpdateEvent.
 func (c *defaultEventToA2AMessage) convertToolCallToA2AStreamingMessage(
 	event *event.Event,
 	options EventToA2AStreamingOptions,
 ) (protocol.StreamingMessageResult, error) {
-	// For streaming, we convert tool calls to task artifact updates
 	// First get the message parts using the unary converter
 	unaryResult, err := c.convertToolCallToA2AMessage(event)
 	if err != nil || unaryResult == nil {
@@ -545,30 +652,18 @@ func (c *defaultEventToA2AMessage) convertToolCallToA2AStreamingMessage(
 		return nil, nil
 	}
 
-	// Create a task artifact update with the tool call parts
-	taskArtifact := protocol.NewTaskArtifactUpdateEvent(
-		options.TaskID,
-		options.CtxID,
-		protocol.Artifact{
-			ArtifactID: event.Response.ID,
-			Parts:      msg.Parts,
-		},
-		false, // append=false for tool calls (complete events, not incremental)
-	)
-	taskArtifact.Metadata = map[string]any{
-		ia2a.MessageMetadataObjectTypeKey: event.Response.Object,
-		ia2a.MessageMetadataTagKey:        event.Tag,
-	}
-	return &taskArtifact, nil
+	return c.convertPartsToA2AStreamingResult(
+		event,
+		options,
+		msg.Parts,
+	), nil
 }
 
 // convertCodeExecutionToA2AStreamingMessage converts code execution events to A2A streaming messages.
-// For streaming mode, code execution events are sent as TaskArtifactUpdateEvent.
 func (c *defaultEventToA2AMessage) convertCodeExecutionToA2AStreamingMessage(
 	evt *event.Event,
 	options EventToA2AStreamingOptions,
 ) (protocol.StreamingMessageResult, error) {
-	// For streaming, we convert code execution to task artifact updates
 	// First get the message parts using the unary converter
 	unaryResult, err := c.convertCodeExecutionToA2AMessage(evt)
 	if err != nil || unaryResult == nil {
@@ -580,19 +675,171 @@ func (c *defaultEventToA2AMessage) convertCodeExecutionToA2AStreamingMessage(
 		return nil, nil
 	}
 
-	// Create a task artifact update with the code execution parts
-	taskArtifact := protocol.NewTaskArtifactUpdateEvent(
-		options.TaskID,
-		options.CtxID,
-		protocol.Artifact{
-			ArtifactID: evt.Response.ID,
-			Parts:      msg.Parts,
-		},
-		false, // append=false for code execution (complete events, not incremental)
-	)
-	taskArtifact.Metadata = map[string]any{
-		ia2a.MessageMetadataObjectTypeKey: evt.Response.Object,
-		ia2a.MessageMetadataTagKey:        evt.Tag,
+	return c.convertPartsToA2AStreamingResult(
+		evt,
+		options,
+		msg.Parts,
+	), nil
+}
+
+// convertFilePart converts a protocol.FilePart to one or more model.ContentPart values.
+//
+// Content type resolution order (highest to lowest priority):
+//  1. FilePart.Metadata["content_type"] — set explicitly by trpc-agent-go clients
+//  2. MimeType or common format value — "image/*"/"png" → ContentTypeImage,
+//     "audio/*"/"mp3" → ContentTypeAudio
+//  3. FilePart.Name — legacy fallback for older clients that used name="image"/"audio"
+//
+// FileWithBytes.Bytes is a base64-encoded string per the A2A spec; it is decoded here.
+func convertFilePart(filePart *protocol.FilePart) []model.ContentPart {
+	// Resolve content type using metadata > mimeType > name (legacy).
+	contentType := resolveFilePartContentType(filePart)
+
+	switch fileData := filePart.File.(type) {
+	case *protocol.FileWithBytes:
+		name := ""
+		mimeType := ""
+		if fileData.Name != nil {
+			name = *fileData.Name
+		}
+		if fileData.MimeType != nil {
+			mimeType = *fileData.MimeType
+		}
+		// Decode base64-encoded bytes per the A2A spec.
+		data, err := base64.StdEncoding.DecodeString(fileData.Bytes)
+		if err != nil {
+			// Non-base64 content (e.g. plain text in tests): use raw bytes.
+			log.Warnf("convertFilePart: base64 decode failed for file %q, using raw bytes: %v", name, err)
+			data = []byte(fileData.Bytes)
+		}
+		switch contentType {
+		case ia2a.FilePartMetadataContentTypeImage:
+			return []model.ContentPart{{
+				Type: model.ContentTypeImage,
+				Image: &model.Image{
+					Format: mimeType,
+					Data:   data,
+				},
+			}}
+		case ia2a.FilePartMetadataContentTypeAudio:
+			return []model.ContentPart{{
+				Type: model.ContentTypeAudio,
+				Audio: &model.Audio{
+					Format: mimeType,
+					Data:   data,
+				},
+			}}
+		default:
+			return []model.ContentPart{{
+				Type: model.ContentTypeFile,
+				File: &model.File{
+					Name:     name,
+					Data:     data,
+					MimeType: mimeType,
+				},
+			}}
+		}
+	case *protocol.FileWithURI:
+		name := ""
+		mimeType := ""
+		if fileData.Name != nil {
+			name = *fileData.Name
+		}
+		if fileData.MimeType != nil {
+			mimeType = *fileData.MimeType
+		}
+		switch contentType {
+		case ia2a.FilePartMetadataContentTypeImage:
+			return []model.ContentPart{{
+				Type: model.ContentTypeImage,
+				Image: &model.Image{
+					Format: mimeType,
+					URL:    fileData.URI,
+				},
+			}}
+		default:
+			// Audio with URI and other file types all use ContentTypeFile with FileID.
+			return []model.ContentPart{{
+				Type: model.ContentTypeFile,
+				File: &model.File{
+					Name:     name,
+					FileID:   fileData.URI,
+					MimeType: mimeType,
+				},
+			}}
+		}
 	}
-	return &taskArtifact, nil
+	return nil
+}
+
+// resolveFilePartContentType determines the logical content type of a FilePart.
+//
+// Priority:
+//  1. Metadata["content_type"] (set by trpc-agent-go clients, unambiguous)
+//  2. MimeType or common format value ("image/*", "audio/*", "png", "mp3")
+//  3. Name field (legacy: older clients used name="image"/"audio" as a type hint)
+func resolveFilePartContentType(filePart *protocol.FilePart) string {
+	// 1. Explicit metadata (highest priority, set by current client)
+	if filePart.Metadata != nil {
+		if ct, ok := filePart.Metadata[ia2a.FilePartMetadataContentTypeKey].(string); ok && ct != "" {
+			return ct
+		}
+	}
+
+	// 2. Infer from MimeType or common format value
+	var mimeType string
+	switch fd := filePart.File.(type) {
+	case *protocol.FileWithBytes:
+		if fd.MimeType != nil {
+			mimeType = *fd.MimeType
+		}
+	case *protocol.FileWithURI:
+		if fd.MimeType != nil {
+			mimeType = *fd.MimeType
+		}
+	}
+	if inferred := inferContentTypeFromMimeType(mimeType); inferred != "" {
+		return inferred
+	}
+
+	// 3. Legacy name-based fallback (older clients that used name="image"/"audio")
+	var name string
+	switch fd := filePart.File.(type) {
+	case *protocol.FileWithBytes:
+		if fd.Name != nil {
+			name = *fd.Name
+		}
+	case *protocol.FileWithURI:
+		if fd.Name != nil {
+			name = *fd.Name
+		}
+	}
+	switch name {
+	case ia2a.FilePartMetadataContentTypeImage, ia2a.FilePartMetadataContentTypeAudio:
+		return name
+	}
+
+	return ia2a.FilePartMetadataContentTypeFile
+}
+
+func inferContentTypeFromMimeType(mimeType string) string {
+	mimeType = strings.TrimSpace(strings.ToLower(mimeType))
+	if mimeType == "" {
+		return ""
+	}
+	if strings.HasPrefix(mimeType, "image/") {
+		return ia2a.FilePartMetadataContentTypeImage
+	}
+	if strings.HasPrefix(mimeType, "audio/") {
+		return ia2a.FilePartMetadataContentTypeAudio
+	}
+
+	switch mimeType {
+	case "png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff":
+		return ia2a.FilePartMetadataContentTypeImage
+	case "mp3", "wav", "mpeg", "mpga", "ogg", "flac", "m4a", "aac":
+		return ia2a.FilePartMetadataContentTypeAudio
+	default:
+		return ""
+	}
 }

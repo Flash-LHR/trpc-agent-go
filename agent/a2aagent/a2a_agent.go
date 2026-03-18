@@ -16,8 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/trace"
 
 	"trpc.group/trpc-go/trpc-a2a-go/client"
@@ -27,9 +29,10 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	ia2a "trpc.group/trpc-go/trpc-agent-go/internal/a2a"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
+	itrace "trpc.group/trpc-go/trpc-agent-go/internal/trace"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
-	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -154,30 +157,50 @@ func (r *A2AAgent) validateA2ARequestOptions(invocation *agent.Invocation) error
 	return nil
 }
 
+func (r *A2AAgent) setupInvocation(invocation *agent.Invocation) {
+	invocation.Agent = r
+	invocation.AgentName = r.name
+}
+
 // Run implements the Agent interface
 func (r *A2AAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
 	var err error
-	ctx, span := trace.Tracer.Start(ctx, fmt.Sprintf("%s %s", itelemetry.OperationInvokeAgent, r.name))
-	itelemetry.TraceBeforeInvokeAgent(span, invocation, r.description, "", nil)
+	if invocation != nil {
+		r.setupInvocation(invocation)
+	}
 	useStreaming := r.shouldUseStreaming(invocation)
+	ctx, span, startedSpan := itrace.StartSpan(
+		ctx,
+		invocation,
+		fmt.Sprintf("%s %s", itelemetry.OperationInvokeAgent, r.name),
+	)
+	if startedSpan {
+		itelemetry.TraceBeforeInvokeAgent(
+			span,
+			invocation,
+			r.description,
+			"",
+			&model.GenerationConfig{Stream: useStreaming},
+		)
+	}
 	tracker := itelemetry.NewInvokeAgentTracker(ctx, invocation, useStreaming, &err)
-
 	if r.a2aClient == nil {
-		span.SetStatus(codes.Error, "A2A client is nil")
-
-		span.SetAttributes(attribute.String(itelemetry.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
-		span.End()
+		if startedSpan {
+			span.SetStatus(codes.Error, "A2A client is nil")
+			span.SetAttributes(attribute.String(semconvtrace.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
+			span.End()
+		}
 		return nil, fmt.Errorf("A2A client is nil")
 	}
-
 	// Validate A2A request options early
 	if err := r.validateA2ARequestOptions(invocation); err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(attribute.String(itelemetry.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
-		span.End()
+		if startedSpan {
+			span.SetStatus(codes.Error, err.Error())
+			span.SetAttributes(attribute.String(semconvtrace.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
+			span.End()
+		}
 		return nil, err
 	}
-
 	var (
 		eventChan <-chan *event.Event
 	)
@@ -187,13 +210,14 @@ func (r *A2AAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-cha
 		eventChan, err = r.runNonStreaming(ctx, invocation)
 	}
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(attribute.String(itelemetry.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
-		span.End()
+		if startedSpan {
+			span.SetStatus(codes.Error, err.Error())
+			span.SetAttributes(attribute.String(semconvtrace.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
+			span.End()
+		}
 		return nil, err
 	}
-
-	return r.wrapEventChannelWithTelemetry(ctx, invocation, eventChan, span, tracker), nil
+	return r.wrapEventChannelWithTelemetry(ctx, invocation, eventChan, span, tracker, startedSpan), nil
 }
 
 // shouldUseStreaming determines whether to use streaming protocol.
@@ -268,7 +292,7 @@ func (r *A2AAgent) executeStreaming(ctx context.Context, invocation *agent.Invoc
 		return
 	}
 
-	requestOpts := r.buildRequestOptions(invocation)
+	requestOpts := r.buildRequestOptions(ctx, invocation)
 	streamChan, err := r.a2aClient.StreamMessage(ctx, protocol.SendMessageParams{Message: *a2aMessage}, requestOpts...)
 	if err != nil {
 		r.sendErrorEvent(ctx, eventChan, invocation, fmt.Sprintf("A2A streaming request failed to %s: %v", r.agentCard.URL, err))
@@ -280,7 +304,7 @@ func (r *A2AAgent) executeStreaming(ctx context.Context, invocation *agent.Invoc
 }
 
 // buildRequestOptions constructs A2A request options from invocation.
-func (r *A2AAgent) buildRequestOptions(invocation *agent.Invocation) []client.RequestOption {
+func (r *A2AAgent) buildRequestOptions(ctx context.Context, invocation *agent.Invocation) []client.RequestOption {
 	var requestOpts []client.RequestOption
 	if invocation.RunOptions.A2ARequestOptions != nil {
 		for _, opt := range invocation.RunOptions.A2ARequestOptions {
@@ -294,6 +318,11 @@ func (r *A2AAgent) buildRequestOptions(invocation *agent.Invocation) []client.Re
 			userIDHeader = defaultUserIDHeader
 		}
 		requestOpts = append(requestOpts, client.WithRequestHeader(userIDHeader, invocation.Session.UserID))
+	}
+	// Propagate trace context via HTTP headers (W3C Trace Context).
+	traceHeaders := extractTraceHeaders(ctx)
+	for k, v := range traceHeaders {
+		requestOpts = append(requestOpts, client.WithRequestHeader(k, v))
 	}
 	return requestOpts
 }
@@ -408,21 +437,7 @@ func (r *A2AAgent) runNonStreaming(ctx context.Context, invocation *agent.Invoca
 		params := protocol.SendMessageParams{
 			Message: *a2aMessage,
 		}
-		// Extract A2A request options from invocation
-		var requestOpts []client.RequestOption
-		if invocation.RunOptions.A2ARequestOptions != nil {
-			for _, opt := range invocation.RunOptions.A2ARequestOptions {
-				requestOpts = append(requestOpts, opt.(client.RequestOption))
-			}
-		}
-		// Add UserID header if session has UserID
-		if invocation.Session != nil && invocation.Session.UserID != "" {
-			userIDHeader := r.userIDHeader
-			if userIDHeader == "" {
-				userIDHeader = defaultUserIDHeader
-			}
-			requestOpts = append(requestOpts, client.WithRequestHeader(userIDHeader, invocation.Session.UserID))
-		}
+		requestOpts := r.buildRequestOptions(ctx, invocation)
 		result, err := r.a2aClient.SendMessage(ctx, params, requestOpts...)
 		if err != nil {
 			r.sendErrorEvent(ctx, eventChan, invocation, fmt.Sprintf("A2A request failed to %s: %v", r.agentCard.URL, err))
@@ -451,26 +466,26 @@ func (r *A2AAgent) wrapEventChannelWithTelemetry(
 	originalChan <-chan *event.Event,
 	span sdktrace.Span,
 	tracker *itelemetry.InvokeAgentTracker,
+	startedSpan bool,
 ) <-chan *event.Event {
 	wrappedChan := make(chan *event.Event, cap(originalChan))
-
 	runCtx := agent.CloneContext(ctx)
 	go func(ctx context.Context) {
 		var fullRespEvent *event.Event
 		var responseErrorType string
 		tokenUsage := &itelemetry.TokenUsage{}
 		defer func() {
-			if fullRespEvent != nil {
+			if startedSpan && fullRespEvent != nil {
 				log.DebugContext(ctx, "fullRespEvent is not ni")
 				itelemetry.TraceAfterInvokeAgent(span, fullRespEvent, tokenUsage, tracker.FirstTokenTimeDuration())
 			}
-
 			tracker.SetResponseErrorType(responseErrorType)
 			tracker.RecordMetrics()()
-			span.End()
+			if startedSpan {
+				span.End()
+			}
 			close(wrappedChan)
 		}()
-
 		for evt := range originalChan {
 			if evt != nil && evt.Response != nil {
 				tracker.TrackResponse(evt.Response)
@@ -525,4 +540,18 @@ func (r *A2AAgent) FindSubAgent(name string) agent.Agent {
 // GetAgentCard returns the resolved agent card
 func (r *A2AAgent) GetAgentCard() *server.AgentCard {
 	return r.agentCard
+}
+
+// extractTraceHeaders extracts W3C Trace Context headers from ctx using the
+// globally registered OpenTelemetry propagator. Returns a map of header
+// key-value pairs (e.g. "traceparent" -> "00-..."). Returns nil when ctx
+// carries no valid span context.
+func extractTraceHeaders(ctx context.Context) map[string]string {
+	propagator := otel.GetTextMapPropagator()
+	carrier := propagation.MapCarrier{}
+	propagator.Inject(ctx, carrier)
+	if len(carrier) == 0 {
+		return nil
+	}
+	return carrier
 }

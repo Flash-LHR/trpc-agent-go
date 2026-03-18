@@ -152,7 +152,20 @@ type Model interface {
 type Info struct {
     Name string // 模型名称
 }
+
+// IterModel 是 Model 的可选扩展接口，用于降低流式处理时的 channel 开销
+type IterModel interface {
+    Model
+    GenerateContentIter(ctx context.Context, request *Request) (Seq[*Response], error)
+}
+
+// Seq 是一个基于回调的序列类型，用于按需 yield 一个值
+type Seq[T any] func(yield func(T) bool)
 ```
+
+基于 channel 的流式接口通常需要额外 goroutine 驱动读取，并在每个响应片段上产生一次 channel 同步。高频流式输出时，该开销可能成为主要的性能成本。`IterModel` 提供可选的迭代器式接口，使响应在调用方 goroutine 内同步产出，以降低上述开销。
+
+模型实现 `IterModel` 时，框架优先调用 `GenerateContentIter`；否则继续调用 `GenerateContent`。实现方必须串行调用 `yield`，并在其返回 `false` 时停止。
 
 ### Request 结构
 
@@ -480,6 +493,47 @@ model := openai.New("deepseek-chat",
     }),
 )
 ```
+
+##### 通过回调动态修改请求体
+
+`WithChatRequestCallback` 接收 `*openai.ChatCompletionNewParams` 指针，
+允许在每次请求发送前动态添加或修改 HTTP 请求体中的字段。可以通过
+`SetExtraFields` 注入自定义 JSON 字段：
+
+```go
+import (
+    "context"
+
+    openai "github.com/openai/openai-go"
+    oaimodel "trpc.group/trpc-go/trpc-agent-go/model/openai"
+)
+
+model := oaimodel.New("deepseek-chat",
+    oaimodel.WithChatRequestCallback(func(ctx context.Context, req *openai.ChatCompletionNewParams) {
+        // 根据运行时上下文动态设置额外字段
+        userID, _ := ctx.Value("user_id").(string)
+        req.SetExtraFields(map[string]any{
+            "user":            userID,
+            "custom_metadata": map[string]string{"session_id": "abc"},
+        })
+    }),
+)
+```
+
+**回调中 `SetExtraFields` 与 `WithExtraFields` 的区别**：
+
+| 维度 | `WithExtraFields` | 回调中 `SetExtraFields` |
+| --- | --- | --- |
+| 设置时机 | 创建模型时一次性设置 | 每次请求发送前调用 |
+| 动态性 | 仅支持静态值 | 可基于 `ctx` 或运行时状态动态设置 |
+| 实现机制 | 通过 `openaiopt.WithJSONSet`（RequestOption 层）注入 | 设置在 `ChatCompletionNewParams` 结构体上（序列化层） |
+| 同名 key 冲突 | `WithExtraFields` 优先（后执行，覆盖同名 key） | 如果存在同名 key，会被 `WithExtraFields` 覆盖 |
+
+当两者使用**不同的 key** 时，所有字段都会出现在最终的 JSON body 中，
+互不干扰。当两者设置了**相同的 key** 时，`WithExtraFields` 优先生效，
+因为 `WithJSONSet` 在结构体序列化之后才应用。
+
+对于大多数需要按请求动态定制的场景，推荐在回调中使用 `SetExtraFields`。
 
 #### 2. 模型切换（Model Switching）
 

@@ -14,7 +14,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,6 +24,9 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
+	"trpc.group/trpc-go/trpc-agent-go/model"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
+	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 func TestTransform(t *testing.T) {
@@ -153,7 +158,7 @@ func TestTransformSpan(t *testing.T) {
 				Name: "test-span",
 				Attributes: []*commonpb.KeyValue{
 					{
-						Key: itelemetry.KeyGenAIOperationName,
+						Key: semconvtrace.KeyGenAIOperationName,
 						Value: &commonpb.AnyValue{
 							Value: &commonpb.AnyValue_StringValue{StringValue: itelemetry.OperationChat},
 						},
@@ -169,7 +174,7 @@ func TestTransformSpan(t *testing.T) {
 				Name: "test-span",
 				Attributes: []*commonpb.KeyValue{
 					{
-						Key: itelemetry.KeyGenAIOperationName,
+						Key: semconvtrace.KeyGenAIOperationName,
 						Value: &commonpb.AnyValue{
 							Value: &commonpb.AnyValue_StringValue{StringValue: itelemetry.OperationExecuteTool},
 						},
@@ -185,7 +190,7 @@ func TestTransformSpan(t *testing.T) {
 				Name: "test-span",
 				Attributes: []*commonpb.KeyValue{
 					{
-						Key: itelemetry.KeyGenAIOperationName,
+						Key: semconvtrace.KeyGenAIOperationName,
 						Value: &commonpb.AnyValue{
 							Value: &commonpb.AnyValue_StringValue{StringValue: itelemetry.OperationWorkflow},
 						},
@@ -247,25 +252,25 @@ func TestTransformInvokeAgent(t *testing.T) {
 		Name: "agent-span",
 		Attributes: []*commonpb.KeyValue{
 			{
-				Key: itelemetry.KeyGenAIInputMessages,
+				Key: semconvtrace.KeyGenAIInputMessages,
 				Value: &commonpb.AnyValue{
 					Value: &commonpb.AnyValue_StringValue{StringValue: `[{"role":"user","content":"hi"}]`},
 				},
 			},
 			{
-				Key: itelemetry.KeyGenAIOutputMessages,
+				Key: semconvtrace.KeyGenAIOutputMessages,
 				Value: &commonpb.AnyValue{
 					Value: &commonpb.AnyValue_StringValue{StringValue: `[{"role":"assistant","content":"hello"}]`},
 				},
 			},
 			{
-				Key: itelemetry.KeyGenAIUsageInputTokens,
+				Key: semconvtrace.KeyGenAIUsageInputTokens,
 				Value: &commonpb.AnyValue{
 					Value: &commonpb.AnyValue_IntValue{IntValue: 123},
 				},
 			},
 			{
-				Key: itelemetry.KeyGenAIUsageOutputTokens,
+				Key: semconvtrace.KeyGenAIUsageOutputTokens,
 				Value: &commonpb.AnyValue{
 					Value: &commonpb.AnyValue_IntValue{IntValue: 456},
 				},
@@ -295,8 +300,8 @@ func TestTransformInvokeAgent(t *testing.T) {
 
 	// Token usage attributes should be filtered out for InvokeAgent observations.
 	for _, attr := range span.Attributes {
-		assert.NotEqual(t, itelemetry.KeyGenAIUsageInputTokens, attr.Key)
-		assert.NotEqual(t, itelemetry.KeyGenAIUsageOutputTokens, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyGenAIUsageInputTokens, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyGenAIUsageOutputTokens, attr.Key)
 	}
 }
 
@@ -312,13 +317,13 @@ func TestTransformCallLLM(t *testing.T) {
 				Name: "llm-call",
 				Attributes: []*commonpb.KeyValue{
 					{
-						Key: itelemetry.KeyLLMRequest,
+						Key: semconvtrace.KeyLLMRequest,
 						Value: &commonpb.AnyValue{
 							Value: &commonpb.AnyValue_StringValue{StringValue: `{"prompt": "Hello", "generation_config": {"temperature": 0.7}}`},
 						},
 					},
 					{
-						Key: itelemetry.KeyLLMResponse,
+						Key: semconvtrace.KeyLLMResponse,
 						Value: &commonpb.AnyValue{
 							Value: &commonpb.AnyValue_StringValue{StringValue: `{"text": "Hello! How can I help you?"}`},
 						},
@@ -335,7 +340,7 @@ func TestTransformCallLLM(t *testing.T) {
 				observationType:            "generation",
 				observationInput:           `{"prompt": "Hello", "generation_config": {"temperature": 0.7}}`,
 				observationOutput:          `{"text": "Hello! How can I help you?"}`,
-				observationModelParameters: `{"temperature":0.7}`,
+				observationModelParameters: `{"temperature": 0.7}`,
 				"other.attribute":          "keep-this",
 			},
 		},
@@ -345,11 +350,11 @@ func TestTransformCallLLM(t *testing.T) {
 				Name: "llm-call",
 				Attributes: []*commonpb.KeyValue{
 					{
-						Key:   itelemetry.KeyLLMRequest,
+						Key:   semconvtrace.KeyLLMRequest,
 						Value: nil,
 					},
 					{
-						Key: itelemetry.KeyLLMResponse,
+						Key: semconvtrace.KeyLLMResponse,
 						Value: &commonpb.AnyValue{
 							Value: &commonpb.AnyValue_StringValue{StringValue: "response"},
 						},
@@ -368,13 +373,13 @@ func TestTransformCallLLM(t *testing.T) {
 				Name: "llm-call",
 				Attributes: []*commonpb.KeyValue{
 					{
-						Key: itelemetry.KeyLLMRequest,
+						Key: semconvtrace.KeyLLMRequest,
 						Value: &commonpb.AnyValue{
 							Value: &commonpb.AnyValue_StringValue{StringValue: "request"},
 						},
 					},
 					{
-						Key:   itelemetry.KeyLLMResponse,
+						Key:   semconvtrace.KeyLLMResponse,
 						Value: nil,
 					},
 				},
@@ -405,11 +410,88 @@ func TestTransformCallLLM(t *testing.T) {
 
 			// Check that LLM-specific attributes are removed
 			for _, attr := range tt.input.Attributes {
-				assert.NotEqual(t, itelemetry.KeyLLMRequest, attr.Key, "LLM request attribute should be removed")
-				assert.NotEqual(t, itelemetry.KeyLLMResponse, attr.Key, "LLM response attribute should be removed")
+				assert.NotEqual(t, semconvtrace.KeyLLMRequest, attr.Key, "LLM request attribute should be removed")
+				assert.NotEqual(t, semconvtrace.KeyLLMResponse, attr.Key, "LLM response attribute should be removed")
 			}
 		})
 	}
+}
+
+func TestTransformCallLLM_PromptWithTools(t *testing.T) {
+	toolDefs := []*tool.Declaration{
+		{
+			Name:        "alpha",
+			Description: "first",
+			InputSchema: &tool.Schema{Type: "object"},
+		},
+		{
+			Name:        "beta",
+			Description: "second",
+			InputSchema: &tool.Schema{Type: "object"},
+		},
+	}
+	defsJSON, err := json.Marshal(toolDefs)
+	require.NoError(t, err)
+
+	span := &tracepb.Span{
+		Name: "llm-call",
+		Attributes: []*commonpb.KeyValue{
+			{
+				Key: semconvtrace.KeyLLMRequest,
+				Value: &commonpb.AnyValue{
+					Value: &commonpb.AnyValue_StringValue{StringValue: `{"generation_config": {"temperature": 0.7}}`},
+				},
+			},
+			{
+				Key: semconvtrace.KeyGenAIInputMessages,
+				Value: &commonpb.AnyValue{
+					Value: &commonpb.AnyValue_StringValue{StringValue: `[{"role":"user","content":"hi"}]`},
+				},
+			},
+			{
+				Key: semconvtrace.KeyGenAIRequestToolDefinitions,
+				Value: &commonpb.AnyValue{
+					Value: &commonpb.AnyValue_StringValue{StringValue: string(defsJSON)},
+				},
+			},
+		},
+	}
+
+	transformCallLLM(span)
+
+	attrMap := make(map[string]string)
+	for _, attr := range span.Attributes {
+		attrMap[attr.Key] = attr.Value.GetStringValue()
+		assert.NotEqual(t, semconvtrace.KeyGenAIInputMessages, attr.Key, "input messages should be folded into observation.input")
+		assert.NotEqual(t, semconvtrace.KeyGenAIRequestToolDefinitions, attr.Key, "tool definitions should be folded into observation.input")
+	}
+
+	inputStr := attrMap[observationInput]
+	require.NotEmpty(t, inputStr)
+
+	var input map[string]any
+	require.NoError(t, json.Unmarshal([]byte(inputStr), &input))
+
+	msgs, ok := input["messages"].([]any)
+	require.True(t, ok)
+	require.Len(t, msgs, 1)
+
+	toolsVal, ok := input["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, toolsVal, 2)
+
+	seen := map[string]bool{}
+	for _, tv := range toolsVal {
+		m, ok := tv.(map[string]any)
+		require.True(t, ok)
+		name, _ := m["name"].(string)
+		seen[name] = true
+	}
+	require.True(t, seen["alpha"])
+	require.True(t, seen["beta"])
+
+	// generation_config is still extracted from llm_request.
+	assert.Equal(t, `{"temperature": 0.7}`, attrMap[observationModelParameters])
 }
 
 func TestTransformCallLLM_UsageDetails(t *testing.T) {
@@ -470,13 +552,13 @@ func TestTransformCallLLM_UsageDetails(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			attrs := []*commonpb.KeyValue{
 				{
-					Key: itelemetry.KeyLLMRequest,
+					Key: semconvtrace.KeyLLMRequest,
 					Value: &commonpb.AnyValue{
 						Value: &commonpb.AnyValue_StringValue{StringValue: `{"prompt":"hello"}`},
 					},
 				},
 				{
-					Key: itelemetry.KeyLLMResponse,
+					Key: semconvtrace.KeyLLMResponse,
 					Value: &commonpb.AnyValue{
 						Value: &commonpb.AnyValue_StringValue{StringValue: `{"text":"world"}`},
 					},
@@ -485,31 +567,31 @@ func TestTransformCallLLM_UsageDetails(t *testing.T) {
 			// Add token usage attributes (only non-zero values, matching how buildResponseAttributes works)
 			if tt.inputTokens != 0 {
 				attrs = append(attrs, &commonpb.KeyValue{
-					Key:   itelemetry.KeyGenAIUsageInputTokens,
+					Key:   semconvtrace.KeyGenAIUsageInputTokens,
 					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: tt.inputTokens}},
 				})
 			}
 			if tt.outputTokens != 0 {
 				attrs = append(attrs, &commonpb.KeyValue{
-					Key:   itelemetry.KeyGenAIUsageOutputTokens,
+					Key:   semconvtrace.KeyGenAIUsageOutputTokens,
 					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: tt.outputTokens}},
 				})
 			}
 			if tt.cachedTokens != 0 {
 				attrs = append(attrs, &commonpb.KeyValue{
-					Key:   itelemetry.KeyGenAIUsageInputTokensCached,
+					Key:   semconvtrace.KeyGenAIUsageInputTokensCached,
 					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: tt.cachedTokens}},
 				})
 			}
 			if tt.cacheReadTokens != 0 {
 				attrs = append(attrs, &commonpb.KeyValue{
-					Key:   itelemetry.KeyGenAIUsageInputTokensCacheRead,
+					Key:   semconvtrace.KeyGenAIUsageInputTokensCacheRead,
 					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: tt.cacheReadTokens}},
 				})
 			}
 			if tt.cacheCreationTokens != 0 {
 				attrs = append(attrs, &commonpb.KeyValue{
-					Key:   itelemetry.KeyGenAIUsageInputTokensCacheCreation,
+					Key:   semconvtrace.KeyGenAIUsageInputTokensCacheCreation,
 					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: tt.cacheCreationTokens}},
 				})
 			}
@@ -519,11 +601,11 @@ func TestTransformCallLLM_UsageDetails(t *testing.T) {
 
 			// Verify original gen_ai.usage.* attributes are removed
 			for _, attr := range span.Attributes {
-				assert.NotEqual(t, itelemetry.KeyGenAIUsageInputTokens, attr.Key)
-				assert.NotEqual(t, itelemetry.KeyGenAIUsageOutputTokens, attr.Key)
-				assert.NotEqual(t, itelemetry.KeyGenAIUsageInputTokensCached, attr.Key)
-				assert.NotEqual(t, itelemetry.KeyGenAIUsageInputTokensCacheRead, attr.Key)
-				assert.NotEqual(t, itelemetry.KeyGenAIUsageInputTokensCacheCreation, attr.Key)
+				assert.NotEqual(t, semconvtrace.KeyGenAIUsageInputTokens, attr.Key)
+				assert.NotEqual(t, semconvtrace.KeyGenAIUsageOutputTokens, attr.Key)
+				assert.NotEqual(t, semconvtrace.KeyGenAIUsageInputTokensCached, attr.Key)
+				assert.NotEqual(t, semconvtrace.KeyGenAIUsageInputTokensCacheRead, attr.Key)
+				assert.NotEqual(t, semconvtrace.KeyGenAIUsageInputTokensCacheCreation, attr.Key)
 			}
 
 			// Check usage_details attribute
@@ -552,35 +634,35 @@ func TestTransformInvokeAgent_CacheTokensFiltered(t *testing.T) {
 		Name: "agent-span",
 		Attributes: []*commonpb.KeyValue{
 			{
-				Key: itelemetry.KeyGenAIInputMessages,
+				Key: semconvtrace.KeyGenAIInputMessages,
 				Value: &commonpb.AnyValue{
 					Value: &commonpb.AnyValue_StringValue{StringValue: `[{"role":"user","content":"hi"}]`},
 				},
 			},
 			{
-				Key: itelemetry.KeyGenAIOutputMessages,
+				Key: semconvtrace.KeyGenAIOutputMessages,
 				Value: &commonpb.AnyValue{
 					Value: &commonpb.AnyValue_StringValue{StringValue: `[{"role":"assistant","content":"hello"}]`},
 				},
 			},
 			{
-				Key:   itelemetry.KeyGenAIUsageInputTokens,
+				Key:   semconvtrace.KeyGenAIUsageInputTokens,
 				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 100}},
 			},
 			{
-				Key:   itelemetry.KeyGenAIUsageOutputTokens,
+				Key:   semconvtrace.KeyGenAIUsageOutputTokens,
 				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 50}},
 			},
 			{
-				Key:   itelemetry.KeyGenAIUsageInputTokensCached,
+				Key:   semconvtrace.KeyGenAIUsageInputTokensCached,
 				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 30}},
 			},
 			{
-				Key:   itelemetry.KeyGenAIUsageInputTokensCacheRead,
+				Key:   semconvtrace.KeyGenAIUsageInputTokensCacheRead,
 				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 20}},
 			},
 			{
-				Key:   itelemetry.KeyGenAIUsageInputTokensCacheCreation,
+				Key:   semconvtrace.KeyGenAIUsageInputTokensCacheCreation,
 				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 10}},
 			},
 		},
@@ -590,11 +672,11 @@ func TestTransformInvokeAgent_CacheTokensFiltered(t *testing.T) {
 
 	// All token usage attributes (including cache ones) should be filtered out
 	for _, attr := range span.Attributes {
-		assert.NotEqual(t, itelemetry.KeyGenAIUsageInputTokens, attr.Key)
-		assert.NotEqual(t, itelemetry.KeyGenAIUsageOutputTokens, attr.Key)
-		assert.NotEqual(t, itelemetry.KeyGenAIUsageInputTokensCached, attr.Key)
-		assert.NotEqual(t, itelemetry.KeyGenAIUsageInputTokensCacheRead, attr.Key)
-		assert.NotEqual(t, itelemetry.KeyGenAIUsageInputTokensCacheCreation, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyGenAIUsageInputTokens, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyGenAIUsageOutputTokens, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyGenAIUsageInputTokensCached, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyGenAIUsageInputTokensCacheRead, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyGenAIUsageInputTokensCacheCreation, attr.Key)
 	}
 }
 
@@ -610,13 +692,13 @@ func TestTransformExecuteTool(t *testing.T) {
 				Name: "tool-call",
 				Attributes: []*commonpb.KeyValue{
 					{
-						Key: itelemetry.KeyGenAIToolCallArguments,
+						Key: semconvtrace.KeyGenAIToolCallArguments,
 						Value: &commonpb.AnyValue{
 							Value: &commonpb.AnyValue_StringValue{StringValue: `{"arg1": "value1"}`},
 						},
 					},
 					{
-						Key: itelemetry.KeyGenAIToolCallResult,
+						Key: semconvtrace.KeyGenAIToolCallResult,
 						Value: &commonpb.AnyValue{
 							Value: &commonpb.AnyValue_StringValue{StringValue: `{"result": "success"}`},
 						},
@@ -642,11 +724,11 @@ func TestTransformExecuteTool(t *testing.T) {
 				Name: "tool-call",
 				Attributes: []*commonpb.KeyValue{
 					{
-						Key:   itelemetry.KeyGenAIToolCallArguments,
+						Key:   semconvtrace.KeyGenAIToolCallArguments,
 						Value: nil,
 					},
 					{
-						Key: itelemetry.KeyGenAIToolCallResult,
+						Key: semconvtrace.KeyGenAIToolCallResult,
 						Value: &commonpb.AnyValue{
 							Value: &commonpb.AnyValue_StringValue{StringValue: "response"},
 						},
@@ -679,8 +761,8 @@ func TestTransformExecuteTool(t *testing.T) {
 
 			// Check that tool-specific attributes are removed
 			for _, attr := range tt.input.Attributes {
-				assert.NotEqual(t, itelemetry.KeyGenAIToolCallArguments, attr.Key, "tool args attribute should be removed")
-				assert.NotEqual(t, itelemetry.KeyGenAIToolCallResult, attr.Key, "tool response attribute should be removed")
+				assert.NotEqual(t, semconvtrace.KeyGenAIToolCallArguments, attr.Key, "tool args attribute should be removed")
+				assert.NotEqual(t, semconvtrace.KeyGenAIToolCallResult, attr.Key, "tool response attribute should be removed")
 			}
 		})
 	}
@@ -691,25 +773,25 @@ func TestTransformWorkflow(t *testing.T) {
 		Name: "workflow-span",
 		Attributes: []*commonpb.KeyValue{
 			{
-				Key: itelemetry.KeyRunnerSessionID,
+				Key: semconvtrace.KeyRunnerSessionID,
 				Value: &commonpb.AnyValue{
 					Value: &commonpb.AnyValue_StringValue{StringValue: "sess-1"},
 				},
 			},
 			{
-				Key: itelemetry.KeyRunnerUserID,
+				Key: semconvtrace.KeyRunnerUserID,
 				Value: &commonpb.AnyValue{
 					Value: &commonpb.AnyValue_StringValue{StringValue: "user-1"},
 				},
 			},
 			{
-				Key: itelemetry.KeyGenAIWorkflowRequest,
+				Key: semconvtrace.KeyGenAIWorkflowRequest,
 				Value: &commonpb.AnyValue{
 					Value: &commonpb.AnyValue_StringValue{StringValue: `{"req":true}`},
 				},
 			},
 			{
-				Key: itelemetry.KeyGenAIWorkflowResponse,
+				Key: semconvtrace.KeyGenAIWorkflowResponse,
 				Value: &commonpb.AnyValue{
 					Value: &commonpb.AnyValue_StringValue{StringValue: `{"ok":true}`},
 				},
@@ -740,10 +822,10 @@ func TestTransformWorkflow(t *testing.T) {
 	assert.Equal(t, "keep-this", attrMap["other.attribute"])
 
 	for _, attr := range span.Attributes {
-		assert.NotEqual(t, itelemetry.KeyGenAIWorkflowRequest, attr.Key)
-		assert.NotEqual(t, itelemetry.KeyGenAIWorkflowResponse, attr.Key)
-		assert.NotEqual(t, itelemetry.KeyRunnerSessionID, attr.Key)
-		assert.NotEqual(t, itelemetry.KeyRunnerUserID, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyGenAIWorkflowRequest, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyGenAIWorkflowResponse, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyRunnerSessionID, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyRunnerUserID, attr.Key)
 	}
 }
 
@@ -752,23 +834,23 @@ func TestTransformWorkflow_NilRequestResponse(t *testing.T) {
 		Name: "workflow-span-nil",
 		Attributes: []*commonpb.KeyValue{
 			{
-				Key: itelemetry.KeyRunnerSessionID,
+				Key: semconvtrace.KeyRunnerSessionID,
 				Value: &commonpb.AnyValue{
 					Value: &commonpb.AnyValue_StringValue{StringValue: "sess-2"},
 				},
 			},
 			{
-				Key: itelemetry.KeyRunnerUserID,
+				Key: semconvtrace.KeyRunnerUserID,
 				Value: &commonpb.AnyValue{
 					Value: &commonpb.AnyValue_StringValue{StringValue: "user-2"},
 				},
 			},
 			{
-				Key:   itelemetry.KeyGenAIWorkflowRequest,
+				Key:   semconvtrace.KeyGenAIWorkflowRequest,
 				Value: nil,
 			},
 			{
-				Key:   itelemetry.KeyGenAIWorkflowResponse,
+				Key:   semconvtrace.KeyGenAIWorkflowResponse,
 				Value: nil,
 			},
 		},
@@ -790,10 +872,10 @@ func TestTransformWorkflow_NilRequestResponse(t *testing.T) {
 	assert.Equal(t, "sess-2", attrMap[traceSessionID])
 
 	for _, attr := range span.Attributes {
-		assert.NotEqual(t, itelemetry.KeyGenAIWorkflowRequest, attr.Key)
-		assert.NotEqual(t, itelemetry.KeyGenAIWorkflowResponse, attr.Key)
-		assert.NotEqual(t, itelemetry.KeyRunnerSessionID, attr.Key)
-		assert.NotEqual(t, itelemetry.KeyRunnerUserID, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyGenAIWorkflowRequest, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyGenAIWorkflowResponse, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyRunnerSessionID, attr.Key)
+		assert.NotEqual(t, semconvtrace.KeyRunnerUserID, attr.Key)
 	}
 }
 
@@ -925,19 +1007,19 @@ func TestTransformationPipeline(t *testing.T) {
 							Name:    "test-llm-span",
 							Attributes: []*commonpb.KeyValue{
 								{
-									Key: itelemetry.KeyGenAIOperationName,
+									Key: semconvtrace.KeyGenAIOperationName,
 									Value: &commonpb.AnyValue{
 										Value: &commonpb.AnyValue_StringValue{StringValue: itelemetry.OperationChat},
 									},
 								},
 								{
-									Key: itelemetry.KeyLLMRequest,
+									Key: semconvtrace.KeyLLMRequest,
 									Value: &commonpb.AnyValue{
 										Value: &commonpb.AnyValue_StringValue{StringValue: `{"prompt": "test"}`},
 									},
 								},
 								{
-									Key: itelemetry.KeyLLMResponse,
+									Key: semconvtrace.KeyLLMResponse,
 									Value: &commonpb.AnyValue{
 										Value: &commonpb.AnyValue_StringValue{StringValue: `{"text": "response"}`},
 									},
@@ -980,9 +1062,9 @@ func TestTransformationPipeline(t *testing.T) {
 		case observationType:
 			foundObservationType = true
 			assert.Equal(t, "generation", attr.Value.GetStringValue())
-		case itelemetry.KeyLLMRequest:
+		case semconvtrace.KeyLLMRequest:
 			hasLLMRequest = true
-		case itelemetry.KeyLLMResponse:
+		case semconvtrace.KeyLLMResponse:
 			hasLLMResponse = true
 		case observationInput:
 			hasObservationInput = true
@@ -1004,6 +1086,276 @@ func TestTransformationPipeline(t *testing.T) {
 	assert.True(t, hasServiceName, "should keep other attributes like service.name")
 }
 
+func withObservationMaxBytes(t *testing.T, maxBytes int) {
+	old := getObservationMaxBytes()
+	v := maxBytes
+	setObservationMaxBytes(&v)
+	t.Cleanup(func() {
+		if old < 0 {
+			setObservationMaxBytes(nil)
+			return
+		}
+		ov := old
+		setObservationMaxBytes(&ov)
+	})
+}
+
+func TestTruncateObservationValue_DisabledByNil(t *testing.T) {
+	const maxBytes = 32 * 1024
+
+	setObservationMaxBytes(nil)
+
+	big := strings.Repeat("a", maxBytes*2)
+	out := truncateObservationValue(big)
+	require.Equal(t, big, out)
+}
+
+func TestTruncateObservationValue_ZeroMeansTruncateAll(t *testing.T) {
+	withObservationMaxBytes(t, 0)
+
+	out := truncateObservationValue("abc")
+	require.Equal(t, "", out)
+}
+
+func TestTruncateObservationValue_UTF8AndMaxBytes(t *testing.T) {
+	const maxBytes = 32 * 1024
+
+	withObservationMaxBytes(t, maxBytes)
+
+	// Use multi-byte characters to ensure we never cut into an invalid UTF-8 rune.
+	big := strings.Repeat("中", maxBytes)
+	out := truncateObservationValue(big)
+	require.LessOrEqual(t, len([]byte(out)), maxBytes)
+	require.True(t, utf8.ValidString(out))
+	require.Contains(t, out, defaultTruncateMarker)
+}
+
+func TestTransformInvokeAgent_TruncatesObservationInputOutput(t *testing.T) {
+	const maxBytes = 32 * 1024
+
+	withObservationMaxBytes(t, maxBytes)
+
+	bigIn := strings.Repeat("in-", maxBytes)
+	bigOut := strings.Repeat("out-", maxBytes)
+	span := &tracepb.Span{
+		Name: "agent-span",
+		Attributes: []*commonpb.KeyValue{
+			{
+				Key:   semconvtrace.KeyGenAIInputMessages,
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: bigIn}},
+			},
+			{
+				Key:   semconvtrace.KeyGenAIOutputMessages,
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: bigOut}},
+			},
+		},
+	}
+
+	transformInvokeAgent(span)
+
+	attrMap := make(map[string]string)
+	for _, attr := range span.Attributes {
+		attrMap[attr.Key] = attr.Value.GetStringValue()
+	}
+
+	in := attrMap[observationInput]
+	out := attrMap[observationOutput]
+	require.LessOrEqual(t, len([]byte(in)), maxBytes)
+	require.LessOrEqual(t, len([]byte(out)), maxBytes)
+	require.True(t, utf8.ValidString(in))
+	require.True(t, utf8.ValidString(out))
+}
+
+func TestTransformInvokeAgent_TruncateUsesTypedMessages(t *testing.T) {
+	const maxBytes = 1024
+
+	withObservationMaxBytes(t, maxBytes)
+
+	text := strings.Repeat("中", maxBytes)
+	input := []model.Message{{
+		Role: model.RoleUser,
+		ContentParts: []model.ContentPart{
+			{
+				Type: model.ContentTypeText,
+				Text: &text,
+			},
+			{
+				Type: model.ContentTypeFile,
+				File: &model.File{
+					Name:     "large.bin",
+					Data:     []byte(strings.Repeat("a", maxBytes*8)),
+					MimeType: "application/octet-stream",
+				},
+			},
+		},
+	}}
+	inputJSON, err := json.Marshal(input)
+	require.NoError(t, err)
+
+	output := []model.Choice{{
+		Index: 0,
+		Message: model.Message{
+			Role:    model.RoleAssistant,
+			Content: strings.Repeat("resp-", maxBytes),
+		},
+	}}
+	outputJSON, err := json.Marshal(output)
+	require.NoError(t, err)
+
+	span := &tracepb.Span{
+		Name: "agent-span-typed",
+		Attributes: []*commonpb.KeyValue{
+			{
+				Key:   semconvtrace.KeyGenAIInputMessages,
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: string(inputJSON)}},
+			},
+			{
+				Key:   semconvtrace.KeyGenAIOutputMessages,
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: string(outputJSON)}},
+			},
+		},
+	}
+
+	transformInvokeAgent(span)
+
+	attrMap := make(map[string]string)
+	for _, attr := range span.Attributes {
+		attrMap[attr.Key] = attr.Value.GetStringValue()
+	}
+
+	in := attrMap[observationInput]
+	out := attrMap[observationOutput]
+
+	var gotIn []model.Message
+	require.NoError(t, json.Unmarshal([]byte(in), &gotIn))
+	require.Len(t, gotIn, 1)
+	require.Equal(t, model.RoleUser, gotIn[0].Role)
+	require.NotNil(t, gotIn[0].ContentParts[0].Text)
+	require.LessOrEqual(t, len([]byte(*gotIn[0].ContentParts[0].Text)), maxBytes)
+	require.NotNil(t, gotIn[0].ContentParts[1].File)
+	require.Less(t, len(gotIn[0].ContentParts[1].File.Data), maxBytes*8)
+	require.LessOrEqual(t, len(gotIn[0].ContentParts[1].File.Data), maxBytes)
+
+	var gotOut []model.Choice
+	require.NoError(t, json.Unmarshal([]byte(out), &gotOut))
+	if len(gotOut) > 0 {
+		require.Equal(t, model.RoleAssistant, gotOut[0].Message.Role)
+		require.LessOrEqual(t, len([]byte(gotOut[0].Message.Content)), maxBytes)
+	}
+}
+
+func TestTransformCallLLM_TruncatesObservationInputOutput(t *testing.T) {
+	const maxBytes = 32 * 1024
+
+	withObservationMaxBytes(t, maxBytes)
+
+	bigReq := strings.Repeat("req-", maxBytes)
+	bigResp := strings.Repeat("resp-", maxBytes)
+	span := &tracepb.Span{
+		Name: "llm-call",
+		Attributes: []*commonpb.KeyValue{
+			{
+				Key:   semconvtrace.KeyGenAIOperationName,
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: itelemetry.OperationChat}},
+			},
+			{
+				Key:   semconvtrace.KeyLLMRequest,
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: bigReq}},
+			},
+			{
+				Key:   semconvtrace.KeyLLMResponse,
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: bigResp}},
+			},
+		},
+	}
+
+	transformCallLLM(span)
+
+	attrMap := make(map[string]string)
+	for _, attr := range span.Attributes {
+		attrMap[attr.Key] = attr.Value.GetStringValue()
+	}
+
+	in := attrMap[observationInput]
+	out := attrMap[observationOutput]
+	require.LessOrEqual(t, len([]byte(in)), maxBytes)
+	require.LessOrEqual(t, len([]byte(out)), maxBytes)
+	require.True(t, utf8.ValidString(in))
+	require.True(t, utf8.ValidString(out))
+}
+
+func TestTransformExecuteTool_TruncatesObservationInputOutput(t *testing.T) {
+	const maxBytes = 32 * 1024
+
+	withObservationMaxBytes(t, maxBytes)
+
+	bigArgs := strings.Repeat("arg-", maxBytes)
+	bigRes := strings.Repeat("res-", maxBytes)
+	span := &tracepb.Span{
+		Name: "tool-call",
+		Attributes: []*commonpb.KeyValue{
+			{
+				Key:   semconvtrace.KeyGenAIToolCallArguments,
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: bigArgs}},
+			},
+			{
+				Key:   semconvtrace.KeyGenAIToolCallResult,
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: bigRes}},
+			},
+		},
+	}
+
+	transformExecuteTool(span)
+
+	attrMap := make(map[string]string)
+	for _, attr := range span.Attributes {
+		attrMap[attr.Key] = attr.Value.GetStringValue()
+	}
+
+	in := attrMap[observationInput]
+	out := attrMap[observationOutput]
+	require.LessOrEqual(t, len([]byte(in)), maxBytes)
+	require.LessOrEqual(t, len([]byte(out)), maxBytes)
+	require.True(t, utf8.ValidString(in))
+	require.True(t, utf8.ValidString(out))
+}
+
+func TestTransformWorkflow_TruncatesObservationInputOutput(t *testing.T) {
+	const maxBytes = 32 * 1024
+
+	withObservationMaxBytes(t, maxBytes)
+
+	bigReq := strings.Repeat("req-", maxBytes)
+	bigResp := strings.Repeat("resp-", maxBytes)
+	span := &tracepb.Span{
+		Name: "workflow-span",
+		Attributes: []*commonpb.KeyValue{
+			{
+				Key:   semconvtrace.KeyGenAIWorkflowRequest,
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: bigReq}},
+			},
+			{
+				Key:   semconvtrace.KeyGenAIWorkflowResponse,
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: bigResp}},
+			},
+		},
+	}
+
+	transformWorkflow(span)
+
+	attrMap := make(map[string]string)
+	for _, attr := range span.Attributes {
+		attrMap[attr.Key] = attr.Value.GetStringValue()
+	}
+
+	in := attrMap[observationInput]
+	out := attrMap[observationOutput]
+	require.LessOrEqual(t, len([]byte(in)), maxBytes)
+	require.LessOrEqual(t, len([]byte(out)), maxBytes)
+	require.True(t, utf8.ValidString(in))
+	require.True(t, utf8.ValidString(out))
+}
+
 // Benchmark tests
 func BenchmarkTransform(b *testing.B) {
 	// Create test data
@@ -1018,19 +1370,19 @@ func BenchmarkTransform(b *testing.B) {
 							Name:    "test-span",
 							Attributes: []*commonpb.KeyValue{
 								{
-									Key: itelemetry.KeyGenAIOperationName,
+									Key: semconvtrace.KeyGenAIOperationName,
 									Value: &commonpb.AnyValue{
 										Value: &commonpb.AnyValue_StringValue{StringValue: itelemetry.OperationChat},
 									},
 								},
 								{
-									Key: itelemetry.KeyLLMRequest,
+									Key: semconvtrace.KeyLLMRequest,
 									Value: &commonpb.AnyValue{
 										Value: &commonpb.AnyValue_StringValue{StringValue: `{"prompt": "test"}`},
 									},
 								},
 								{
-									Key: itelemetry.KeyLLMResponse,
+									Key: semconvtrace.KeyLLMResponse,
 									Value: &commonpb.AnyValue{
 										Value: &commonpb.AnyValue_StringValue{StringValue: `{"text": "response"}`},
 									},
@@ -1068,4 +1420,174 @@ func BenchmarkTransform(b *testing.B) {
 		}
 		transform(spans)
 	}
+}
+
+func TestTruncateObservationLLMInput_Branches(t *testing.T) {
+	withObservationMaxBytes(t, 64)
+
+	messages := `[{"role":"user","content":"` + strings.Repeat("中", 200) + `"}]`
+	tools := `[{"name":"` + strings.Repeat("tool", 40) + `"}]`
+
+	t.Run("prompt with tools and messages", func(t *testing.T) {
+		raw, err := buildObservationInputPrompt(messages, tools)
+		require.NoError(t, err)
+
+		out := truncateObservationLLMInput(raw)
+		require.True(t, utf8.ValidString(out))
+		require.Less(t, len([]byte(out)), len([]byte(raw)))
+		require.Contains(t, out, "truncated")
+		var v map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out), &v))
+	})
+
+	t.Run("plain messages array", func(t *testing.T) {
+		out := truncateObservationLLMInput(messages)
+		require.True(t, utf8.ValidString(out))
+		require.Less(t, len([]byte(out)), len([]byte(messages)))
+		require.Contains(t, out, "truncated")
+		var v []map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out), &v))
+	})
+
+	t.Run("fallback json leaf truncation", func(t *testing.T) {
+		raw := `{"k":"` + strings.Repeat("v", 200) + `"}`
+		out := truncateObservationLLMInput(raw)
+		require.True(t, utf8.ValidString(out))
+		require.Less(t, len([]byte(out)), len([]byte(raw)))
+		require.Contains(t, out, "truncated")
+		var v map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out), &v))
+	})
+}
+
+func TestTruncateObservationJSONLeafValues_And_TruncateJSONLeafValue(t *testing.T) {
+	withObservationMaxBytes(t, 32)
+
+	nested := `{"a":"` + strings.Repeat("x", 120) + `","b":["` + strings.Repeat("y", 120) + `"],"c":{"d":"` + strings.Repeat("z", 120) + `"}}`
+	out := truncateObservationJSONLeafValues(nested)
+	require.True(t, utf8.ValidString(out))
+	require.Contains(t, out, "truncated")
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &parsed))
+
+	invalid := strings.Repeat("not-json", 20)
+	outInvalid := truncateObservationJSONLeafValues(invalid)
+	require.LessOrEqual(t, len([]byte(outInvalid)), 32)
+	require.True(t, utf8.ValidString(outInvalid))
+}
+
+func TestBuildAndExtractHelpers_Branches(t *testing.T) {
+	_, err := buildObservationInputPrompt(`[{"role":"user"}]`, `{`)
+	require.Error(t, err)
+
+	msgs, ok := extractMessagesJSONFromRequestJSON("")
+	require.False(t, ok)
+	require.Equal(t, "", msgs)
+
+	msgs, ok = extractMessagesJSONFromRequestJSON("not-json")
+	require.False(t, ok)
+	require.Equal(t, "", msgs)
+
+	msgs, ok = extractMessagesJSONFromRequestJSON(`{"prompt":"hi"}`)
+	require.False(t, ok)
+	require.Equal(t, "", msgs)
+
+	msgs, ok = extractMessagesJSONFromRequestJSON(`{"messages":[{"role":"user","content":"hi"}]}`)
+	require.True(t, ok)
+	require.Contains(t, msgs, "role")
+}
+
+func TestBuildLLMObservationInput_And_WrapWithToolsBranches(t *testing.T) {
+	toolDefs := `[{"name":"tool-a"}]`
+	invalidToolDefs := `{`
+	messages := `[{"role":"user","content":"hello"}]`
+
+	withInput := llmSpanCollected{inputMessages: strPtr(messages), toolDefinitions: strPtr(toolDefs)}
+	out := buildLLMObservationInput(withInput)
+	require.Contains(t, out, `"tools"`)
+	require.Contains(t, out, `"messages"`)
+
+	withLLMReqMessages := llmSpanCollected{llmRequest: strPtr(`{"messages":[{"role":"user","content":"from-request"}]}`)}
+	out = buildLLMObservationInput(withLLMReqMessages)
+	require.Contains(t, out, "from-request")
+
+	withLLMReqNoMessages := llmSpanCollected{llmRequest: strPtr(`{"prompt":"raw-request"}`)}
+	out = buildLLMObservationInput(withLLMReqNoMessages)
+	require.Equal(t, `{"prompt":"raw-request"}`, out)
+
+	out = wrapWithToolsIfPresent(messages, strPtr(invalidToolDefs))
+	require.Equal(t, messages, out)
+
+	out = buildLLMObservationInput(llmSpanCollected{})
+	require.Equal(t, "N/A", out)
+}
+
+func TestSanitizeSingleMessageForObservation_AndTruncateBytesHeadTail(t *testing.T) {
+	msg := model.Message{
+		Content:          strings.Repeat("content", 20),
+		ReasoningContent: strings.Repeat("reason", 20),
+		ToolID:           strings.Repeat("id", 30),
+		ToolName:         strings.Repeat("tool", 20),
+		ToolCalls: []model.ToolCall{{
+			ID: strings.Repeat("call", 20),
+			Function: model.FunctionDefinitionParam{
+				Name:        strings.Repeat("name", 20),
+				Description: strings.Repeat("desc", 20),
+				Arguments:   []byte(strings.Repeat("arg", 40)),
+			},
+		}},
+		ContentParts: []model.ContentPart{
+			{Type: model.ContentTypeText, Text: strPtr(strings.Repeat("text", 30))},
+			{Type: model.ContentTypeFile, File: &model.File{
+				Name:     strings.Repeat("file", 20),
+				FileID:   strings.Repeat("id", 20),
+				MimeType: strings.Repeat("mime", 20),
+				Data:     []byte(strings.Repeat("f", 200)),
+			}},
+			{Type: model.ContentTypeImage, Image: &model.Image{
+				URL:    strings.Repeat("url", 20),
+				Detail: strings.Repeat("detail", 20),
+				Format: strings.Repeat("format", 20),
+				Data:   []byte(strings.Repeat("i", 200)),
+			}},
+			{Type: model.ContentTypeAudio, Audio: &model.Audio{
+				Format: strings.Repeat("audio", 20),
+				Data:   []byte(strings.Repeat("a", 200)),
+			}},
+		},
+	}
+
+	sanitizeSingleMessageForObservation(&msg, truncateMessagesPlan{textLimit: 16, binaryLimit: 16})
+
+	require.LessOrEqual(t, len([]byte(msg.Content)), 16)
+	require.LessOrEqual(t, len([]byte(msg.ReasoningContent)), 16)
+	require.LessOrEqual(t, len([]byte(msg.ToolCalls[0].Function.Name)), 16)
+	require.LessOrEqual(t, len(msg.ToolCalls[0].Function.Arguments), 16)
+	require.LessOrEqual(t, len(msg.ContentParts[1].File.Data), 16)
+	require.LessOrEqual(t, len(msg.ContentParts[2].Image.Data), 16)
+	require.LessOrEqual(t, len(msg.ContentParts[3].Audio.Data), 16)
+
+	tooSmall := truncateBytesHeadTail([]byte(strings.Repeat("b", 100)), 5)
+	require.Equal(t, "...[t", string(tooSmall))
+}
+
+func TestExporterLifecycle_ErrorBranches(t *testing.T) {
+	exp := &exporter{client: &mockStartStopErrorClient{}}
+	err := exp.Start(context.Background())
+	require.Error(t, err)
+	require.True(t, exp.started)
+
+	err = exp.Shutdown(context.Background())
+	require.Error(t, err)
+	require.False(t, exp.started)
+}
+
+func strPtr(s string) *string { return &s }
+
+type mockStartStopErrorClient struct{}
+
+func (m *mockStartStopErrorClient) Start(context.Context) error { return fmt.Errorf("start failed") }
+func (m *mockStartStopErrorClient) Stop(context.Context) error  { return fmt.Errorf("stop failed") }
+func (m *mockStartStopErrorClient) UploadTraces(context.Context, []*tracepb.ResourceSpans) error {
+	return nil
 }

@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"sort"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/memory"
@@ -102,11 +101,15 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 
 	// Initialize auto memory worker if extractor is configured.
 	if opts.extractor != nil {
+		imemory.ConfigureExtractorEnabledTools(
+			opts.extractor, opts.enabledTools,
+		)
 		config := imemory.AutoMemoryConfig{
 			Extractor:        opts.extractor,
 			AsyncMemoryNum:   opts.asyncMemoryNum,
 			MemoryQueueSize:  opts.memoryQueueSize,
 			MemoryJobTimeout: opts.memoryJobTimeout,
+			EnabledTools:     opts.enabledTools,
 		}
 		s.autoMemoryWorker = imemory.NewAutoMemoryWorker(config, s)
 		s.autoMemoryWorker.Start()
@@ -116,10 +119,14 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 }
 
 // AddMemory adds or updates a memory for a user (idempotent).
-func (s *Service) AddMemory(ctx context.Context, userKey memory.UserKey, memoryStr string, topics []string) error {
+func (s *Service) AddMemory(ctx context.Context, userKey memory.UserKey,
+	memoryStr string, topics []string,
+	opts ...memory.AddOption) error {
 	if err := userKey.CheckUserKey(); err != nil {
 		return err
 	}
+
+	ep := memory.ResolveAddOptions(opts)
 
 	// Enforce memory limit.
 	if s.opts.memoryLimit > 0 {
@@ -143,6 +150,7 @@ func (s *Service) AddMemory(ctx context.Context, userKey memory.UserKey, memoryS
 		Topics:      topics,
 		LastUpdated: &now,
 	}
+	imemory.ApplyMetadata(mem, ep)
 	entry := &memory.Entry{
 		ID:        imemory.GenerateMemoryID(mem, userKey.AppName, userKey.UserID),
 		AppName:   userKey.AppName,
@@ -157,8 +165,6 @@ func (s *Service) AddMemory(ctx context.Context, userKey memory.UserKey, memoryS
 		return fmt.Errorf("marshal memory entry failed: %w", err)
 	}
 
-	// Note: memory_data contains the full JSON with topics, so updating memory_data
-	// will also update the topics field.
 	insertQuery := fmt.Sprintf(
 		"INSERT INTO `%s` (app_name, user_id, memory_id, memory_data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) "+
 			"ON DUPLICATE KEY UPDATE memory_data = VALUES(memory_data), updated_at = VALUES(updated_at)",
@@ -168,17 +174,19 @@ func (s *Service) AddMemory(ctx context.Context, userKey memory.UserKey, memoryS
 	if err != nil {
 		return fmt.Errorf("store memory entry failed: %w", err)
 	}
-
 	return nil
 }
 
 // UpdateMemory updates an existing memory for a user.
-func (s *Service) UpdateMemory(ctx context.Context, memoryKey memory.Key, memoryStr string, topics []string) error {
+func (s *Service) UpdateMemory(ctx context.Context, memoryKey memory.Key,
+	memoryStr string, topics []string,
+	opts ...memory.UpdateOption) error {
 	if err := memoryKey.CheckMemoryKey(); err != nil {
 		return err
 	}
 
-	// Get existing entry.
+	ep := memory.ResolveUpdateOptions(opts)
+
 	selectQuery := fmt.Sprintf(
 		"SELECT memory_data FROM %s WHERE app_name = ? AND user_id = ? AND memory_id = ?",
 		s.tableName,
@@ -199,12 +207,18 @@ func (s *Service) UpdateMemory(ctx context.Context, memoryKey memory.Key, memory
 	if err := json.Unmarshal(memoryData, entry); err != nil {
 		return fmt.Errorf("unmarshal memory entry failed: %w", err)
 	}
+	imemory.NormalizeEntry(entry)
 
 	now := time.Now()
-	entry.Memory.Memory = memoryStr
-	entry.Memory.Topics = topics
-	entry.Memory.LastUpdated = &now
-	entry.UpdatedAt = now
+	newID := imemory.ApplyMemoryUpdate(
+		entry,
+		memoryKey.AppName,
+		memoryKey.UserID,
+		memoryStr,
+		topics,
+		ep,
+		now,
+	)
 
 	updated, err := json.Marshal(entry)
 	if err != nil {
@@ -212,17 +226,19 @@ func (s *Service) UpdateMemory(ctx context.Context, memoryKey memory.Key, memory
 	}
 
 	updateQuery := fmt.Sprintf(
-		"UPDATE %s SET memory_data = ?, updated_at = ? WHERE app_name = ? AND user_id = ? AND memory_id = ?",
+		"UPDATE %s SET memory_id = ?, memory_data = ?, updated_at = ? WHERE app_name = ? AND user_id = ? AND memory_id = ?",
 		s.tableName,
 	)
 	if s.opts.softDelete {
 		updateQuery += " AND deleted_at IS NULL"
 	}
-	_, err = s.db.Exec(ctx, updateQuery, updated, now, memoryKey.AppName, memoryKey.UserID, memoryKey.MemoryID)
+	_, err = s.db.Exec(ctx, updateQuery, newID, updated, now, memoryKey.AppName, memoryKey.UserID, memoryKey.MemoryID)
 	if err != nil {
 		return fmt.Errorf("update memory entry failed: %w", err)
 	}
-
+	if result := memory.ResolveUpdateResult(opts); result != nil {
+		result.MemoryID = newID
+	}
 	return nil
 }
 
@@ -315,6 +331,7 @@ func (s *Service) ReadMemories(ctx context.Context, userKey memory.UserKey, limi
 		if err := json.Unmarshal(memoryData, e); err != nil {
 			return fmt.Errorf("unmarshal memory entry failed: %w", err)
 		}
+		imemory.NormalizeEntry(e)
 		entries = append(entries, e)
 		return nil
 	}, query, userKey.AppName, userKey.UserID)
@@ -327,12 +344,15 @@ func (s *Service) ReadMemories(ctx context.Context, userKey memory.UserKey, limi
 }
 
 // SearchMemories searches memories for a user.
-func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey, query string) ([]*memory.Entry, error) {
+// Results are ranked by relevance score (fraction of query tokens
+// matched) and only the top entries above the minimum threshold are
+// returned.
+func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey,
+	query string, opts ...memory.SearchOption) ([]*memory.Entry, error) {
 	if err := userKey.CheckUserKey(); err != nil {
 		return nil, err
 	}
 
-	// Get all memories for the user.
 	selectQuery := fmt.Sprintf(
 		"SELECT memory_data FROM %s WHERE app_name = ? AND user_id = ?",
 		s.tableName,
@@ -341,7 +361,8 @@ func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey, qu
 		selectQuery += " AND deleted_at IS NULL"
 	}
 
-	results := make([]*memory.Entry, 0)
+	entries := make([]*memory.Entry, 0)
+
 	err := s.db.Query(ctx, func(rows *sql.Rows) error {
 		var memoryData []byte
 		if err := rows.Scan(&memoryData); err != nil {
@@ -352,10 +373,8 @@ func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey, qu
 		if err := json.Unmarshal(memoryData, e); err != nil {
 			return fmt.Errorf("unmarshal memory entry failed: %w", err)
 		}
-
-		if imemory.MatchMemoryEntry(e, query) {
-			results = append(results, e)
-		}
+		imemory.NormalizeEntry(e)
+		entries = append(entries, e)
 		return nil
 	}, selectQuery, userKey.AppName, userKey.UserID)
 
@@ -363,15 +382,12 @@ func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey, qu
 		return nil, fmt.Errorf("search memories failed: %w", err)
 	}
 
-	// Stable sort by updated time desc.
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].UpdatedAt.Equal(results[j].UpdatedAt) {
-			return results[i].CreatedAt.After(results[j].CreatedAt)
-		}
-		return results[i].UpdatedAt.After(results[j].UpdatedAt)
-	})
-
-	return results, nil
+	return imemory.SearchEntries(
+		entries,
+		memory.ResolveSearchOptions(query, opts),
+		s.opts.searchMinScore,
+		s.opts.maxSearchResults,
+	), nil
 }
 
 // Tools returns the list of available memory tools.

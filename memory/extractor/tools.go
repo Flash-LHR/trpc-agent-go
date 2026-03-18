@@ -23,6 +23,25 @@ var backgroundToolCreators = map[string]func() tool.CallableTool{
 	memory.ClearToolName:  memorytool.NewClearTool,
 }
 
+// filterTools returns a new tool map containing only tools that are
+// enabled by the given set. A nil or empty set means all tools are
+// enabled.
+func filterTools(
+	all map[string]tool.Tool,
+	enabled map[string]struct{},
+) map[string]tool.Tool {
+	if enabled == nil {
+		return all
+	}
+	filtered := make(map[string]tool.Tool, len(all))
+	for name, t := range all {
+		if _, ok := enabled[name]; ok {
+			filtered[name] = t
+		}
+	}
+	return filtered
+}
+
 // backgroundTools is the pre-built map of background tools for model request.
 // These tools are declaration-only and not callable.
 var backgroundTools = func() map[string]tool.Tool {
@@ -46,9 +65,13 @@ func (t *declarationOnlyTool) Declaration() *tool.Declaration {
 
 // Argument keys for tool calls.
 const (
-	argKeyMemory   = "memory"
-	argKeyMemoryID = "memory_id"
-	argKeyTopics   = "topics"
+	argKeyMemory       = "memory"
+	argKeyMemoryID     = "memory_id"
+	argKeyTopics       = "topics"
+	argKeyMemoryKind   = "memory_kind"
+	argKeyEventTime    = "event_time"
+	argKeyParticipants = "participants"
+	argKeyLocation     = "location"
 )
 
 // parseToolCallArgs parses tool call arguments and returns a memory operation.
@@ -59,11 +82,13 @@ func parseToolCallArgs(toolName string, args map[string]any) *Operation {
 		if mem == "" {
 			return nil
 		}
-		return &Operation{
+		op := &Operation{
 			Type:   OperationAdd,
 			Memory: mem,
 			Topics: toStringSlice(args[argKeyTopics]),
 		}
+		parseEpisodicArgs(op, args)
+		return op
 
 	case memory.UpdateToolName:
 		id, _ := args[argKeyMemoryID].(string)
@@ -71,12 +96,14 @@ func parseToolCallArgs(toolName string, args map[string]any) *Operation {
 		if id == "" || mem == "" {
 			return nil
 		}
-		return &Operation{
+		op := &Operation{
 			Type:     OperationUpdate,
 			MemoryID: id,
 			Memory:   mem,
 			Topics:   toStringSlice(args[argKeyTopics]),
 		}
+		parseEpisodicArgs(op, args)
+		return op
 
 	case memory.DeleteToolName:
 		id, _ := args[argKeyMemoryID].(string)
@@ -95,6 +122,24 @@ func parseToolCallArgs(toolName string, args map[string]any) *Operation {
 
 	default:
 		return nil
+	}
+}
+
+// parseEpisodicArgs extracts episodic memory fields from tool call arguments.
+func parseEpisodicArgs(op *Operation, args map[string]any) {
+	if kind, _ := args[argKeyMemoryKind].(string); kind == string(memory.KindEpisode) {
+		op.MemoryKind = memory.KindEpisode
+	} else {
+		op.MemoryKind = memory.KindFact
+	}
+
+	if t, _ := args[argKeyEventTime].(string); t != "" {
+		op.EventTime = memorytool.ParseFlexibleTime(t)
+	}
+
+	op.Participants = toStringSlice(args[argKeyParticipants])
+	if loc, _ := args[argKeyLocation].(string); loc != "" {
+		op.Location = loc
 	}
 }
 

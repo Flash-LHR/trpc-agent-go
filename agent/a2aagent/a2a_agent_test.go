@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -33,6 +34,8 @@ import (
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
+	teletrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -384,9 +387,8 @@ func TestWrapEventChannelWithTelemetry_AccumulatesTokenUsage(t *testing.T) {
 	tp := tracesdk.NewTracerProvider(tracesdk.WithSpanProcessor(spanRecorder))
 	ctx, span := tp.Tracer("test").Start(context.Background(), "wrap")
 	sdkSpan := span
-
 	originalChan := make(chan *event.Event, 2)
-	wrappedChan := (&A2AAgent{}).wrapEventChannelWithTelemetry(ctx, &agent.Invocation{}, originalChan, sdkSpan, &itelemetry.InvokeAgentTracker{})
+	wrappedChan := (&A2AAgent{}).wrapEventChannelWithTelemetry(ctx, &agent.Invocation{}, originalChan, sdkSpan, &itelemetry.InvokeAgentTracker{}, true)
 
 	partialEvent := &event.Event{
 		Response: &model.Response{
@@ -428,12 +430,27 @@ func TestWrapEventChannelWithTelemetry_AccumulatesTokenUsage(t *testing.T) {
 	}
 
 	attrs := spans[0].Attributes()
-	if !hasAttr(attrs, attribute.Int(itelemetry.KeyGenAIUsageInputTokens, finalEvent.Response.Usage.PromptTokens)) {
+	if !hasAttr(attrs, attribute.Int(semconvtrace.KeyGenAIUsageInputTokens, finalEvent.Response.Usage.PromptTokens)) {
 		t.Fatalf("expected input token usage to be recorded, attrs=%v", attrs)
 	}
-	if !hasAttr(attrs, attribute.Int(itelemetry.KeyGenAIUsageOutputTokens, finalEvent.Response.Usage.CompletionTokens)) {
+	if !hasAttr(attrs, attribute.Int(semconvtrace.KeyGenAIUsageOutputTokens, finalEvent.Response.Usage.CompletionTokens)) {
 		t.Fatalf("expected output token usage to be recorded, attrs=%v", attrs)
 	}
+}
+
+func useSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
+	recorder := tracetest.NewSpanRecorder()
+	provider := tracesdk.NewTracerProvider(tracesdk.WithSpanProcessor(recorder))
+	originalProvider := teletrace.TracerProvider
+	originalTracer := teletrace.Tracer
+	teletrace.TracerProvider = provider
+	teletrace.Tracer = provider.Tracer("a2a-agent-disable-tracing-test")
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+		teletrace.TracerProvider = originalProvider
+		teletrace.Tracer = originalTracer
+	})
+	return recorder
 }
 
 func TestA2AAgent_shouldUseStreaming(t *testing.T) {
@@ -698,6 +715,19 @@ func TestA2AAgent_Run_ErrorCases(t *testing.T) {
 	}
 }
 
+func TestA2AAgent_Run_DisableTracingSkipsSpanCreation(t *testing.T) {
+	recorder := useSpanRecorder(t)
+	a2aAgent := &A2AAgent{name: "test-agent"}
+	invocation := &agent.Invocation{
+		RunOptions: agent.RunOptions{
+			DisableTracing: true,
+		},
+	}
+	_, err := a2aAgent.Run(context.Background(), invocation)
+	require.Error(t, err)
+	require.Empty(t, recorder.Ended())
+}
+
 func TestWithTransferStateKey(t *testing.T) {
 	t.Run("transfer state keys are set correctly", func(t *testing.T) {
 		agent := &A2AAgent{}
@@ -752,9 +782,9 @@ func TestWithTransferStateKey(t *testing.T) {
 			t.Fatal("expected metadata to be set")
 		}
 
-		// Check that only the specified keys are transferred
-		if len(msg.Metadata) != 2 {
-			t.Errorf("expected 2 metadata items, got %d", len(msg.Metadata))
+		// Check that only the specified keys + interaction_spec_version are transferred
+		if len(msg.Metadata) != 3 {
+			t.Errorf("expected 3 metadata items, got %d", len(msg.Metadata))
 		}
 
 		if msg.Metadata["session_key"] != "session_value" {
@@ -763,6 +793,10 @@ func TestWithTransferStateKey(t *testing.T) {
 
 		if msg.Metadata["user_pref"] != "dark_mode" {
 			t.Error("user_pref not transferred correctly")
+		}
+
+		if _, exists := msg.Metadata["interaction_spec_version"]; !exists {
+			t.Error("interaction_spec_version should be present in metadata")
 		}
 
 		// Make sure other keys are not transferred
@@ -1105,6 +1139,51 @@ func TestUserIDHeaderInRequest(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestA2AAgent_Run_RecordsStreamTraceAttribute(t *testing.T) {
+	originalTracer := teletrace.Tracer
+	defer func() {
+		teletrace.Tracer = originalTracer
+	}()
+
+	spanRecorder := tracetest.NewSpanRecorder()
+	tp := tracesdk.NewTracerProvider(tracesdk.WithSpanProcessor(spanRecorder))
+	defer func() {
+		_ = tp.Shutdown(context.Background())
+	}()
+	teletrace.Tracer = tp.Tracer("test")
+
+	a := &A2AAgent{
+		name:            "remote-agent",
+		description:     "remote test agent",
+		enableStreaming: boolPtr(true),
+	}
+
+	stream := false
+	_, err := a.Run(context.Background(), &agent.Invocation{
+		InvocationID: "test-invocation",
+		Message:      model.Message{Role: model.RoleUser, Content: "hello"},
+		RunOptions: agent.RunOptions{
+			Stream: &stream,
+		},
+	})
+	require.Error(t, err)
+
+	spans := spanRecorder.Ended()
+	require.Len(t, spans, 1)
+
+	found := false
+	for _, attr := range spans[0].Attributes() {
+		if string(attr.Key) == semconvtrace.KeyGenAIRequestIsStream {
+			found = true
+			require.False(t, attr.Value.AsBool())
+			break
+		}
+	}
+	require.True(t, found, "expected stream trace attribute to be recorded")
+	require.True(t, hasAttr(spans[0].Attributes(), attribute.String(semconvtrace.KeyGenAIAgentName, "remote-agent")))
+	require.True(t, hasAttr(spans[0].Attributes(), attribute.String(semconvtrace.KeyGenAIAgentID, "remote-agent")))
 }
 
 // Helper function to create bool pointer

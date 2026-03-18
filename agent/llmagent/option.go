@@ -17,6 +17,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent/internal/jsonschema"
 	"trpc.group/trpc-go/trpc-agent-go/codeexecutor"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
+	"trpc.group/trpc-go/trpc-agent-go/internal/skillprofile"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/searchfilter"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -34,6 +35,9 @@ const (
 
 	// BranchFilterModePrefix Prefix matching pattern
 	BranchFilterModePrefix = processor.BranchFilterModePrefix
+	// BranchFilterModeSubtree includes only events whose FilterKey is the
+	// same as the current filter key or is a descendant of it.
+	BranchFilterModeSubtree = processor.BranchFilterModeSubtree
 	// BranchFilterModeAll include all
 	BranchFilterModeAll = processor.BranchFilterModeAll
 	// BranchFilterModeExact exact match
@@ -103,14 +107,22 @@ var (
 		// Default to disable memory preloading (use tools instead).
 		// PreloadMemory configuration values:
 		//   - 0 (default): Disable preloading (use tools instead).
-		//   - N > 0: Load the most recent N memories.
+		//   - N > 0: Use adaptive preload with budget N.
+		//     If query extraction is empty, the search fails, or the search
+		//     returns no matches, fall back to loading up to N memories
+		//     directly.
 		//   - -1: Load all memories.
-		//     WARNING: Loading all memories may significantly increase token usage
-		//     and API costs, especially for users with many stored memories.
-		//     Consider using a positive limit (e.g., 10-50) for production use.
+		//     WARNING: Loading all memories may significantly increase token
+		//     usage and API costs, especially for users with many stored
+		//     memories. Consider using a positive budget (e.g., 10-50) for
+		//     production use.
 		PreloadMemory: 0,
 
 		SkillLoadMode: SkillLoadModeTurn,
+
+		SkipSkillsFallbackOnSessionSummary: true,
+
+		skillRunRequireSkillLoaded: true,
 	}
 )
 
@@ -202,6 +214,12 @@ type Options struct {
 	// AddSessionSummary controls whether to prepend the current branch summary
 	// as a system message when available (default: false).
 	AddSessionSummary bool
+	// SyncSummaryIntraRun controls whether to refresh session summary
+	// synchronously between LLM loop iterations inside the same run.
+	// When false (default), summary refresh happens asynchronously and
+	// may lag behind the current iteration. This option does not affect
+	// cross-run async summary behavior.
+	SyncSummaryIntraRun bool
 	// MaxHistoryRuns sets the maximum number of history messages when AddSessionSummary is false.
 	// When 0 (default), no limit is applied.
 	MaxHistoryRuns int
@@ -259,6 +277,15 @@ type Options struct {
 	// available in the system prompt.
 	SkillLoadMode string
 
+	// MaxLoadedSkills caps how many skills remain "loaded" in session
+	// state at the same time.
+	//
+	// When > 0, only the most-recently loaded skills are kept, and older
+	// loaded skills are offloaded (cleared) from session state.
+	//
+	// When <= 0, no cap is applied (default behavior).
+	MaxLoadedSkills int
+
 	// SkillsLoadedContentInToolResults controls where loaded skill bodies
 	// and selected docs are materialized.
 	//
@@ -270,16 +297,33 @@ type Options struct {
 	// system prompt more stable for prompt caching.
 	SkillsLoadedContentInToolResults bool
 
+	// SkipSkillsFallbackOnSessionSummary controls whether the framework
+	// skips the "Loaded skill context" system-message fallback when a
+	// session summary is present in the request and the matching loaded
+	// content is still available via tool-result materialization.
+	//
+	// Default: true.
+	SkipSkillsFallbackOnSessionSummary bool
+
 	// skillsRepository enables agent skills when non-nil.
 	skillsRepository skill.Repository
+	// skillToolProfile controls which built-in skill tools are registered.
+	skillToolProfile string
 	// skillsToolingGuidance overrides the built-in skills guidance block.
 	skillsToolingGuidance *string
 	// skillRunAllowedCommands restricts skill_run to allowlisted commands.
 	skillRunAllowedCommands []string
 	// skillRunDeniedCommands rejects denylisted commands for skill_run.
-	skillRunDeniedCommands    []string
-	messageTimelineFilterMode string
-	messageBranchFilterMode   string
+	skillRunDeniedCommands []string
+
+	// skillRunForceSaveArtifacts forces skill_run to persist collected
+	// outputs via the artifact service when possible.
+	skillRunForceSaveArtifacts bool
+	// skillRunRequireSkillLoaded rejects skill_run unless the skill was
+	// loaded via skill_load in the current session state.
+	skillRunRequireSkillLoaded bool
+	messageTimelineFilterMode  string
+	messageBranchFilterMode    string
 
 	// ReasoningContentMode controls how reasoning_content is handled in
 	// multi-turn conversations. This is particularly important for DeepSeek
@@ -288,12 +332,45 @@ type Options struct {
 
 	toolFilter tool.FilterFunc
 
-	// PreloadMemory sets the number of memories to preload into system prompt.
-	// When > 0, the specified number of most recent memories are loaded.
+	// PreloadMemory controls framework-side memory preload.
+	// When > 0, it acts as an adaptive preload budget:
+	//   - If total memories <= N, preload all memories.
+	//   - If total memories > N, preload top-N search results.
+	//   - If query extraction is empty, the search fails, or the search
+	//     returns no matches, fall back to loading up to N memories
+	//     directly.
 	// When 0 (default), no memories are preloaded (use tools instead).
 	// When < 0, all memories are loaded.
 	PreloadMemory int
+
+	// postToolPromptEnabled controls whether the post-tool dynamic prompt
+	// injection is enabled. When nil (default), injection is enabled to
+	// preserve existing behavior.
+	postToolPromptEnabled *bool
+
+	// PostToolPrompt overrides the default dynamic prompt injected when
+	// tool results are detected.
+	//
+	// When empty (default), the built-in default prompt is used.
+	// To disable prompt injection entirely, use
+	// WithEnablePostToolPrompt(false).
+	//
+	// Set to a non-empty string to customize the guidance given to the
+	// model after tool calls.
+	PostToolPrompt string
 }
+
+// SkillToolProfile controls which framework-provided skill tools are enabled.
+type SkillToolProfile string
+
+const (
+	// SkillToolProfileFull keeps the existing behavior and registers the full
+	// built-in skill tool suite, including execution tools.
+	SkillToolProfileFull SkillToolProfile = skillprofile.Full
+	// SkillToolProfileKnowledgeOnly registers only progressive-disclosure skill
+	// tools used for knowledge injection. No execution tools are exposed.
+	SkillToolProfileKnowledgeOnly SkillToolProfile = skillprofile.KnowledgeOnly
+)
 
 // WithModel sets the model to use.
 func WithModel(model model.Model) Option {
@@ -437,6 +514,18 @@ func WithSkills(repo skill.Repository) Option {
 	}
 }
 
+// WithSkillToolProfile selects which built-in skill tools are registered when
+// skills are enabled via WithSkills.
+//
+// Supported profiles:
+//   - SkillToolProfileFull (default)
+//   - SkillToolProfileKnowledgeOnly
+func WithSkillToolProfile(profile SkillToolProfile) Option {
+	return func(opts *Options) {
+		opts.skillToolProfile = string(profile)
+	}
+}
+
 // WithSkillLoadMode sets how long skill bodies/docs loaded via skill_load
 // remain available in the system prompt.
 //
@@ -450,6 +539,16 @@ func WithSkillLoadMode(mode string) Option {
 	}
 }
 
+// WithMaxLoadedSkills caps how many skills remain "loaded" in session
+// state at the same time.
+//
+// When max <= 0, no cap is applied (default behavior).
+func WithMaxLoadedSkills(max int) Option {
+	return func(opts *Options) {
+		opts.MaxLoadedSkills = max
+	}
+}
+
 // WithSkillsLoadedContentInToolResults enables an alternative injection
 // mode where loaded skill bodies/docs are materialized into tool result
 // messages (skill_load / skill_select_docs) instead of being appended
@@ -457,6 +556,19 @@ func WithSkillLoadMode(mode string) Option {
 func WithSkillsLoadedContentInToolResults(enable bool) Option {
 	return func(opts *Options) {
 		opts.SkillsLoadedContentInToolResults = enable
+	}
+}
+
+// WithSkipSkillsFallbackOnSessionSummary controls whether the agent
+// skips the "Loaded skill context" system-message fallback when a session
+// summary is present in the request.
+//
+// Default: true.
+func WithSkipSkillsFallbackOnSessionSummary(
+	skip bool,
+) Option {
+	return func(opts *Options) {
+		opts.SkipSkillsFallbackOnSessionSummary = skip
 	}
 }
 
@@ -493,6 +605,25 @@ func WithSkillRunDeniedCommands(cmds ...string) Option {
 		opts.skillRunDeniedCommands = append(
 			[]string(nil), cmds...,
 		)
+	}
+}
+
+// WithSkillRunForceSaveArtifacts forces skill_run to persist collected
+// outputs via the artifact service when possible.
+func WithSkillRunForceSaveArtifacts(enable bool) Option {
+	return func(opts *Options) {
+		opts.skillRunForceSaveArtifacts = enable
+	}
+}
+
+// WithSkillRunRequireSkillLoaded rejects skill_run unless the skill was
+// loaded via skill_load in the current session state.
+//
+// When enabled, models must call skill_load first to bring SKILL.md (and any
+// selected docs) into context, reducing hallucinated commands/scripts.
+func WithSkillRunRequireSkillLoaded(enable bool) Option {
+	return func(opts *Options) {
+		opts.skillRunRequireSkillLoaded = enable
 	}
 }
 
@@ -689,6 +820,16 @@ func WithAddSessionSummary(addSummary bool) Option {
 	}
 }
 
+// WithSyncSummaryIntraRun enables synchronous summary refresh between LLM loop
+// iterations in the same run. When enabled, the summary is updated before each
+// LLM call within a run, ensuring the model sees the most recent summary.
+// When disabled (default), summary refresh happens asynchronously.
+func WithSyncSummaryIntraRun(enable bool) Option {
+	return func(opts *Options) {
+		opts.SyncSummaryIntraRun = enable
+	}
+}
+
 // WithMaxHistoryRuns sets the maximum number of history messages when AddSessionSummary is false.
 // When 0 (default), no limit is applied.
 func WithMaxHistoryRuns(maxRuns int) Option {
@@ -813,16 +954,43 @@ func WithMessageFilterMode(mode MessageFilterMode) Option {
 	}
 }
 
-// WithPreloadMemory sets the number of memories to preload into system prompt.
+// WithPreloadMemory sets the framework-side preload behavior.
 //   - Set to 0 (default) to disable preloading (use tools instead).
-//   - Set to N (N > 0) to load the most recent N memories.
+//   - Set to N (N > 0) to use adaptive preload with budget N.
+//     Small memory sets are preloaded in full. Larger sets use search and
+//     fall back to loading up to N memories directly when search cannot
+//     provide usable results.
 //   - Set to -1 to load all memories.
 //     WARNING: Loading all memories may significantly increase token usage
 //     and API costs, especially for users with many stored memories.
-//     Consider using a positive limit (e.g., 10-50) for production use.
+//     Consider using a positive budget (e.g., 10-50) for production use.
 func WithPreloadMemory(limit int) Option {
 	return func(opts *Options) {
 		opts.PreloadMemory = limit
+	}
+}
+
+// WithPostToolPrompt overrides the default dynamic prompt injected when tool
+// results are detected in the conversation. The default prompt guides the
+// model to synthesize results naturally without meta-commentary.
+// To disable post-tool prompt injection entirely, use
+// WithEnablePostToolPrompt(false).
+//
+// Example usage:
+//
+//	llmagent.WithPostToolPrompt("[Dynamic Prompt] Summarize the tool output concisely.")
+func WithPostToolPrompt(prompt string) Option {
+	return func(opts *Options) {
+		opts.PostToolPrompt = prompt
+	}
+}
+
+// WithEnablePostToolPrompt enables or disables post-tool prompt injection.
+// When disabled, no prompt is injected after tool results, even if a custom
+// PostToolPrompt is configured.
+func WithEnablePostToolPrompt(enable bool) Option {
+	return func(opts *Options) {
+		opts.postToolPromptEnabled = &enable
 	}
 }
 

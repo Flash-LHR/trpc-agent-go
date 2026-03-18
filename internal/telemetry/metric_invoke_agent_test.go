@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -25,6 +26,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/metric/histogram"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/metrics"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
 )
 
 func TestInvokeAgentAttributes_toAttributes(t *testing.T) {
@@ -37,6 +39,7 @@ func TestInvokeAgentAttributes_toAttributes(t *testing.T) {
 			name: "all fields populated",
 			attrs: invokeAgentAttributes{
 				AgentName: "test-agent",
+				AgentID:   "test-agent",
 				AppName:   "test-app",
 				UserID:    "user-123",
 				System:    "gpt-4",
@@ -45,13 +48,14 @@ func TestInvokeAgentAttributes_toAttributes(t *testing.T) {
 				Error:     errors.New("test error"),
 			},
 			expected: []attribute.KeyValue{
-				attribute.String(KeyGenAIOperationName, OperationInvokeAgent),
+				attribute.String(semconvtrace.KeyGenAIOperationName, OperationInvokeAgent),
 				attribute.Bool(metrics.KeyTRPCAgentGoStream, true),
-				attribute.String(KeyGenAISystem, "gpt-4"),
-				attribute.String(KeyTRPCAgentGoAppName, "test-app"),
-				attribute.String(KeyTRPCAgentGoUserID, "user-123"),
-				attribute.String(KeyGenAIAgentName, "test-agent"),
-				attribute.String(KeyErrorType, "rate_limit"),
+				attribute.String(semconvtrace.KeyGenAISystem, "gpt-4"),
+				attribute.String(semconvtrace.KeyTRPCAgentGoAppName, "test-app"),
+				attribute.String(semconvtrace.KeyTRPCAgentGoUserID, "user-123"),
+				attribute.String(semconvtrace.KeyGenAIAgentName, "test-agent"),
+				attribute.String(semconvtrace.KeyGenAIAgentID, "test-agent"),
+				attribute.String(semconvtrace.KeyErrorType, "rate_limit"),
 			},
 		},
 		{
@@ -61,9 +65,9 @@ func TestInvokeAgentAttributes_toAttributes(t *testing.T) {
 				Stream: false,
 			},
 			expected: []attribute.KeyValue{
-				attribute.String(KeyGenAIOperationName, OperationInvokeAgent),
+				attribute.String(semconvtrace.KeyGenAIOperationName, OperationInvokeAgent),
 				attribute.Bool(metrics.KeyTRPCAgentGoStream, false),
-				attribute.String(KeyGenAISystem, "gpt-3.5"),
+				attribute.String(semconvtrace.KeyGenAISystem, "gpt-3.5"),
 			},
 		},
 		{
@@ -73,10 +77,10 @@ func TestInvokeAgentAttributes_toAttributes(t *testing.T) {
 				Error:  errors.New("some error"),
 			},
 			expected: []attribute.KeyValue{
-				attribute.String(KeyGenAIOperationName, OperationInvokeAgent),
+				attribute.String(semconvtrace.KeyGenAIOperationName, OperationInvokeAgent),
 				attribute.Bool(metrics.KeyTRPCAgentGoStream, false),
-				attribute.String(KeyGenAISystem, "gpt-4"),
-				attribute.String(KeyErrorType, ValueDefaultErrorType),
+				attribute.String(semconvtrace.KeyGenAISystem, "gpt-4"),
+				attribute.String(semconvtrace.KeyErrorType, semconvtrace.ValueDefaultErrorType),
 			},
 		},
 		{
@@ -89,9 +93,9 @@ func TestInvokeAgentAttributes_toAttributes(t *testing.T) {
 				ErrorType: "",
 			},
 			expected: []attribute.KeyValue{
-				attribute.String(KeyGenAIOperationName, OperationInvokeAgent),
+				attribute.String(semconvtrace.KeyGenAIOperationName, OperationInvokeAgent),
 				attribute.Bool(metrics.KeyTRPCAgentGoStream, false),
-				attribute.String(KeyGenAISystem, "claude-3"),
+				attribute.String(semconvtrace.KeyGenAISystem, "claude-3"),
 			},
 		},
 	}
@@ -139,6 +143,9 @@ func TestNewInvokeAgentTracker(t *testing.T) {
 	if tracker.attributes.AgentName != "test-agent" {
 		t.Errorf("expected AgentName=test-agent, got %s", tracker.attributes.AgentName)
 	}
+	if tracker.attributes.AgentID != "test-agent" {
+		t.Errorf("expected AgentID=test-agent, got %s", tracker.attributes.AgentID)
+	}
 	if tracker.attributes.System != "gpt-4" {
 		t.Errorf("expected System=gpt-4, got %s", tracker.attributes.System)
 	}
@@ -176,6 +183,9 @@ func TestNewInvokeAgentTracker_NilInvocation(t *testing.T) {
 	}
 	if tracker.attributes.AgentName != "" {
 		t.Error("expected empty AgentName")
+	}
+	if tracker.attributes.AgentID != "" {
+		t.Error("expected empty AgentID")
 	}
 	if tracker.attributes.System != "" {
 		t.Error("expected empty System")
@@ -650,4 +660,6 @@ func TestInvokeAgentTracker_RecordMetrics_NoTokens(t *testing.T) {
 	if len(rm.ScopeMetrics) == 0 {
 		t.Error("expected metrics to be recorded even without tokens")
 	}
+	metricNames := collectMetricNames(rm)
+	require.NotContains(t, metricNames, metrics.MetricTRPCAgentGoClientTimeToFirstToken)
 }

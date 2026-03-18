@@ -336,6 +336,12 @@ func TestWithInvocationArtifactService(t *testing.T) {
 	assert.Equal(t, mockArtifactService, inv.ArtifactService)
 }
 
+func TestWithInvocationSessionService(t *testing.T) {
+	inv := NewInvocation(WithInvocationSessionService(nil))
+	require.NotNil(t, inv)
+	assert.Nil(t, inv.SessionService)
+}
+
 func TestWithInvocationEventFilterKey(t *testing.T) {
 	inv := NewInvocation(
 		WithInvocationEventFilterKey("test-filter-key"),
@@ -392,11 +398,11 @@ func (m *mockModel) GenerateContent(ctx context.Context, request *model.Request)
 
 type mockMemoryService struct{}
 
-func (m *mockMemoryService) AddMemory(ctx context.Context, userKey memory.UserKey, mem string, topics []string) error {
+func (m *mockMemoryService) AddMemory(ctx context.Context, userKey memory.UserKey, mem string, topics []string, _ ...memory.AddOption) error {
 	return nil
 }
 
-func (m *mockMemoryService) UpdateMemory(ctx context.Context, memoryKey memory.Key, mem string, topics []string) error {
+func (m *mockMemoryService) UpdateMemory(ctx context.Context, memoryKey memory.Key, mem string, topics []string, _ ...memory.UpdateOption) error {
 	return nil
 }
 
@@ -412,7 +418,7 @@ func (m *mockMemoryService) ReadMemories(ctx context.Context, userKey memory.Use
 	return nil, nil
 }
 
-func (m *mockMemoryService) SearchMemories(ctx context.Context, userKey memory.UserKey, query string) ([]*memory.Entry, error) {
+func (m *mockMemoryService) SearchMemories(ctx context.Context, userKey memory.UserKey, query string, _ ...memory.SearchOption) ([]*memory.Entry, error) {
 	return nil, nil
 }
 
@@ -448,4 +454,30 @@ func (m *mockArtifactService) DeleteArtifact(ctx context.Context, info artifact.
 
 func (m *mockArtifactService) ListVersions(ctx context.Context, info artifact.SessionInfo, filename string) ([]int, error) {
 	return nil, nil
+}
+
+func TestWithDisableTracing(t *testing.T) {
+	opts := &RunOptions{}
+
+	WithDisableTracing(true)(opts)
+	require.True(t, opts.DisableTracing)
+
+	WithDisableTracing(false)(opts)
+	require.False(t, opts.DisableTracing)
+}
+
+func TestModelResponseRunOptionSetters(t *testing.T) {
+	opts := &RunOptions{}
+
+	WithDisableResponseUsageTracking(true)(opts)
+	require.True(t, opts.DisableResponseUsageTracking)
+
+	WithDisableModelExecutionEvents(true)(opts)
+	require.True(t, opts.DisableModelExecutionEvents)
+
+	WithDisablePartialEventIDs(true)(opts)
+	require.True(t, opts.DisablePartialEventIDs)
+
+	WithDisablePartialEventTimestamps(true)(opts)
+	require.True(t, opts.DisablePartialEventTimestamps)
 }

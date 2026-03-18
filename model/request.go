@@ -38,6 +38,8 @@ const (
 	ThinkingTokensKey = "thinking_tokens"
 	// ReasoningContentKey is the key used for reasoning content in API responses.
 	ReasoningContentKey = "reasoning_content"
+	// ReasoningContentKeyAlt is the alternative key used by some providers (e.g. Ollama).
+	ReasoningContentKeyAlt = "reasoning"
 	// EnabledThinkingKey is the key used for enabling thinking mode in API requests e.g. Qwen model.
 	EnabledThinkingKey = "enabled_thinking"
 )
@@ -109,6 +111,21 @@ func (m *Message) AddFileID(fileID string) {
 	m.ContentParts = append(m.ContentParts, ContentPart{
 		Type: ContentTypeFile,
 		File: &File{
+			FileID: fileID,
+		},
+	})
+}
+
+// AddFileIDWithName adds a file ID and filename to the message.
+//
+// The filename is not always sent to the model provider when FileID is used,
+// but it can be useful for downstream tooling (for example, staging user file
+// inputs into a skill workspace).
+func (m *Message) AddFileIDWithName(fileID, name string) {
+	m.ContentParts = append(m.ContentParts, ContentPart{
+		Type: ContentTypeFile,
+		File: &File{
+			Name:   name,
 			FileID: fileID,
 		},
 	})

@@ -233,46 +233,6 @@ func (m *Model) applyTokenTailoring(ctx context.Context, request *model.Request)
 	}
 
 	request.Messages = tailored
-
-	// Calculate remaining tokens for output based on context window.
-	usedTokens, err := m.tokenCounter.CountTokensRange(ctx, request.Messages, 0, len(request.Messages))
-	if err != nil {
-		log.WarnContext(
-			ctx,
-			"failed to count tokens after tailoring",
-			err,
-		)
-		return
-	}
-
-	// Set max output tokens only if user hasn't specified it.
-	if request.GenerationConfig.MaxTokens == nil {
-		var maxOutputTokens int
-		if m.protocolOverheadTokens > 0 || m.outputTokensFloor > 0 {
-			// Use custom parameters if any are set.
-			maxOutputTokens = imodel.CalculateMaxOutputTokensWithParams(
-				m.contextWindow,
-				usedTokens,
-				m.protocolOverheadTokens,
-				m.outputTokensFloor,
-				m.safetyMarginRatio,
-			)
-		} else {
-			// Use default parameters.
-			maxOutputTokens = imodel.CalculateMaxOutputTokens(m.contextWindow, usedTokens)
-		}
-		if maxOutputTokens > 0 {
-			request.GenerationConfig.MaxTokens = &maxOutputTokens
-			log.DebugfContext(
-				ctx,
-				"token tailoring: contextWindow=%d, usedTokens=%d, "+
-					"maxOutputTokens=%d",
-				m.contextWindow,
-				usedTokens,
-				maxOutputTokens,
-			)
-		}
-	}
 }
 
 // buildChatRequest builds the chat request for the Ollama API.
@@ -565,9 +525,13 @@ func convertChatResponse(resp api.ChatResponse) (*model.Response, error) {
 func convertMessage(msg model.Message) (api.Message, error) {
 	var toolCalls []api.ToolCall
 	for i, toolCall := range msg.ToolCalls {
-		args, err := argsToObject(toolCall.Function.Arguments)
+		rawArgs, err := argsToObject(toolCall.Function.Arguments)
 		if err != nil {
 			return api.Message{}, err
+		}
+		args := api.NewToolCallFunctionArguments()
+		for k, v := range rawArgs {
+			args.Set(k, v)
 		}
 		toolCalls = append(toolCalls, api.ToolCall{
 			Function: api.ToolCallFunction{
@@ -623,18 +587,18 @@ func convertMessage(msg model.Message) (api.Message, error) {
 func convertTools(tools map[string]tool.Tool) []api.Tool {
 	var result []api.Tool
 	for _, tl := range tools {
-		properties := make(map[string]api.ToolProperty)
+		properties := api.NewToolPropertiesMap()
 		var required []string
 
 		decl := tl.Declaration()
 		if decl.InputSchema != nil && decl.InputSchema.Properties != nil {
 			for name, prop := range decl.InputSchema.Properties {
-				properties[name] = api.ToolProperty{
+				properties.Set(name, api.ToolProperty{
 					Type:        api.PropertyType{prop.Type},
 					Description: prop.Description,
 					Items:       prop.Items,
 					Enum:        prop.Enum,
-				}
+				})
 				required = append(required, prop.Required...)
 			}
 		}

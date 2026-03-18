@@ -12,6 +12,7 @@ package graph
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -21,13 +22,26 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/barrier"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	teletrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
+
+const (
+	testFatalErrCodeInt = -1
+	testFatalErrCodeStr = "-1"
+)
+
+type codedTestError struct{}
+
+func (codedTestError) Error() string { return "boom" }
+
+func (codedTestError) Code() int { return testFatalErrCodeInt }
 
 // TestDocumentProcessingWorkflow tests a comprehensive document processing workflow
 // that mimics real-world usage with LLM nodes, tool nodes, and conditional routing.
@@ -277,6 +291,124 @@ func TestExecutor_NodeStartEvent_UsesCustomUserInputKey(t *testing.T) {
 		got = meta.ModelInput
 	}
 	require.Equal(t, testCustomInput, got)
+}
+
+func TestExecutorExecute_TracingBranches(t *testing.T) {
+	newExecutor := func(t *testing.T, fn NodeFunc) *Executor {
+		sg := NewStateGraph(NewStateSchema())
+		sg.AddNode("n", fn)
+		sg.SetEntryPoint("n")
+		sg.SetFinishPoint("n")
+
+		g, err := sg.Compile()
+		require.NoError(t, err)
+
+		exec, err := NewExecutor(g)
+		require.NoError(t, err)
+		return exec
+	}
+
+	setupRecordingTracer := func(t *testing.T) {
+		originalProvider := teletrace.TracerProvider
+		originalTracer := teletrace.Tracer
+
+		provider := sdktrace.NewTracerProvider()
+		teletrace.TracerProvider = provider
+		teletrace.Tracer = provider.Tracer("executor-test")
+
+		t.Cleanup(func() {
+			_ = provider.Shutdown(context.Background())
+			teletrace.TracerProvider = originalProvider
+			teletrace.Tracer = originalTracer
+		})
+	}
+
+	drainEvents := func(ch <-chan *event.Event) (sawError bool) {
+		for evt := range ch {
+			if evt != nil && evt.Error != nil {
+				sawError = true
+			}
+		}
+		return sawError
+	}
+
+	t.Run("disable tracing uses context span path", func(t *testing.T) {
+		exec := newExecutor(t, func(context.Context, State) (any, error) {
+			return State{"ok": true}, nil
+		})
+		invocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-disable-tracing"),
+			agent.WithInvocationRunOptions(agent.RunOptions{DisableTracing: true}),
+		)
+		invocation.AgentName = "trace-agent"
+
+		ch, err := exec.Execute(context.Background(), State{}, invocation)
+		require.NoError(t, err)
+		require.False(t, drainEvents(ch))
+	})
+
+	t.Run("recording span success traces workflow", func(t *testing.T) {
+		setupRecordingTracer(t)
+		exec := newExecutor(t, func(context.Context, State) (any, error) {
+			return State{"ok": true}, nil
+		})
+		invocation := agent.NewInvocation(agent.WithInvocationID("inv-trace-success"))
+		invocation.AgentName = "trace-agent"
+
+		ch, err := exec.Execute(context.Background(), State{}, invocation)
+		require.NoError(t, err)
+		require.False(t, drainEvents(ch))
+	})
+
+	t.Run("recording span error stores workflow error", func(t *testing.T) {
+		setupRecordingTracer(t)
+		exec := newExecutor(t, func(context.Context, State) (any, error) {
+			return nil, errors.New("boom")
+		})
+		invocation := agent.NewInvocation(agent.WithInvocationID("inv-trace-error"))
+		invocation.AgentName = "trace-agent"
+
+		ch, err := exec.Execute(context.Background(), State{}, invocation)
+		require.NoError(t, err)
+		require.True(t, drainEvents(ch))
+	})
+
+	t.Run("recording span panic stores workflow panic", func(t *testing.T) {
+		setupRecordingTracer(t)
+		exec := newExecutor(t, func(context.Context, State) (any, error) {
+			panic("kaboom")
+		})
+		invocation := agent.NewInvocation(agent.WithInvocationID("inv-trace-panic"))
+		invocation.AgentName = "trace-agent"
+
+		ch, err := exec.Execute(context.Background(), State{}, invocation)
+		require.NoError(t, err)
+		require.True(t, drainEvents(ch))
+	})
+
+	t.Run("checkpoint restore panic stores workflow panic", func(t *testing.T) {
+		setupRecordingTracer(t)
+		sg := NewStateGraph(NewStateSchema())
+		sg.AddNode("a", func(context.Context, State) (any, error) {
+			return State{}, nil
+		})
+		sg.SetEntryPoint("a")
+		sg.SetFinishPoint("a")
+
+		g, err := sg.Compile()
+		require.NoError(t, err)
+
+		saver := &panicGetTupleSaver{mockSaver: newMockSaver()}
+		exec, err := NewExecutor(g, WithCheckpointSaver(saver))
+		require.NoError(t, err)
+
+		invocation := agent.NewInvocation(agent.WithInvocationID("inv-trace-checkpoint"))
+		invocation.AgentName = "trace-agent"
+
+		ch, err := exec.Execute(context.Background(), State{}, invocation)
+		require.NoError(t, err)
+		require.True(t, drainEvents(ch))
+	})
 }
 
 // Ensure handleInterrupt still emits the interrupt event even when
@@ -1230,6 +1362,279 @@ func TestAfterCallbackOverride(t *testing.T) {
 	rv, ok := final["result"].(string)
 	require.True(t, ok)
 	require.Equal(t, "override", rv)
+}
+
+func TestAfterCallbackRunsOnNodeError(t *testing.T) {
+	boom := errors.New("boom")
+
+	g := NewStateGraph(NewStateSchema())
+	g.AddNode("N", func(ctx context.Context, s State) (any, error) {
+		return nil, boom
+	})
+	g.SetEntryPoint("N").SetFinishPoint("N")
+
+	var afterCalls int32
+	var afterSawNilResult int32
+	var afterSawErr atomic.Value
+	cbs := NewNodeCallbacks().RegisterAfterNode(func(
+		ctx context.Context,
+		cb *NodeCallbackContext,
+		st State,
+		result any,
+		nodeErr error,
+	) (any, error) {
+		atomic.AddInt32(&afterCalls, 1)
+		if result == nil {
+			atomic.StoreInt32(&afterSawNilResult, 1)
+		}
+		if nodeErr != nil {
+			afterSawErr.Store(nodeErr)
+		}
+		return nil, nil
+	})
+	g.WithNodeCallbacks(cbs)
+
+	compiled, err := g.Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(compiled)
+	require.NoError(t, err)
+
+	ch, err := exec.Execute(
+		context.Background(),
+		State{},
+		&agent.Invocation{InvocationID: "inv-after-on-error"},
+	)
+	require.NoError(t, err)
+
+	var sawPregelError bool
+	for evt := range ch {
+		if evt.Object != ObjectTypeGraphPregelStep {
+			continue
+		}
+		if evt.Response == nil || evt.Response.Error == nil {
+			continue
+		}
+		sawPregelError = true
+	}
+
+	require.True(t, sawPregelError)
+	require.Equal(t, int32(1), atomic.LoadInt32(&afterCalls))
+	require.Equal(t, int32(1), atomic.LoadInt32(&afterSawNilResult))
+
+	got, ok := afterSawErr.Load().(error)
+	require.True(t, ok)
+	require.ErrorIs(t, got, boom)
+}
+
+func TestFatalErrorEvents_PropagateErrorCode(t *testing.T) {
+	const nodeID = "N"
+
+	g := NewStateGraph(NewStateSchema())
+	g.AddNode(nodeID, func(ctx context.Context, s State) (any, error) {
+		return nil, codedTestError{}
+	})
+	g.SetEntryPoint(nodeID).SetFinishPoint(nodeID)
+
+	compiled, err := g.Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(compiled)
+	require.NoError(t, err)
+
+	ch, err := exec.Execute(
+		context.Background(),
+		State{},
+		&agent.Invocation{InvocationID: "inv-coded-fatal"},
+	)
+	require.NoError(t, err)
+
+	var gotNodeCode string
+	var gotPregelCode string
+	for evt := range ch {
+		if evt.Response == nil || evt.Response.Error == nil {
+			continue
+		}
+		if evt.Response.Error.Code == nil {
+			continue
+		}
+		switch evt.Author {
+		case nodeID:
+			gotNodeCode = *evt.Response.Error.Code
+		case AuthorGraphPregel:
+			if evt.Object != ObjectTypeGraphPregelStep {
+				continue
+			}
+			gotPregelCode = *evt.Response.Error.Code
+		}
+	}
+
+	require.Equal(t, testFatalErrCodeStr, gotNodeCode)
+	require.Equal(t, testFatalErrCodeStr, gotPregelCode)
+}
+
+func TestAfterCallbackCanRecoverNodeError(t *testing.T) {
+	boom := errors.New("boom")
+
+	g := NewStateGraph(NewStateSchema())
+	g.AddNode("N", func(ctx context.Context, s State) (any, error) {
+		return nil, boom
+	})
+	g.SetEntryPoint("N").SetFinishPoint("N")
+
+	var afterCalls int32
+	var afterSawErr atomic.Value
+	cbs := NewNodeCallbacks().RegisterAfterNode(func(
+		ctx context.Context,
+		cb *NodeCallbackContext,
+		st State,
+		result any,
+		nodeErr error,
+	) (any, error) {
+		atomic.AddInt32(&afterCalls, 1)
+		if nodeErr != nil {
+			afterSawErr.Store(nodeErr)
+		}
+		return State{"ok": true}, nil
+	})
+	g.WithNodeCallbacks(cbs)
+
+	compiled, err := g.Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(compiled)
+	require.NoError(t, err)
+
+	ch, err := exec.Execute(
+		context.Background(),
+		State{},
+		&agent.Invocation{InvocationID: "inv-after-recover"},
+	)
+	require.NoError(t, err)
+
+	var sawPregelError bool
+	final := make(State)
+	for ev := range ch {
+		if ev.Object == ObjectTypeGraphPregelStep &&
+			ev.Response != nil &&
+			ev.Response.Error != nil {
+			sawPregelError = true
+		}
+		if ev.Done && ev.StateDelta != nil {
+			for k, vb := range ev.StateDelta {
+				switch k {
+				case MetadataKeyNode, MetadataKeyPregel,
+					MetadataKeyChannel, MetadataKeyState,
+					MetadataKeyCompletion:
+					continue
+				default:
+				}
+				var v any
+				if err := json.Unmarshal(vb, &v); err == nil {
+					final[k] = v
+				}
+			}
+		}
+	}
+
+	require.False(t, sawPregelError)
+	require.Equal(t, int32(1), atomic.LoadInt32(&afterCalls))
+
+	got, ok := afterSawErr.Load().(error)
+	require.True(t, ok)
+	require.ErrorIs(t, got, boom)
+
+	okv, ok := final["ok"].(bool)
+	require.True(t, ok)
+	require.True(t, okv)
+}
+
+func TestAfterCallbackCanRecoverWithOriginalResult(t *testing.T) {
+	const (
+		nodeID       = "N"
+		invocationID = "inv-after-recover-original"
+
+		stateKeyPartial = "partial"
+	)
+
+	boom := errors.New("boom")
+
+	g := NewStateGraph(NewStateSchema())
+	g.AddNode(nodeID, func(ctx context.Context, s State) (any, error) {
+		return State{stateKeyPartial: true}, boom
+	})
+	g.SetEntryPoint(nodeID).SetFinishPoint(nodeID)
+
+	type afterSeen struct {
+		result any
+		err    error
+	}
+
+	var seen atomic.Value
+	seen.Store(afterSeen{})
+
+	cbs := NewNodeCallbacks().RegisterAfterNode(func(
+		ctx context.Context,
+		cb *NodeCallbackContext,
+		st State,
+		result any,
+		nodeErr error,
+	) (any, error) {
+		seen.Store(afterSeen{result: result, err: nodeErr})
+		return result, nil
+	})
+	g.WithNodeCallbacks(cbs)
+
+	compiled, err := g.Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(compiled)
+	require.NoError(t, err)
+
+	ch, err := exec.Execute(
+		context.Background(),
+		State{},
+		&agent.Invocation{InvocationID: invocationID},
+	)
+	require.NoError(t, err)
+
+	var sawPregelError bool
+	final := make(State)
+	for ev := range ch {
+		if ev.Object == ObjectTypeGraphPregelStep &&
+			ev.Response != nil &&
+			ev.Response.Error != nil {
+			sawPregelError = true
+		}
+		if ev.Done && ev.StateDelta != nil {
+			for k, vb := range ev.StateDelta {
+				switch k {
+				case MetadataKeyNode, MetadataKeyPregel,
+					MetadataKeyChannel, MetadataKeyState,
+					MetadataKeyCompletion:
+					continue
+				default:
+				}
+				var v any
+				if err := json.Unmarshal(vb, &v); err == nil {
+					final[k] = v
+				}
+			}
+		}
+	}
+
+	require.False(t, sawPregelError)
+
+	got := seen.Load().(afterSeen)
+	require.ErrorIs(t, got.err, boom)
+	require.NotNil(t, got.result)
+
+	partial, ok := got.result.(State)
+	require.True(t, ok)
+
+	gotPartial, ok := partial[stateKeyPartial].(bool)
+	require.True(t, ok)
+	require.True(t, gotPartial)
+
+	statePartial, ok := final[stateKeyPartial].(bool)
+	require.True(t, ok)
+	require.True(t, statePartial)
 }
 
 func TestBeforeCallbackError_BarrierWaitsForCompletion(t *testing.T) {

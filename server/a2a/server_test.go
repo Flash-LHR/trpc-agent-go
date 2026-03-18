@@ -13,10 +13,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"trpc.group/trpc-go/trpc-a2a-go/auth"
 	"trpc.group/trpc-go/trpc-a2a-go/protocol"
 	a2a "trpc.group/trpc-go/trpc-a2a-go/server"
@@ -1279,6 +1284,60 @@ func TestProcessAgentStreamingEvents_FinalSendFailureAndCleanFailure(
 	assert.True(t, cleaned)
 }
 
+func TestProcessAgentStreamingEvents_MessageTypeSkipsFinalArtifact(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	ctxID := "ctx"
+	msg := &protocol.Message{ContextID: &ctxID}
+	events := make(chan *event.Event)
+	close(events)
+
+	proc := createTestMessageProcessor()
+	proc.streamingEventType = StreamingEventTypeMessage
+
+	var results []protocol.StreamingMessageResult
+	sub := &mockTaskSubscriber{
+		sendFunc: func(evt protocol.StreamingMessageEvent) error {
+			if evt.Result != nil {
+				results = append(results, evt.Result)
+			}
+			return nil
+		},
+	}
+
+	proc.processAgentStreamingEvents(
+		ctx,
+		"task",
+		"user1",
+		"session1",
+		msg,
+		events,
+		sub,
+		&mockTaskHandler{},
+	)
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(results))
+	}
+
+	if _, ok := results[0].(*protocol.TaskStatusUpdateEvent); !ok {
+		t.Fatalf("expected TaskStatusUpdateEvent, got %T", results[0])
+	}
+	if _, ok := results[1].(*protocol.TaskStatusUpdateEvent); !ok {
+		t.Fatalf("expected TaskStatusUpdateEvent, got %T", results[1])
+	}
+
+	for i, res := range results {
+		if _, ok := res.(*protocol.TaskArtifactUpdateEvent); ok {
+			t.Fatalf(
+				"did not expect TaskArtifactUpdateEvent at %d",
+				i,
+			)
+		}
+	}
+}
+
 func TestMessageProcessor_ProcessMessage_Streaming_BuildTaskError(
 	t *testing.T,
 ) {
@@ -2044,6 +2103,14 @@ func TestBuildProcessor(t *testing.T) {
 				eventToA2AConverter: &mockEventToA2AConverter{},
 			},
 		},
+		{
+			name:    "custom runner",
+			agent:   &mockAgent{name: "test-agent", description: "test description"},
+			session: inmemory.NewSessionService(),
+			options: &options{
+				runner: &mockRunner{},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -2061,6 +2128,10 @@ func TestBuildProcessor(t *testing.T) {
 			}
 			if processor.eventToA2AConverter == nil {
 				t.Errorf("buildProcessor() eventToA2AConverter is nil")
+			}
+			if tt.options.runner != nil &&
+				processor.runner != tt.options.runner {
+				t.Errorf("buildProcessor() should reuse custom runner")
 			}
 		})
 	}
@@ -2729,6 +2800,62 @@ func TestMessageProcessor_ProcessMessage_MultipleEvents(t *testing.T) {
 	assert.Equal(t, 1, len(resultTask.Artifacts))
 }
 
+func TestMessageProcessor_ProcessMessage_MultipleEvents_PreservesArtifactMetadata(t *testing.T) {
+	ctxID := "ctx"
+	ctx := context.Background()
+	msg := protocol.Message{
+		ContextID: &ctxID,
+		MessageID: "multi-event-metadata-test",
+		Role:      protocol.MessageRoleUser,
+		Parts:     []protocol.Part{protocol.NewTextPart("hi")},
+	}
+
+	processor := &messageProcessor{
+		debugLogging: false,
+		runner: &mockRunner{
+			runFunc: func(ctx context.Context, userID string, sessionID string, message model.Message, opts ...agent.RunOption) (<-chan *event.Event, error) {
+				ch := make(chan *event.Event, 2)
+				ch <- &event.Event{
+					Response: &model.Response{
+						Choices: []model.Choice{{Message: model.Message{Content: "response1"}}},
+					},
+				}
+				ch <- &event.Event{
+					Response: &model.Response{
+						ID:     "resp-final",
+						Object: "graph.execution",
+						Choices: []model.Choice{{
+							Message: model.Message{},
+						}},
+					},
+					StateDelta: map[string][]byte{
+						"_node_metadata": []byte(`{"nodeId":"planner","phase":"start"}`),
+					},
+				}
+				close(ch)
+				return ch, nil
+			},
+		},
+		a2aToAgentConverter: &defaultA2AMessageToAgentMessage{},
+		eventToA2AConverter: &defaultEventToA2AMessage{},
+		errorHandler:        defaultErrorHandler,
+	}
+
+	result, err := processor.processMessage(ctx, "user", "session", &msg, &model.Message{Content: "input"}, nil)
+	assert.NoError(t, err)
+	resultTask, ok := result.Result.(*protocol.Task)
+	assert.True(t, ok, "Expected *protocol.Task for multiple events, got %T", result.Result)
+	if !assert.Len(t, resultTask.Artifacts, 1) {
+		return
+	}
+	assert.Equal(t, "graph.execution", resultTask.Artifacts[0].Metadata[ia2a.MessageMetadataObjectTypeKey])
+	rawStateDelta, ok := resultTask.Artifacts[0].Metadata[ia2a.MessageMetadataStateDeltaKey]
+	if assert.True(t, ok, "expected state_delta in artifact metadata") {
+		decoded := ia2a.DecodeStateDeltaMetadata(rawStateDelta)
+		assert.Equal(t, []byte(`{"nodeId":"planner","phase":"start"}`), decoded["_node_metadata"])
+	}
+}
+
 // TestMessageProcessor_ProcessMessage_NoPartsCollected tests handling when no parts are collected
 func TestMessageProcessor_ProcessMessage_NoPartsCollected(t *testing.T) {
 	ctxID := "ctx"
@@ -2770,4 +2897,78 @@ func TestMessageProcessor_ProcessMessage_NoPartsCollected(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.NotNil(t, result.Result)
+}
+
+// TestTraceContextMiddleware_Extract tests that trace context is extracted from HTTP headers
+func TestTraceContextMiddleware_Extract(t *testing.T) {
+	// Save the original propagator and restore it after the test
+	originalPropagator := otel.GetTextMapPropagator()
+	defer otel.SetTextMapPropagator(originalPropagator)
+
+	// Set up the W3C Trace Context propagator
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	// Create a valid traceparent header
+	traceparent := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+	// Create middleware
+	middleware := &traceContextMiddleware{}
+
+	// Track if the handler received a context with trace info
+	var receivedCtx context.Context
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedCtx = r.Context()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Wrap the handler
+	wrapped := middleware.Wrap(handler)
+
+	// Create request with traceparent header
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("traceparent", traceparent)
+	rec := httptest.NewRecorder()
+
+	// Execute
+	wrapped.ServeHTTP(rec, req)
+
+	// Verify the context contains trace info
+	spanContext := trace.SpanContextFromContext(receivedCtx)
+	assert.True(t, spanContext.IsValid(), "Expected valid span context")
+	assert.Equal(t, "4bf92f3577b34da6a3ce929d0e0e4736", spanContext.TraceID().String())
+	assert.Equal(t, "00f067aa0ba902b7", spanContext.SpanID().String())
+}
+
+// TestTraceContextMiddleware_NoTraceparent tests that context is unchanged when no traceparent header
+func TestTraceContextMiddleware_NoTraceparent(t *testing.T) {
+	// Save the original propagator and restore it after the test
+	originalPropagator := otel.GetTextMapPropagator()
+	defer otel.SetTextMapPropagator(originalPropagator)
+
+	// Set up the W3C Trace Context propagator
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	// Create middleware
+	middleware := &traceContextMiddleware{}
+
+	// Track the received context
+	var receivedCtx context.Context
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedCtx = r.Context()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Wrap the handler
+	wrapped := middleware.Wrap(handler)
+
+	// Create request WITHOUT traceparent header
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	rec := httptest.NewRecorder()
+
+	// Execute
+	wrapped.ServeHTTP(rec, req)
+
+	// Verify the context does not contain valid trace info
+	spanContext := trace.SpanContextFromContext(receivedCtx)
+	assert.False(t, spanContext.IsValid(), "Expected invalid span context when no traceparent")
 }

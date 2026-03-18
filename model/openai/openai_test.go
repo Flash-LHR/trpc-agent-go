@@ -12,6 +12,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -84,6 +85,36 @@ func TestNew(t *testing.T) {
 				WithBaseURL(defaultDeepSeekBaseURL),
 			},
 		},
+		{
+			name:      "infer deepseek from model name",
+			modelName: "deepseek-chat",
+			opts:      nil,
+			expectOpts: []Option{
+				WithAPIKey(testKey),
+				WithBaseURL(defaultDeepSeekBaseURL),
+				WithVariant(VariantDeepSeek),
+			},
+		},
+		{
+			name:      "infer deepseek from base url",
+			modelName: "custom-model",
+			opts: []Option{
+				WithBaseURL("https://api.deepseek.com/v1"),
+			},
+			expectOpts: []Option{
+				WithAPIKey(testKey),
+				WithBaseURL("https://api.deepseek.com/v1"),
+				WithVariant(VariantDeepSeek),
+			},
+		},
+		{
+			name:      "explicit variant beats deepseek inference",
+			modelName: "deepseek-chat",
+			opts: []Option{
+				WithVariant(VariantOpenAI),
+			},
+			expectOpts: nil,
+		},
 	}
 
 	for _, tt := range tests {
@@ -91,7 +122,7 @@ func TestNew(t *testing.T) {
 			m := New(tt.modelName, tt.opts...)
 			require.NotNil(t, m, "expected model to be created, got nil")
 
-			o := options{}
+			o := defaultOptions
 			for _, opt := range tt.opts {
 				opt(&o)
 			}
@@ -102,6 +133,98 @@ func TestNew(t *testing.T) {
 			assert.Equal(t, tt.modelName, m.name, "expected model name %s, got %s", tt.modelName, m.name)
 			assert.Equal(t, o.APIKey, m.apiKey, "expected api key %s, got %s", o.APIKey, m.apiKey)
 			assert.Equal(t, o.BaseURL, m.baseURL, "expected base url %s, got %s", o.BaseURL, m.baseURL)
+			assert.Equal(t, o.Variant, m.variant, "expected variant %s, got %s", o.Variant, m.variant)
+		})
+	}
+}
+
+func TestIsDeepSeekBaseURL(t *testing.T) {
+	const (
+		deepSeekURL        = "https://api.deepseek.com/v1"
+		upperDeepSeekURL   = " HTTPS://API.DEEPSEEK.COM/V1 "
+		invalidDeepSeekURL = "https://api.deepseek.com/%zz"
+		openAIURL          = "https://api.openai.com/v1"
+		emptyURL           = "   "
+	)
+
+	tests := []struct {
+		name   string
+		rawURL string
+		want   bool
+	}{
+		{
+			name:   "matches deepseek host",
+			rawURL: deepSeekURL,
+			want:   true,
+		},
+		{
+			name:   "matches deepseek host after trim and lowercase",
+			rawURL: upperDeepSeekURL,
+			want:   true,
+		},
+		{
+			name:   "falls back to substring match on parse error",
+			rawURL: invalidDeepSeekURL,
+			want:   true,
+		},
+		{
+			name:   "does not match other hosts",
+			rawURL: openAIURL,
+			want:   false,
+		},
+		{
+			name:   "empty url is not deepseek",
+			rawURL: emptyURL,
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isDeepSeekBaseURL(tt.rawURL))
+		})
+	}
+}
+
+func TestOmittedAttachmentHint(t *testing.T) {
+	tests := []struct {
+		name       string
+		imageCount int
+		audioCount int
+		fileCount  int
+		want       string
+	}{
+		{
+			name: "no attachments",
+			want: "",
+		},
+		{
+			name:       "single audio",
+			audioCount: 1,
+			want: "Omitted non-text attachments for this provider: " +
+				"1 audio clip.",
+		},
+		{
+			name:       "plural attachments",
+			imageCount: 2,
+			audioCount: 2,
+			fileCount:  2,
+			want: "Omitted non-text attachments for this provider: " +
+				"2 images, 2 audio clips, 2 files.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(
+				t,
+				tt.want,
+				omittedAttachmentHint(
+					tt.imageCount,
+					tt.audioCount,
+					tt.fileCount,
+				),
+			)
 		})
 	}
 }
@@ -190,6 +313,126 @@ func TestModel_GenContent_CustomBaseURL(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Log("Request timed out as expected with test credentials")
 	}
+}
+
+func TestModel_GenerateContentIter_NonStreaming(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"id": "iter-non-stream",
+			"object": "chat.completion",
+			"created": 1699200000,
+			"model": "gpt-3.5-turbo",
+			"choices": [
+				{
+					"index": 0,
+					"message": {
+						"role": "assistant",
+						"content": "ok"
+					},
+					"finish_reason": "stop"
+				}
+			]
+		}`)
+	}))
+	defer server.Close()
+
+	m := New("gpt-3.5-turbo",
+		WithBaseURL(server.URL),
+		WithAPIKey("test-key"),
+	)
+
+	req := &model.Request{
+		Messages: []model.Message{
+			model.NewUserMessage("hi"),
+		},
+		GenerationConfig: model.GenerationConfig{
+			Stream: false,
+		},
+	}
+
+	seq, err := m.GenerateContentIter(context.Background(), req)
+	require.NoError(t, err)
+
+	var responses []*model.Response
+	seq(func(resp *model.Response) bool {
+		responses = append(responses, resp)
+		return true
+	})
+
+	require.NotEmpty(t, responses)
+	require.True(t, responses[len(responses)-1].Done)
+	require.Equal(t, "iter-non-stream", responses[len(responses)-1].ID)
+	require.NotEmpty(t, responses[len(responses)-1].Choices)
+	require.Equal(t, "ok", responses[len(responses)-1].Choices[0].Message.Content)
+}
+
+func TestModel_GenerateContentIter_Streaming(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		chunks := []string{
+			`data: {"id":"iter-stream","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}`,
+			`data: {"id":"iter-stream","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}`,
+			`data: [DONE]`,
+		}
+		for _, chunk := range chunks {
+			fmt.Fprintf(w, "%s\n\n", chunk)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+
+	m := New("gpt-3.5-turbo",
+		WithBaseURL(server.URL),
+		WithAPIKey("test-key"),
+	)
+
+	req := &model.Request{
+		Messages: []model.Message{
+			model.NewUserMessage("hi"),
+		},
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+
+	seq, err := m.GenerateContentIter(context.Background(), req)
+	require.NoError(t, err)
+
+	var responses []*model.Response
+	seq(func(resp *model.Response) bool {
+		responses = append(responses, resp)
+		return true
+	})
+
+	require.NotEmpty(t, responses)
+	require.True(t, responses[len(responses)-1].Done)
+
+	var sawHello bool
+	for _, resp := range responses {
+		if len(resp.Choices) == 0 {
+			continue
+		}
+		if strings.Contains(resp.Choices[0].Message.Content, "hello") {
+			sawHello = true
+			break
+		}
+	}
+	require.True(t, sawHello)
 }
 
 func TestOptions_Validation(t *testing.T) {
@@ -2468,6 +2711,95 @@ func TestGetFile_Success(t *testing.T) {
 	assert.Equalf(t, "file_x", obj.ID, "unexpected file object: %#v", obj)
 }
 
+func TestDownloadFile_Success(t *testing.T) {
+	const (
+		fileID   = "file_x"
+		wantPath = "/openapi/v1/files/" + fileID + "/content"
+		wantMime = "application/octet-stream"
+	)
+	want := []byte("hello")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, wantPath, r.URL.Path)
+		w.Header().Set("Content-Type", wantMime)
+		_, _ = w.Write(want)
+	}))
+	defer server.Close()
+
+	m := New("test-model", WithAPIKey("k"), WithBaseURL(server.URL))
+	got, mime, err := m.DownloadFile(context.Background(), fileID)
+	require.NoErrorf(t, err, "DownloadFile failed: %v", err)
+	require.Equal(t, want, got)
+	require.Equal(t, wantMime, mime)
+}
+
+func TestDownloadFile_EmptyID_Error(t *testing.T) {
+	m := New("test-model", WithAPIKey("k"), WithBaseURL("http://x"))
+	_, _, err := m.DownloadFile(context.Background(), " ")
+	require.Error(t, err)
+}
+
+func TestDownloadFile_NoContentType_Detects(t *testing.T) {
+	const (
+		fileID   = "file_x"
+		wantPath = "/openapi/v1/files/" + fileID + "/content"
+	)
+	want := []byte("hello")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, wantPath, r.URL.Path)
+		_, _ = w.Write(want)
+	}))
+	defer server.Close()
+
+	m := New("test-model", WithAPIKey("k"), WithBaseURL(server.URL))
+	got, mime, err := m.DownloadFile(context.Background(), fileID)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	require.True(t, strings.HasPrefix(mime, "text/plain"))
+}
+
+func TestDownloadFile_ErrorStatus(t *testing.T) {
+	const (
+		fileID   = "file_x"
+		wantPath = "/openapi/v1/files/" + fileID + "/content"
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, wantPath, r.URL.Path)
+		http.Error(w, "bad", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	m := New("test-model", WithAPIKey("k"), WithBaseURL(server.URL))
+	_, _, err := m.DownloadFile(context.Background(), fileID)
+	require.Error(t, err)
+}
+
+func TestDownloadFile_HunyuanVariant(t *testing.T) {
+	const (
+		fileID   = "file_x"
+		wantPath = "/openapi/v1/files/" + fileID + "/content"
+	)
+	want := []byte("hello")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, wantPath, r.URL.Path)
+		_, _ = w.Write(want)
+	}))
+	defer server.Close()
+
+	m := New("test-model", WithAPIKey("k"), WithBaseURL(server.URL),
+		WithVariant(VariantHunyuan))
+	got, _, err := m.DownloadFile(context.Background(), fileID)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
 // TestDeleteFile_Success tests DeleteFile using a mock server.
 func TestDeleteFile_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2893,6 +3225,7 @@ func TestWithVariant(t *testing.T) {
 		WithVariant(VariantOpenAI)(opts)
 
 		assert.Equal(t, VariantOpenAI, opts.Variant, "expected variant to be VariantOpenAI")
+		assert.True(t, opts.variantSet, "expected variantSet to be true")
 	})
 
 	t.Run("hunyuan variant", func(t *testing.T) {
@@ -2900,6 +3233,7 @@ func TestWithVariant(t *testing.T) {
 		WithVariant(VariantHunyuan)(opts)
 
 		assert.Equal(t, VariantHunyuan, opts.Variant, "expected variant to be VariantHunyuan")
+		assert.True(t, opts.variantSet, "expected variantSet to be true")
 	})
 
 	t.Run("variant in model creation", func(t *testing.T) {
@@ -3004,6 +3338,50 @@ func TestConvertUserMessageContent_AllContentTypes(t *testing.T) {
 		assert.Empty(t, extraFields, "expected no extra fields")
 		assert.Len(t, content.OfArrayOfContentParts, 3, "expected 3 content parts")
 	})
+}
+
+func TestConvertUserMessageContent_OmitFileContentParts(t *testing.T) {
+	m := New("test-model", WithOmitFileContentParts(true))
+	message := model.NewUserMessage("Uploaded file: notes.txt")
+	message.AddFileData("notes.txt", []byte("hello"), "text/plain")
+
+	content, extraFields := m.convertUserMessageContent(message)
+	assert.Empty(t, extraFields, "expected no extra fields")
+	require.True(t, content.OfString.Valid(), "expected string content")
+	assert.Equal(t, message.Content, content.OfString.Value)
+	assert.Empty(t, content.OfArrayOfContentParts,
+		"expected no content parts")
+}
+
+func TestConvertUserMessageContent_OmitFileContentParts_FileOnly(t *testing.T) {
+	m := New("test-model", WithOmitFileContentParts(true))
+	msg := model.Message{Role: model.RoleUser}
+	msg.AddFileData("report.pdf", []byte("%PDF-1.4"), "application/pdf")
+
+	content, extraFields := m.convertUserMessageContent(msg)
+	assert.Empty(t, extraFields, "expected no extra fields")
+	assert.False(t, content.OfString.Valid(), "expected non-string content")
+	require.Len(t, content.OfArrayOfContentParts, 1,
+		"expected 1 content part")
+	require.NotNil(t, content.OfArrayOfContentParts[0].OfText,
+		"expected text content part")
+	assert.Contains(t, content.OfArrayOfContentParts[0].OfText.Text,
+		"report.pdf")
+}
+
+func TestUserFileHint_EmptyContentParts(t *testing.T) {
+	m := New("test-model", WithOmitFileContentParts(true))
+	msg := model.Message{Role: model.RoleUser}
+
+	hint := m.userFileHint(msg)
+	assert.Empty(t, hint, "expected no hint for empty content parts")
+}
+
+func TestAppendFileID_NilFilePart(t *testing.T) {
+	extraFields := appendFileID(nil, model.ContentPart{
+		Type: model.ContentTypeFile,
+	})
+	assert.Nil(t, extraFields, "expected nil extra fields")
 }
 
 // TestBuildChatRequest_EdgeCases tests edge cases in buildChatRequest.
@@ -3627,6 +4005,71 @@ func TestConvertUserMessageContent_HunyuanVariant(t *testing.T) {
 		assert.Len(t, fileIDs, 2, "expected 2 file IDs")
 		assert.Contains(t, fileIDs, "file-1", "expected file-1")
 		assert.Contains(t, fileIDs, "file-2", "expected file-2")
+	})
+}
+
+func TestConvertUserMessageContent_DeepSeekVariant(t *testing.T) {
+	m := New("deepseek-chat")
+
+	t.Run("omits non-text content parts", func(t *testing.T) {
+		message := model.Message{
+			Role:    model.RoleUser,
+			Content: "Please inspect this",
+			ContentParts: []model.ContentPart{
+				{
+					Type: model.ContentTypeImage,
+					Image: &model.Image{
+						URL: "https://example.com/image.png",
+					},
+				},
+				{
+					Type: model.ContentTypeFile,
+					File: &model.File{
+						FileID: "file-123",
+					},
+				},
+			},
+		}
+
+		content, extraFields := m.convertUserMessageContent(message)
+		assert.Empty(t, extraFields, "expected no extra fields")
+		require.Len(t, content.OfArrayOfContentParts, 2,
+			"expected main text and omission hint")
+		require.NotNil(t, content.OfArrayOfContentParts[0].OfText,
+			"expected first part to be text")
+		require.NotNil(t, content.OfArrayOfContentParts[1].OfText,
+			"expected omission hint to be text")
+		assert.Equal(t, "Please inspect this",
+			content.OfArrayOfContentParts[0].OfText.Text)
+		assert.Contains(t,
+			content.OfArrayOfContentParts[1].OfText.Text,
+			"1 image, 1 file")
+	})
+
+	t.Run("image only becomes text hint", func(t *testing.T) {
+		message := model.Message{
+			Role: model.RoleUser,
+			ContentParts: []model.ContentPart{
+				{
+					Type: model.ContentTypeImage,
+					Image: &model.Image{
+						URL: "https://example.com/image.png",
+					},
+				},
+			},
+		}
+
+		content, extraFields := m.convertUserMessageContent(message)
+		assert.Empty(t, extraFields, "expected no extra fields")
+		assert.False(t, content.OfString.Valid(),
+			"expected non-string content")
+		require.Len(t, content.OfArrayOfContentParts, 1,
+			"expected one omission hint")
+		require.NotNil(t, content.OfArrayOfContentParts[0].OfText,
+			"expected omission hint to be text")
+		assert.Contains(t,
+			content.OfArrayOfContentParts[0].OfText.Text,
+			"1 image")
 	})
 }
 
@@ -4801,7 +5244,6 @@ func TestWithTokenTailoringConfig(t *testing.T) {
 				ReserveOutputTokens:    imodel.DefaultReserveOutputTokens,
 				SafetyMarginRatio:      imodel.DefaultSafetyMarginRatio,
 				InputTokensFloor:       imodel.DefaultInputTokensFloor,
-				OutputTokensFloor:      imodel.DefaultOutputTokensFloor,
 				MaxInputTokensRatio:    imodel.DefaultMaxInputTokensRatio,
 			},
 		},
@@ -4862,7 +5304,6 @@ func TestWithTokenTailoringConfig(t *testing.T) {
 				ReserveOutputTokens:    imodel.DefaultReserveOutputTokens,
 				SafetyMarginRatio:      imodel.DefaultSafetyMarginRatio,
 				InputTokensFloor:       imodel.DefaultInputTokensFloor,
-				OutputTokensFloor:      imodel.DefaultOutputTokensFloor,
 				MaxInputTokensRatio:    imodel.DefaultMaxInputTokensRatio,
 			},
 		},
@@ -6475,4 +6916,99 @@ func TestGenerateContent_OptimizeForCache_Disabled(t *testing.T) {
 
 	// Verify original order is preserved (user, system, assistant)
 	assert.Equal(t, []string{"user", "system", "assistant"}, capturedRoles)
+}
+
+func TestFileToParams_FileDataUsesDataURL(t *testing.T) {
+	f := &model.File{
+		Name:     "notes.txt",
+		Data:     []byte("hello"),
+		MimeType: "text/plain",
+	}
+	p := fileToParams(f)
+	require.True(t, p.FileData.Valid())
+	require.Equal(t, "notes.txt", p.Filename.Value)
+	const wantPrefix = "data:text/plain;base64,"
+	want := wantPrefix + base64.StdEncoding.EncodeToString([]byte("hello"))
+	require.Equal(t, want, p.FileData.Value)
+	require.False(t, p.FileID.Valid())
+}
+
+func TestFileToParams_FileIDWins(t *testing.T) {
+	f := &model.File{
+		Name:     "notes.txt",
+		Data:     []byte("hello"),
+		MimeType: "text/plain",
+		FileID:   "file_123",
+	}
+	p := fileToParams(f)
+	require.True(t, p.FileID.Valid())
+	require.Equal(t, "file_123", p.FileID.Value)
+	require.False(t, p.FileData.Valid())
+	require.False(t, p.Filename.Valid())
+}
+
+func TestFileToParams_InternalRefUsesData(t *testing.T) {
+	f := &model.File{
+		Name:     "notes.txt",
+		Data:     []byte("hello"),
+		MimeType: "text/plain",
+		FileID:   "host:///tmp/notes.txt",
+	}
+	p, ok := fileToParamsOK(f)
+	require.True(t, ok)
+	require.False(t, p.FileID.Valid())
+	require.True(t, p.FileData.Valid())
+	require.Equal(t, "notes.txt", p.Filename.Value)
+}
+
+func TestFileToParams_InternalRefWithoutDataSkips(t *testing.T) {
+	f := &model.File{
+		Name:   "notes.txt",
+		FileID: "host:///tmp/notes.txt",
+	}
+	_, ok := fileToParamsOK(f)
+	require.False(t, ok)
+}
+
+func TestAppendFileID_SkipsInternalRefs(t *testing.T) {
+	fields := appendFileID(nil, model.ContentPart{
+		Type: model.ContentTypeFile,
+		File: &model.File{
+			FileID: "host:///tmp/notes.txt",
+		},
+	})
+	require.Nil(t, fields)
+}
+
+func TestUserFileHint_UsesSafeNameForInternalRefs(t *testing.T) {
+	m := &Model{}
+	msg := model.Message{
+		ContentParts: []model.ContentPart{
+			{
+				Type: model.ContentTypeFile,
+				File: &model.File{
+					FileID: "host:///tmp/private/notes.txt",
+				},
+			},
+		},
+	}
+	got := m.userFileHint(msg)
+	require.Contains(t, got, "notes.txt")
+	require.NotContains(t, got, "host://")
+	require.NotContains(t, got, "/tmp/private")
+}
+
+func TestAppendUserContentParts_SkipsInternalFiles(t *testing.T) {
+	m := &Model{}
+	dst := []openai.ChatCompletionContentPartUnionParam{}
+	fields := m.appendUserContentParts(&dst, []model.ContentPart{
+		{
+			Type: model.ContentTypeFile,
+			File: &model.File{
+				FileID: "host:///tmp/notes.txt",
+			},
+		},
+	})
+	require.Nil(t, fields)
+	require.Empty(t, dst)
 }

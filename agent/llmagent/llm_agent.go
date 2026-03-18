@@ -25,15 +25,18 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/codeexecutor"
 	localexec "trpc.group/trpc-go/trpc-agent-go/codeexecutor/local"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	iagent "trpc.group/trpc-go/trpc-agent-go/internal/agent"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/llmflow"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
+	"trpc.group/trpc-go/trpc-agent-go/internal/skillprofile"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	itool "trpc.group/trpc-go/trpc-agent-go/internal/tool"
+	itrace "trpc.group/trpc-go/trpc-agent-go/internal/trace"
 	knowledgetool "trpc.group/trpc-go/trpc-agent-go/knowledge/tool"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/planner"
-	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	toolskill "trpc.group/trpc-go/trpc-agent-go/tool/skill"
 	"trpc.group/trpc-go/trpc-agent-go/tool/transfer"
@@ -172,8 +175,9 @@ func New(name string, opts ...Option) *LLMAgent {
 
 	// Create flow with the provided processors and options.
 	flowOpts := llmflow.Options{
-		ChannelBufferSize: options.ChannelBufferSize,
-		ModelCallbacks:    options.ModelCallbacks,
+		ChannelBufferSize:   options.ChannelBufferSize,
+		ModelCallbacks:      options.ModelCallbacks,
+		SyncSummaryIntraRun: options.SyncSummaryIntraRun,
 	}
 
 	a.flow = llmflow.New(
@@ -258,11 +262,28 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 		skillsOpts = append(
 			skillsOpts,
 			processor.WithSkillLoadMode(options.SkillLoadMode),
+			processor.WithSkillToolProfile(
+				skillprofile.Normalize(options.skillToolProfile),
+			),
 		)
+		if options.MaxLoadedSkills > 0 {
+			skillsOpts = append(
+				skillsOpts,
+				processor.WithMaxLoadedSkills(
+					options.MaxLoadedSkills,
+				),
+			)
+		}
 		if options.SkillsLoadedContentInToolResults {
 			skillsOpts = append(
 				skillsOpts,
 				processor.WithSkillsLoadedContentInToolResults(true),
+			)
+		}
+		if !executorSupportsInteractive(options) {
+			skillsOpts = append(
+				skillsOpts,
+				processor.WithSkillExecToolsDisabled(),
 			)
 		}
 		skillsProcessor := processor.NewSkillsRequestProcessor(
@@ -293,35 +314,67 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 	contentProcessor := processor.NewContentRequestProcessor(contentOpts...)
 	requestProcessors = append(requestProcessors, contentProcessor)
 
-	if options.skillsRepository != nil &&
-		options.SkillsLoadedContentInToolResults {
-		skillsToolResultProcessor :=
-			processor.NewSkillsToolResultRequestProcessor(
-				options.skillsRepository,
-				processor.WithSkillsToolResultLoadMode(
-					options.SkillLoadMode,
-				),
-			)
-		requestProcessors = append(
-			requestProcessors,
-			skillsToolResultProcessor,
-		)
-	}
+	// 7. Post-tool processor - injects dynamic prompt after tool results.
+	requestProcessors = appendPostToolProcessor(options, requestProcessors)
 
-	// 7. Time processor - adds current time information if enabled.
+	// 8. Skills tool result processor - materializes loaded skill content
+	// into tool result messages.
+	requestProcessors = appendSkillsToolResultProcessor(options, requestProcessors)
+
+	// 9. Time processor - adds current time information if enabled.
 	// Moved after content processor to avoid invalidating system message cache.
 	// Time information changes frequently, so placing it last allows previous
 	// stable content (instructions, identity, skills, history) to be cached.
-	if options.AddCurrentTime {
-		timeProcessor := processor.NewTimeRequestProcessor(
-			processor.WithAddCurrentTime(true),
-			processor.WithTimezone(options.Timezone),
-			processor.WithTimeFormat(options.TimeFormat),
-		)
-		requestProcessors = append(requestProcessors, timeProcessor)
-	}
+	requestProcessors = appendTimeProcessor(options, requestProcessors)
 
 	return requestProcessors
+}
+
+func appendPostToolProcessor(options *Options, requestProcessors []flow.RequestProcessor) []flow.RequestProcessor {
+	if options.postToolPromptEnabled != nil &&
+		!*options.postToolPromptEnabled {
+		return requestProcessors
+	}
+
+	var postToolOpts []processor.PostToolOption
+	if options.PostToolPrompt != "" {
+		postToolOpts = append(
+			postToolOpts,
+			processor.WithPostToolPrompt(options.PostToolPrompt),
+		)
+	}
+	postToolProcessor := processor.NewPostToolRequestProcessor(postToolOpts...)
+	return append(requestProcessors, postToolProcessor)
+}
+
+func appendSkillsToolResultProcessor(options *Options, requestProcessors []flow.RequestProcessor) []flow.RequestProcessor {
+	if options.skillsRepository == nil ||
+		!options.SkillsLoadedContentInToolResults {
+		return requestProcessors
+	}
+	skillsToolResultProcessor :=
+		processor.NewSkillsToolResultRequestProcessor(
+			options.skillsRepository,
+			processor.WithSkillsToolResultLoadMode(
+				options.SkillLoadMode,
+			),
+			processor.WithSkipSkillsFallbackOnSessionSummary(
+				options.SkipSkillsFallbackOnSessionSummary,
+			),
+		)
+	return append(requestProcessors, skillsToolResultProcessor)
+}
+
+func appendTimeProcessor(options *Options, requestProcessors []flow.RequestProcessor) []flow.RequestProcessor {
+	if !options.AddCurrentTime {
+		return requestProcessors
+	}
+	timeProcessor := processor.NewTimeRequestProcessor(
+		processor.WithAddCurrentTime(true),
+		processor.WithTimezone(options.Timezone),
+		processor.WithTimeFormat(options.TimeFormat),
+	)
+	return append(requestProcessors, timeProcessor)
 }
 
 // buildRequestProcessors preserves the original helper signature for tests and
@@ -384,152 +437,257 @@ func initializeModels(options *Options) (model.Model, map[string]model.Model) {
 }
 
 func registerTools(options *Options) ([]tool.Tool, map[string]bool) {
-	// Track user-registered tool names from WithTools and WithToolSets.
-	// These are tools explicitly registered by the user and can be subject to filtering.
-	userToolNames := make(map[string]bool)
+	userToolNames := collectUserToolNames(options.Tools)
+	allTools := append([]tool.Tool(nil), options.Tools...)
+	allTools, userToolNames = appendStaticToolSetTools(
+		allTools, userToolNames, options,
+	)
+	allTools = appendKnowledgeTools(allTools, options)
+	allTools = appendSkillTools(allTools, options)
+	return allTools, userToolNames
+}
 
-	// Tools from WithTools are user tools.
-	for _, t := range options.Tools {
-		userToolNames[t.Declaration().Name] = true
+func collectUserToolNames(tools []tool.Tool) map[string]bool {
+	names := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		names[t.Declaration().Name] = true
+	}
+	return names
+}
+
+func appendStaticToolSetTools(
+	allTools []tool.Tool,
+	userToolNames map[string]bool,
+	options *Options,
+) ([]tool.Tool, map[string]bool) {
+	if options.RefreshToolSetsOnRun {
+		return allTools, userToolNames
 	}
 
-	// Start with direct tools.
-	allTools := make([]tool.Tool, 0, len(options.Tools))
-	allTools = append(allTools, options.Tools...)
-
-	// Add tools from each toolset with automatic namespacing when using
-	// static ToolSets. Tools from WithToolSets are also user tools
-	// (user explicitly added them). When RefreshToolSetsOnRun is true,
-	// ToolSets are resolved on each Tools() call instead of here.
-	if !options.RefreshToolSetsOnRun {
-		ctx := context.Background()
-		for _, toolSet := range options.ToolSets {
-			// Create named toolset wrapper to avoid name conflicts.
-			namedToolSet := itool.NewNamedToolSet(toolSet)
-			setTools := namedToolSet.Tools(ctx)
-			for _, t := range setTools {
-				allTools = append(allTools, t)
-				// Mark toolset tools as user tools.
-				userToolNames[t.Declaration().Name] = true
-			}
+	ctx := context.Background()
+	for _, toolSet := range options.ToolSets {
+		namedToolSet := itool.NewNamedToolSet(toolSet)
+		for _, t := range namedToolSet.Tools(ctx) {
+			allTools = append(allTools, t)
+			userToolNames[t.Declaration().Name] = true
 		}
 	}
+	return allTools, userToolNames
+}
 
-	// Add knowledge search tool if knowledge base is provided.
-	// This is a FRAMEWORK tool (auto-added by framework), NOT a user tool.
-	// It should never be filtered out by user tool filters.
-	if options.Knowledge != nil {
-		toolOpts := []knowledgetool.Option{
-			knowledgetool.WithFilter(options.KnowledgeFilter),
-		}
-		if options.KnowledgeConditionedFilter != nil {
-			toolOpts = append(toolOpts, knowledgetool.WithConditionedFilter(options.KnowledgeConditionedFilter))
-		}
-
-		if options.EnableKnowledgeAgenticFilter {
-			agenticKnowledge := knowledgetool.NewAgenticFilterSearchTool(
-				options.Knowledge, options.AgenticFilterInfo, toolOpts...,
-			)
-			allTools = append(allTools, agenticKnowledge)
-			// Do NOT add to userToolNames - this is a framework tool.
-		} else {
-			knowledgeTool := knowledgetool.NewKnowledgeSearchTool(
-				options.Knowledge, toolOpts...,
-			)
-			allTools = append(allTools, knowledgeTool)
-			// Do NOT add to userToolNames - this is a framework tool.
-		}
+func appendKnowledgeTools(
+	allTools []tool.Tool,
+	options *Options,
+) []tool.Tool {
+	if options.Knowledge == nil {
+		return allTools
 	}
 
-	// Add skill tools when skills are enabled.
-	if options.skillsRepository != nil {
-		allTools = append(allTools,
-			toolskill.NewLoadTool(options.skillsRepository))
-		// Specialized doc tools for clarity and control.
-		allTools = append(allTools,
-			toolskill.NewSelectDocsTool(options.skillsRepository))
-		allTools = append(allTools,
-			toolskill.NewListDocsTool(options.skillsRepository))
-		// Provide executor to skill_run, fallback to local.
-		exec := options.codeExecutor
-		if exec == nil {
-			exec = defaultCodeExecutor()
-		}
-		runOpts := make(
-			[]func(*toolskill.RunTool), 0, 2,
+	toolOpts := []knowledgetool.Option{
+		knowledgetool.WithFilter(options.KnowledgeFilter),
+	}
+	if options.KnowledgeConditionedFilter != nil {
+		toolOpts = append(
+			toolOpts,
+			knowledgetool.WithConditionedFilter(
+				options.KnowledgeConditionedFilter,
+			),
 		)
-		if len(options.skillRunAllowedCommands) > 0 {
-			runOpts = append(runOpts,
-				toolskill.WithAllowedCommands(
-					options.skillRunAllowedCommands...,
-				),
-			)
-		}
-		if len(options.skillRunDeniedCommands) > 0 {
-			runOpts = append(runOpts,
-				toolskill.WithDeniedCommands(
-					options.skillRunDeniedCommands...,
-				),
-			)
-		}
-		allTools = append(allTools, toolskill.NewRunTool(
-			options.skillsRepository, exec, runOpts...,
+	}
+
+	if options.EnableKnowledgeAgenticFilter {
+		return append(allTools, knowledgetool.NewAgenticFilterSearchTool(
+			options.Knowledge, options.AgenticFilterInfo, toolOpts...,
 		))
 	}
+	return append(allTools, knowledgetool.NewKnowledgeSearchTool(
+		options.Knowledge, toolOpts...,
+	))
+}
 
-	return allTools, userToolNames
+func appendSkillTools(
+	allTools []tool.Tool,
+	options *Options,
+) []tool.Tool {
+	if options.skillsRepository == nil {
+		return allTools
+	}
+
+	skillFlags := skillprofile.ResolveFlags(options.skillToolProfile)
+	if skillFlags.Load {
+		allTools = append(
+			allTools,
+			toolskill.NewLoadTool(options.skillsRepository),
+		)
+	}
+	if skillFlags.SelectDocs {
+		allTools = append(
+			allTools,
+			toolskill.NewSelectDocsTool(options.skillsRepository),
+		)
+	}
+	if skillFlags.ListDocs {
+		allTools = append(
+			allTools,
+			toolskill.NewListDocsTool(options.skillsRepository),
+		)
+	}
+	if !skillFlags.RequiresExecutionTools() {
+		return allTools
+	}
+
+	runTool := buildSkillRunTool(options)
+	if skillFlags.Run {
+		allTools = append(allTools, runTool)
+	}
+	if !skillFlags.RequiresExecSessionTools() {
+		return allTools
+	}
+	if !executorSupportsInteractive(options) {
+		return allTools
+	}
+
+	execTool := toolskill.NewExecTool(runTool)
+	if skillFlags.Exec {
+		allTools = append(allTools, execTool)
+	}
+	if skillFlags.WriteStdin {
+		allTools = append(
+			allTools,
+			toolskill.NewWriteStdinTool(execTool),
+		)
+	}
+	if skillFlags.PollSession {
+		allTools = append(
+			allTools,
+			toolskill.NewPollSessionTool(execTool),
+		)
+	}
+	if skillFlags.KillSession {
+		allTools = append(
+			allTools,
+			toolskill.NewKillSessionTool(execTool),
+		)
+	}
+	return allTools
+}
+
+func buildSkillRunTool(options *Options) *toolskill.RunTool {
+	exec := options.codeExecutor
+	if exec == nil {
+		exec = defaultCodeExecutor()
+	}
+
+	runOpts := make([]func(*toolskill.RunTool), 0, 4)
+	if len(options.skillRunAllowedCommands) > 0 {
+		runOpts = append(
+			runOpts,
+			toolskill.WithAllowedCommands(
+				options.skillRunAllowedCommands...,
+			),
+		)
+	}
+	if len(options.skillRunDeniedCommands) > 0 {
+		runOpts = append(
+			runOpts,
+			toolskill.WithDeniedCommands(
+				options.skillRunDeniedCommands...,
+			),
+		)
+	}
+	if options.skillRunForceSaveArtifacts {
+		runOpts = append(runOpts, toolskill.WithForceSaveArtifacts(true))
+	}
+	if options.skillRunRequireSkillLoaded {
+		runOpts = append(
+			runOpts,
+			toolskill.WithRequireSkillLoaded(true),
+		)
+	}
+
+	return toolskill.NewRunTool(
+		options.skillsRepository,
+		exec,
+		runOpts...,
+	)
+}
+
+// executorSupportsInteractive reports whether the effective engine
+// behind the configured code executor exposes an
+// InteractiveProgramRunner.  The check mirrors the fallback logic in
+// RunTool.ensureEngine: when the executor does not implement
+// EngineProvider (or returns a nil engine), the runtime falls back to
+// a local engine which does support interactive sessions, so we
+// return true in those cases.
+func executorSupportsInteractive(options *Options) bool {
+	exec := options.codeExecutor
+	if exec == nil {
+		exec = defaultCodeExecutor()
+	}
+	ep, ok := exec.(codeexecutor.EngineProvider)
+	if !ok {
+		// ensureEngine falls back to localexec which supports interactive.
+		return true
+	}
+	eng := ep.Engine()
+	if eng == nil {
+		return true
+	}
+	_, interactive := eng.Runner().(codeexecutor.InteractiveProgramRunner)
+	return interactive
 }
 
 // Run implements the agent.Agent interface.
 // It executes the LLM agent flow and returns a channel of events.
 func (a *LLMAgent) Run(ctx context.Context, invocation *agent.Invocation) (e <-chan *event.Event, err error) {
 	a.setupInvocation(invocation)
-
-	ctx, span := trace.Tracer.Start(
+	ctx, span, startedSpan := itrace.StartSpan(
 		ctx,
+		invocation,
 		fmt.Sprintf(
 			"%s %s",
 			itelemetry.OperationInvokeAgent,
-			a.name,
+			invocation.AgentName,
 		),
 	)
 	effectiveGenConfig := a.genConfig
-	if invocation.RunOptions.Stream != nil {
-		effectiveGenConfig.Stream = *invocation.RunOptions.Stream
-	}
-
+	effectiveGenConfig.Stream = iagent.ResolveInvokeAgentStream(invocation, &effectiveGenConfig)
 	promptText := a.systemPromptForInvocation(invocation) +
 		a.instructionForInvocation(invocation)
-	itelemetry.TraceBeforeInvokeAgent(
-		span,
-		invocation,
-		a.description,
-		promptText,
-		&effectiveGenConfig,
-	)
+	if startedSpan {
+		itelemetry.TraceBeforeInvokeAgent(
+			span,
+			invocation,
+			a.description,
+			promptText,
+			&effectiveGenConfig,
+		)
+	}
 	tracker := itelemetry.NewInvokeAgentTracker(
 		ctx,
 		invocation,
 		effectiveGenConfig.Stream,
 		&err,
 	)
-
 	ctx, flowEventChan, err := a.executeAgentFlow(ctx, invocation)
 	if err != nil {
 		// Check if this is a custom response error (early return)
 		var customErr *haveCustomResponseError
 		if errors.As(err, &customErr) {
-			span.End()
+			if startedSpan {
+				span.End()
+			}
 			return customErr.EventChan, nil
 		}
 		// Handle actual errors
-		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(attribute.String(itelemetry.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
-		span.End()
+		if startedSpan {
+			span.SetStatus(codes.Error, err.Error())
+			span.SetAttributes(attribute.String(semconvtrace.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeRunError)))
+			span.End()
+		}
 		return nil, err
 	}
-
-	return a.wrapEventChannelWithTelemetry(ctx, invocation, flowEventChan, span, tracker), nil
+	return a.wrapEventChannelWithTelemetry(ctx, invocation, flowEventChan, span, tracker, startedSpan), nil
 }
 
 // executeAgentFlow executes the agent flow with before agent callbacks.
@@ -623,25 +781,26 @@ func (a *LLMAgent) wrapEventChannelWithTelemetry(
 	originalChan <-chan *event.Event,
 	span sdktrace.Span,
 	tracker *itelemetry.InvokeAgentTracker,
+	startedSpan bool,
 ) <-chan *event.Event {
 	// Create a new channel with the same capacity as the original channel
 	wrappedChan := make(chan *event.Event, cap(originalChan))
-
 	runCtx := agent.CloneContext(ctx)
 	go func(ctx context.Context) {
 		var fullRespEvent *event.Event
 		var responseErrorType string
 		tokenUsage := &itelemetry.TokenUsage{}
 		defer func() {
-			if fullRespEvent != nil {
+			if startedSpan && fullRespEvent != nil {
 				itelemetry.TraceAfterInvokeAgent(span, fullRespEvent, tokenUsage, tracker.FirstTokenTimeDuration())
 			}
 			tracker.SetResponseErrorType(responseErrorType)
 			tracker.RecordMetrics()()
-			span.End()
+			if startedSpan {
+				span.End()
+			}
 			close(wrappedChan)
 		}()
-
 		// Forward all events from the original channel
 		for evt := range originalChan {
 			if evt != nil && evt.Response != nil {
@@ -654,13 +813,11 @@ func (a *LLMAgent) wrapEventChannelWithTelemetry(
 					}
 					fullRespEvent = evt
 				}
-
 			}
 			if err := event.EmitEvent(ctx, wrappedChan, evt); err != nil {
 				return
 			}
 		}
-
 		// Collect error from the final response event.
 		var agentErr error
 		if fullRespEvent != nil && fullRespEvent.Response != nil && fullRespEvent.Response.Error != nil {
@@ -720,7 +877,21 @@ func (a *LLMAgent) Info() agent.Info {
 // under the caller's read lock. It always returns a fresh slice so
 // callers can safely use it after releasing the lock without data
 // races.
+//
+// This variant is used by methods that don't accept a context (for
+// example, Tools()). It uses context.Background() when refreshing tools
+// from ToolSets.
 func (a *LLMAgent) getAllToolsLocked() []tool.Tool {
+	return a.getAllToolsLockedWithContext(context.Background())
+}
+
+func (a *LLMAgent) getAllToolsLockedWithContext(
+	ctx context.Context,
+) []tool.Tool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	base := make([]tool.Tool, len(a.tools))
 	copy(base, a.tools)
 
@@ -728,8 +899,6 @@ func (a *LLMAgent) getAllToolsLocked() []tool.Tool {
 	// on each call to keep ToolSet-provided tools in sync with their
 	// underlying dynamic source (for example, MCP ListTools).
 	if a.option.RefreshToolSetsOnRun && len(a.option.ToolSets) > 0 {
-		ctx := context.Background()
-
 		dynamic := make([]tool.Tool, 0)
 		for _, toolSet := range a.option.ToolSets {
 			namedToolSet := itool.NewNamedToolSet(toolSet)
@@ -854,7 +1023,7 @@ func (a *LLMAgent) UserTools() []tool.Tool {
 // function.
 func (a *LLMAgent) FilterTools(ctx context.Context) []tool.Tool {
 	a.mu.RLock()
-	tools := a.getAllToolsLocked()
+	tools := a.getAllToolsLockedWithContext(ctx)
 	userToolNames := make(map[string]bool, len(a.userToolNames))
 	for name, isUser := range a.userToolNames {
 		userToolNames[name] = isUser

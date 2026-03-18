@@ -15,6 +15,7 @@ nav:
           - Graph Agent: graph.md
           - Custom Agent: custom-agent.md
           - Dify Agent: dify.md
+          - Claude Code Agent: claudecode.md
       - Runner: runner.md
       - Model: model.md
       - Callbacks: callbacks.md
@@ -23,7 +24,15 @@ nav:
       - Artifact: artifact.md
       - Skill: skill.md
       - Tool: tool.md
-      - Session: session.md
+      - Session:
+          - Overview: session/index.md
+          - Session Summary: session/summary.md
+          - Memory Session: session/inmemory.md
+          - SQLite Session: session/sqlite.md
+          - Redis Session: session/redis.md
+          - MySQL Session: session/mysql.md
+          - PostgreSQL Session: session/postgres.md
+          - ClickHouse Session: session/clickhouse.md
       - Knowledge:
           - Overview: knowledge/index.md
           - Embedder: knowledge/embedder.md
@@ -45,9 +54,11 @@ nav:
       - Event: event.md
       - Evaluation: evaluation.md
   - Server:
+    - Gateway: gateway.md
     - AG-UI: agui.md
     - A2A: a2a.md
     - A2UI: a2ui.md
+    - OpenClaw Runtime: openclaw-runtime.md
   - Observability: observability.md
   - Ecosystem: ecosystem.md
 
@@ -74,15 +85,24 @@ plugins:
                     - Graph Agent: graph.md
                     - 自定义 Agent: custom-agent.md
                     - Dify Agent: dify.md
+                    - Claude Code Agent: claudecode.md
                 - Runner: runner.md
                 - Model: model.md
                 - Callbacks: callbacks.md
-                - 插件: plugin.md
+                - Plugins: plugin.md
                 - Memory: memory.md
                 - Artifact: artifact.md
                 - Skill: skill.md
                 - Tool: tool.md
-                - Session: session.md
+                - Session:
+                    - Overview: session/index.md
+                    - Session Summary: session/summary.md
+                    - Memory Session: session/inmemory.md
+                    - SQLite Session: session/sqlite.md
+                    - Redis Session: session/redis.md
+                    - MySQL Session: session/mysql.md
+                    - PostgreSQL Session: session/postgres.md
+                    - ClickHouse Session: session/clickhouse.md
                 - Knowledge:
                     - 概述: knowledge/index.md
                     - Embedder: knowledge/embedder.md
@@ -104,9 +124,11 @@ plugins:
                 - Event: event.md
                 - Evaluation: evaluation.md
             - 服务:
+              - Gateway: gateway.md
               - AG-UI: agui.md
               - A2A: a2a.md
               - A2UI: a2ui.md
+              - OpenClaw Runtime: openclaw-runtime.md
             - 可观测: observability.md
             - 生态: ecosystem.md
   - git-revision-date-localized:

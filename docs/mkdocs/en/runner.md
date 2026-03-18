@@ -10,7 +10,7 @@ Runner provides the interface to run Agents, responsible for session management 
 - **🔄 Event Handling**: Receive Agent event streams and append non-partial response events to the session.
 - **🆔 ID Generation**: Automatically generate Invocation IDs and event IDs.
 - **📊 Observability Integration**: Integrates telemetry/trace to automatically record spans.
-- **✅ Completion Event**: Generates a runner-completion event after the Agent event stream ends.
+- **✅ Completion Event**: Generates a `runner.completion` event after the Agent event stream ends.
 - **🔌 Plugins**: Register once on a Runner to apply global hooks across agent, tool, and model lifecycles.
 
 ## Architecture
@@ -432,6 +432,73 @@ for e := range eventChan {
 This keeps application code simple and consistent across Agent types while still
 preserving detailed graph events for advanced use.
 
+#### Fatal Errors Before a Graph Completion Event
+
+Sometimes a run stops early because of a fatal error before the graph emits its
+final `graph.execution` event. A common example is:
+
+- a node callback emits a custom state delta with fatal-error details
+- the run then aborts before the graph can produce its normal final snapshot
+
+In that case, Runner still emits the final `runner.completion` event. When the
+terminal error is a real fatal error (not `stop_agent_error`), Runner now copies
+the accumulated fallback business state onto that last event for you:
+
+- `StateDelta`: the accumulated state delta from the error path
+
+Two details matter here:
+
+- Runner keeps the original fatal event as the only carrier of
+  `Response.Error`, so downstream translators can still treat
+  `runner.completion` as a normal finish signal.
+- Graph metadata keys such as `graph.MetadataKeyNode` and
+  `graph.MetadataKeyTool` are filtered out from the fallback delta to avoid
+  re-translating node/tool lifecycle events in consumers such as AGUI.
+
+This lets application code keep the same simple rule: read the last event first
+for business-level fatal details, instead of scanning the whole stream to find
+the callback/error event.
+
+Example:
+
+```go
+import (
+    "encoding/json"
+    "fmt"
+
+    "trpc.group/trpc-go/trpc-agent-go/event"
+)
+
+const stateKeyNodeFatal = "node_fatal_error"
+
+func readLastEvent(eventChan <-chan *event.Event) error {
+    for e := range eventChan {
+        if !e.IsRunnerCompletion() {
+            continue
+        }
+
+        if b, ok := e.StateDelta[stateKeyNodeFatal]; ok {
+            var detail map[string]any
+            if err := json.Unmarshal(b, &detail); err == nil {
+                fmt.Printf("fatal detail: %+v\n", detail)
+            }
+        }
+        return nil
+    }
+    return nil
+}
+```
+
+Recommended mental model:
+
+- Success path with graph completion: read final output from the completion
+  event’s `StateDelta` (for example, `graph.StateKeyLastResponse`)
+- Fatal exit before graph completion: read your custom fatal keys from the same
+  completion event; if you also need the structured `Response.Error`, it
+  remains on the original fatal event
+- `stop_agent_error`: still behaves like a controlled stop signal and is not
+  duplicated onto the completion event
+
 #### 🔁 Option: Emit Final Graph LLM Responses
 
 Graph-based agents (for example, GraphAgent) can call a Large Language Model
@@ -680,6 +747,17 @@ r := runner.NewRunner("multi-app", multiAgent)
 
 ## 📊 Event Processing
 
+### Completion Semantics
+
+Runner uses a few related but different completion signals:
+
+- `Done=true`: the current event itself is complete. This can appear on final
+  assistant messages, tool responses, graph events, and runner completion
+  events.
+- `runner.completion` / `event.IsRunnerCompletion()`: the entire
+  `Runner.Run()` call has finished. This is the recommended condition for
+  stopping consumption of `eventChan`.
+
 ### Event Types
 
 ```go
@@ -705,8 +783,8 @@ for event := range eventChan {
         }
     }
 
-    // Completion event.
-    if event.Done {
+    // Entire Runner run finished.
+    if event.IsRunnerCompletion() {
         break
     }
 }
@@ -759,7 +837,7 @@ func processEvents(eventChan <-chan *event.Event) error {
             }
         }
 
-        if event.Done {
+        if event.IsRunnerCompletion() {
             fmt.Println() // New line.
             break
         }
@@ -871,7 +949,7 @@ for evt := range eventCh {
         continue
     }
     // ... handle evt ...
-    if evt.IsFinalResponse() {
+    if evt.IsRunnerCompletion() {
         break
     }
     turns++
@@ -1053,7 +1131,7 @@ if err != nil {
 
 for event := range eventChan {
 	// Process events
-	if event.Done {
+	if event.IsRunnerCompletion() {
 		break
 	}
 }
@@ -1083,7 +1161,7 @@ func checkRunner(r runner.Runner, ctx context.Context) error {
         if event.Error != nil {
             return fmt.Errorf("Received error event: %s", event.Error.Message)
         }
-        if event.Done {
+        if event.IsRunnerCompletion() {
             break
         }
     }

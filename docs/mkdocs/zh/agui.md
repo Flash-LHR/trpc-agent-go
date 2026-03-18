@@ -191,6 +191,8 @@ curl -X POST http://localhost:8080/cancel \
 - `200 OK`：取消成功
 - `404 Not Found`：没有找到对应 `SessionKey` 的运行中任务（可能已结束，或标识不匹配）
 
+取消成功后，框架不会直接丢弃正在收尾的协议状态，而是会继续补齐必要的结束事件，并将聚合器中尚未落库的 AG-UI 事件尽量写入 `SessionService`。因此，后续通过 `/history` 读取历史时，拿到的是取消瞬间最后一个合法的一致快照，而不是一段不完整的中间状态。例如，已经产生的部分 `reasoning` 文本会作为字符串保留；如果某段 `reasoning` 尚未形成任何文本内容，则不会出现在快照中。运行结束后的这段收尾时间可通过 `agui.WithPostRunFinalizationTimeout(d)` 调整，默认值为 `5s`。
+
 ### 消息快照路由
 
 消息快照用于在页面初始化或断线重连时恢复历史对话，通过 `agui.WithMessagesSnapshotEnabled(true)` 控制功能是否开启，默认关闭。该路由默认是 `/history`， 可通过 `WithMessagesSnapshotPath` 自定义，负责返回 `RUN_STARTED → MESSAGES_SNAPSHOT → RUN_FINISHED` 的事件流。
@@ -253,6 +255,25 @@ if err := http.ListenAndServe("127.0.0.1:8080", server.Handler()); err != nil {
 
 AG-UI 的 MessagesSnapshotEvent 事件格式可见 [messages](https://docs.ag-ui.com/concepts/messages)。
 
+### Translator 接口
+
+处理请求时，Translator 接口负责将框架内部事件翻译成 AG-UI 协议事件，再发送给客户端。
+
+接口定义如下：
+
+```go
+type Translator interface {
+    Translate(ctx context.Context, event *event.Event) ([]aguievents.Event, error)
+}
+
+type PostRunFinalizingTranslator interface {
+    Translator
+    PostRunFinalizationEvents(ctx context.Context) ([]aguievents.Event, error)
+}
+```
+
+其中，`Translator` 负责将内部事件翻译为 AG-UI 事件；`PostRunFinalizingTranslator` 则用于在运行结束后的收尾阶段补发仍未关闭的协议事件，并在需要时返回收尾阶段错误。
+
 ## 进阶用法
 
 ### 自定义通信协议
@@ -293,7 +314,9 @@ server, _ := agui.New(runner, agui.WithServiceFactory(NewWSService))
 
 ### 自定义 Translator
 
-默认的 `translator.New` 会把内部事件翻译成协议里定义的标准事件集。若想在保留默认行为的基础上追加自定义信息，可以实现 `translator.Translator` 接口，并借助 AG-UI 的 `Custom` 事件类型携带扩展数据：
+默认的 `translator.New` 会把内部事件翻译成协议里定义的标准事件集。若想在保留默认行为的基础上追加自定义信息，可以实现 `translator.Translator` 接口，并借助 AG-UI 的 `Custom` 事件类型携带扩展数据。
+
+如果自定义 Translator 除了追加自定义事件外，还会维护自己的打开流，或者只是包装默认 Translator 并希望保留取消与运行结束时的自动收尾能力，建议同时实现 `translator.PostRunFinalizingTranslator`，将运行结束后需要补发的收尾事件继续交给框架处理：
 
 ```go
 import (
@@ -310,6 +333,8 @@ type customTranslator struct {
     inner translator.Translator
 }
 
+var _ translator.PostRunFinalizingTranslator = (*customTranslator)(nil)
+
 func (t *customTranslator) Translate(ctx context.Context, evt *event.Event) ([]aguievents.Event, error) {
     out, err := t.inner.Translate(ctx, evt)
     if err != nil {
@@ -319,6 +344,14 @@ func (t *customTranslator) Translate(ctx context.Context, evt *event.Event) ([]a
         out = append(out, aguievents.NewCustomEvent("trace.metadata", aguievents.WithValue(payload)))
     }
     return out, nil
+}
+
+func (t *customTranslator) PostRunFinalizationEvents(ctx context.Context) ([]aguievents.Event, error) {
+    finalizer, ok := t.inner.(translator.PostRunFinalizingTranslator)
+    if !ok {
+        return nil, nil
+    }
+    return finalizer.PostRunFinalizationEvents(ctx)
 }
 
 func buildCustomPayload(evt *event.Event) map[string]any {
@@ -343,11 +376,33 @@ runner := runner.NewRunner(agent.Info().Name, agent)
 server, _ := agui.New(runner, agui.WithAGUIRunnerOptions(aguirunner.WithTranslatorFactory(factory)))
 ```
 
+`PostRunFinalizationEvents` 会在运行结束后的收尾阶段被调用。如果该方法返回错误，框架会在尽力发送已经返回的收尾事件后，再发送一个 `RunError`，从而将收尾阶段的问题显式暴露给客户端。
+
 例如，在使用 React Planner 时，如果希望为不同标签应用不同的自定义事件，可以通过实现自定义 Translator 来实现，效果如下图所示。
 
 ![copilotkit-react](../assets/img/agui/copilotkit-react.png)
 
 完整的代码示例可以参考 [examples/agui/server/react](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/server/react)。
+
+### 思考内容
+
+AG-UI 通过`REASONING_*` 事件承载模型思考内容，便于前端在正文回复之前展示思考过程，详细可参考 [AG-UI Reasoning](https://docs.ag-ui.com/concepts/reasoning)。典型事件序列如下：
+
+```text
+REASONING_START
+  → REASONING_MESSAGE_START
+  → REASONING_MESSAGE_CONTENT
+  → REASONING_MESSAGE_END
+REASONING_END
+```
+
+默认情况下会屏蔽思考内容，可以通过 `agui.WithReasoningContentEnabled` 在创建 Server 时开启思考内容：
+
+```go
+import "trpc.group/trpc-go/trpc-agent-go/server/agui"
+
+server, err := agui.New(runner, agui.WithReasoningContentEnabled(true))
+```
 
 ### 自定义 `UserIDResolver`
 
@@ -608,10 +663,11 @@ server, err := agui.New(
 
 在流式响应场景下，同一条回复通常会包含多个增量文本事件，如果将它们全部直接写入会话，会给 `SessionService` 带来较大压力。
 
-为了解决上述问题，框架会先对事件进行聚合，再写入会话。此外，默认每秒定时刷新一次，每次刷新将当前的聚合结果写入会话。
+为了解决上述问题，框架会先对事件进行聚合，再写入会话。此外，默认每秒定时刷新一次，每次刷新将当前的聚合结果写入会话。无论 run 是正常结束还是被取消，在退出前框架还会再执行一次运行结束后的收尾流程，用于补发仍然打开的协议流结束事件，并将聚合缓存尽量刷入会话存储。这一阶段与日常的定时刷新是分开的。
 
-- `aggregator.WithEnabled(true)` 用于控制是否开启事件聚合，默认为开启状态。开启后，会将连续且具有相同 `messageId` 的文本事件进行聚合；关闭时则不对 AG-UI 事件做聚合。
+- `aggregator.WithEnabled(true)` 用于控制是否开启事件聚合，默认为开启状态。开启后，会将连续且具有相同 `messageId` 的 `TEXT_MESSAGE_CONTENT` 与 `REASONING_MESSAGE_CONTENT` 事件进行聚合；关闭时则不对 AG-UI 事件做聚合。
 - `aguirunner.WithFlushInterval(time.Second)` 用于控制事件聚合结果的定时刷新间隔，默认为 1 秒。设置为 0 时表示不开启定时刷新功能。
+- `agui.WithPostRunFinalizationTimeout(5*time.Second)` 用于限制运行结束后收尾流程的最长执行时间。该阶段同时覆盖协议收尾事件补发与聚合缓存落库，默认值为 `5s`。设置为 `0` 表示不额外设置超时。
 
 ```go
 import (
@@ -626,131 +682,22 @@ runner := runner.NewRunner(agent.Info().Name, agent)
 sessionService := inmemory.NewSessionService()
 
 server, err := agui.New(
-    runner,
-    agui.WithPath("/agui"),
-    agui.WithMessagesSnapshotPath("/history"),
-    agui.WithMessagesSnapshotEnabled(true),
-    agui.WithAppName(appName),
-    agui.WithSessionService(sessionService),
-    agui.WithFlushInterval(time.Second), // 设置事件聚合结果的定时刷新间隔，默认 1 秒
-    agui.WithAGUIRunnerOptions(
-        aguirunner.WithUserIDResolver(userIDResolver),
-        aguirunner.WithAggregationOption(aggregator.WithEnabled(true)), // 开启事件聚合，默认开启
-    ),
+  runner,
+  agui.WithPath("/agui"),
+  agui.WithMessagesSnapshotPath("/history"),
+  agui.WithMessagesSnapshotEnabled(true),
+  agui.WithAppName(appName),
+  agui.WithSessionService(sessionService),
+  agui.WithFlushInterval(time.Second),                // 设置事件聚合结果的定时刷新间隔，默认 1 秒
+  agui.WithPostRunFinalizationTimeout(5*time.Second), // 设置 run 结束后的收尾超时，默认 5 秒
+  agui.WithAGUIRunnerOptions(
+    aguirunner.WithUserIDResolver(userIDResolver),
+    aguirunner.WithAggregationOption(aggregator.WithEnabled(true)), // 开启事件聚合，默认开启
+  ),
 )
 ```
 
 如果需要更复杂的聚合策略，可以实现 `aggregator.Aggregator` 并通过自定义工厂注入。需要注意的是，虽然每个会话都会单独创建一个聚合器，省去了跨会话的状态维护和并发处理，但聚合方法本身仍有可能被并发调用，因此仍需妥善处理并发。
-
-例如，在兼容默认文本聚合的同时，将类型为 `"think"` 的自定义事件内容累计后再落库。
-
-完整示例代码可见 [examples/agui/server/thinkaggregator](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/server/thinkaggregator)
-
-```go
-import (
-	aguievents "github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
-	"trpc.group/trpc-go/trpc-agent-go/runner"
-	"trpc.group/trpc-go/trpc-agent-go/server/agui"
-	"trpc.group/trpc-go/trpc-agent-go/server/agui/aggregator"
-	aguirunner "trpc.group/trpc-go/trpc-agent-go/server/agui/runner"
-	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
-)
-
-type thinkAggregator struct {
-	mu    sync.Mutex
-	inner aggregator.Aggregator
-	think strings.Builder
-}
-
-func newAggregator(ctx context.Context, opt ...aggregator.Option) aggregator.Aggregator {
-	return &thinkAggregator{inner: aggregator.New(ctx, opt...)}
-}
-
-
-func (c *thinkAggregator) Append(ctx context.Context, event aguievents.Event) ([]aguievents.Event, error) {
-	// 通过互斥锁保证内部聚合器和 think 缓冲区的并发安全，避免多个事件并发追加时出现竞态条件。
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// 针对自定义的 "think" 事件类型，采取“只累计不立刻下发”的策略：
-	// 1. 先强制刷新 inner，将之前累积的普通事件完整输出；
-	// 2. 当前的 think 内容只累加到缓冲区，不立即返回；
-	// 这样可以保证 think 片段之间不会被普通事件打断，且之前的普通事件先于新的思考内容输出。
-	if custom, ok := event.(*aguievents.CustomEvent); ok && custom.Name == string(thinkEventTypeContent) {
-		flushed, err := c.inner.Flush(ctx)
-		if err != nil {
-			return nil, err
-		}
-		// 仅在值为字符串时参与累积，避免不符合预期类型的数据污染缓冲区。
-		if v, ok := custom.Value.(string); ok {
-			c.think.WriteString(v)
-		}
-		// 当前 think 事件只参与内部累积，不立刻对外可见，返回的是之前 inner 已有的聚合结果。
-		return flushed, nil
-	}
-
-	// 非 think 事件走默认的 inner 聚合逻辑，保证原有文本聚合行为不被破坏。
-	events, err := c.inner.Append(ctx, event)
-	if err != nil {
-		return nil, err
-	}
-
-	// 若尚无累积的 think 内容，直接返回 inner 的聚合结果，无需额外封装。
-	if c.think.Len() == 0 {
-		return events, nil
-	}
-
-	// 若存在已累积的 think 内容，则在当前批次事件前插入一个聚合后的 think 事件：
-	// 1. 将缓冲区内容打包成一个整体的 CustomEvent；
-	// 2. 清空缓冲区，避免重复下发；
-	// 3. 将该 think 事件放在当前 events 之前，保持时间顺序：先输出完整思考，再输出后续事件。
-	think := aguievents.NewCustomEvent(string(thinkEventTypeContent), aguievents.WithValue(c.think.String()))
-	c.think.Reset()
-
-	out := make([]aguievents.Event, 0, len(events)+1)
-	out = append(out, think)
-	out = append(out, events...)
-	return out, nil
-}
-
-func (c *thinkAggregator) Flush(ctx context.Context) ([]aguievents.Event, error) {
-	// Flush 同样需要保证内聚合器与 think 缓冲的并发安全。
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// 先刷新 inner，确保所有普通事件按照其自身的聚合策略输出。
-	events, err := c.inner.Flush(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// 若 think 缓冲区中仍有未输出的内容，
-	// 则将其封装为一个聚合后的 think 事件并插入当前批次的最前面，
-	// 保证聚合后的思考内容不会被后续刷新产生的事件打乱顺序。
-	if c.think.Len() > 0 {
-		think := aguievents.NewCustomEvent(string(thinkEventTypeContent), aguievents.WithValue(c.think.String()))
-		c.think.Reset()
-		events = append([]aguievents.Event{think}, events...)
-	}
-	return events, nil
-}
-
-runner := runner.NewRunner(agent.Info().Name, agent)
-sessionService := inmemory.NewSessionService()
-
-server, err := agui.New(
-    runner,
-    agui.WithPath("/agui"),
-    agui.WithMessagesSnapshotPath("/history"),
-    agui.WithMessagesSnapshotEnabled(true),
-    agui.WithAppName(appName),
-    agui.WithSessionService(sessionService),
-    agui.WithAGUIRunnerOptions(
-        aguirunner.WithUserIDResolver(userIDResolver),
-        aguirunner.WithAggregatorFactory(newAggregator),
-    ),
-)
-```
 
 ### 消息快照续传
 
@@ -984,53 +931,6 @@ server, err := agui.New(
 
 完整示例可参考 [examples/agui/server/graph](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/server/graph)，前端渲染与审批交互可参考 [examples/agui/client/tdesign-chat](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/client/tdesign-chat)。
 
-## 最佳实践
-
-### 生成文档
-
-长篇文档如果直接插入到对话正文，很容易把主对话“刷屏”，用户也难以区分对话内容和文档内容。为了解决这个问题，建议使用“文档面板”来承载长文档。通过 AG-UI 的事件流约定一套“打开文档面板 → 写入文档内容 → 关闭文档面板”的工作流，将长文档从对话中“抽离”出来，避免干扰正常交流，示例方案如下。
-
-1. **后端：定义工具并约束调用顺序**
-
-   为 Agent 提供两个工具：**打开文档面板** 和 **关闭文档面板**，并在 prompt 中约束生成顺序：
-   当进入文档生成流程时，按以下顺序执行：
-
-   1. 先调用“打开文档面板”工具
-   2. 紧接着输出文档内容
-   3. 最后调用“关闭文档面板”工具
-
-   转换为 AG-UI 事件流，大致形态如下：
-
-   ```text
-   打开文档面板工具
-     → ToolCallStart
-     → ToolCallArgs
-     → ToolCallEnd
-     → ToolCallResult
-
-   文档内容
-     → TextMessageStart
-     → TextMessageContent
-     → TextMessageEnd
-
-   关闭文档面板工具
-     → ToolCallStart
-     → ToolCallArgs
-     → ToolCallEnd
-     → ToolCallResult
-   ```
-
-2. **前端：监听工具事件并维护文档面板**
-
-   在前端监听事件流：
-
-   - 当捕捉到 `open_report_document` 工具事件时：创建文档面板，并将其后的文本消息内容写入该文档面板；
-   - 当捕捉到 `close_report_document` 工具事件时：关闭文档面板（或将其标记为生成完成）。
-
-实际效果如下图所示，完整示例可参考 [examples/agui/server/report](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/server/report)，前端实现可参考 [examples/agui/client/tdesign-chat](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/client/tdesign-chat)。
-
-![report](../assets/gif/agui/report.gif)
-
 ### 外部工具
 
 当工具必须在客户端或业务侧执行时，可以采用外部工具模式。后端只生成工具调用并在工具节点触发中断，前端执行工具并回传结果，后端从中断点恢复继续运行。该模式要求工具结果进入 LLM 上下文，并写入会话历史，便于后续通过消息快照回放完整对话。
@@ -1040,6 +940,19 @@ server, err := agui.New(
 一次外部工具调用对应两次请求。第一次请求使用 `role=user`，当 LLM 触发工具调用时，事件流会输出 `TOOL_CALL_START`、`TOOL_CALL_ARGS`、`TOOL_CALL_END`，随后在工具节点输出 `ACTIVITY_DELTA graph.node.interrupt` 并结束本次 SSE。前端在事件流中获取 `toolCallId` 与参数，并从中断事件获取 `lineageId`。
 
 第二次请求使用 `role=tool`，把工具执行结果回传给后端。`toolCallId` 必须与第一次请求一致，`content` 为工具输出字符串，同时在 `forwardedProps.lineage_id` 填入第一次中断事件返回的 `lineageId`。服务端会先把该 tool message 翻译为 `TOOL_CALL_RESULT` 并写入会话，再从对应 checkpoint 恢复继续生成最终回复。
+
+如果希望这条 `role=tool` 输入回显经过 Translator，可以开启 `agui.WithToolResultInputTranslationEnabled(true)`；开启后，AG-UI Runner 会先把 tool result 输入规范化为内部事件，再交给 Translator 处理，示例如下。
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/server/agui"
+)
+
+server, err := agui.New(
+    runner,
+    agui.WithToolResultInputTranslationEnabled(true),
+)
+```
 
 如果第一次请求中 LLM 未触发任何工具调用，则不会出现中断事件，也不需要发起第二次请求。
 
@@ -1102,3 +1015,52 @@ server, err := agui.New(
 ```
 
 完整示例可参考 [examples/agui/server/externaltool](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/server/externaltool)，前端实现可参考 [examples/agui/client/tdesign-chat](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/client/tdesign-chat)。
+
+## 最佳实践
+
+默认优先使用服务端工具执行路径。只有当工具必须在客户端或业务侧执行时，才建议采用“外部工具”模式；这类场景更适合作为进阶用法来设计与评估。
+
+### 生成文档
+
+长篇文档如果直接插入到对话正文，很容易把主对话“刷屏”，用户也难以区分对话内容和文档内容。为了解决这个问题，建议使用“文档面板”来承载长文档。通过 AG-UI 的事件流约定一套“打开文档面板 → 写入文档内容 → 关闭文档面板”的工作流，将长文档从对话中“抽离”出来，避免干扰正常交流，示例方案如下。
+
+1. **后端：定义工具并约束调用顺序**
+
+   为 Agent 提供两个工具：**打开文档面板** 和 **关闭文档面板**，并在 prompt 中约束生成顺序：
+   当进入文档生成流程时，按以下顺序执行：
+
+   1. 先调用“打开文档面板”工具
+   2. 紧接着输出文档内容
+   3. 最后调用“关闭文档面板”工具
+
+   转换为 AG-UI 事件流，大致形态如下：
+
+   ```text
+   打开文档面板工具
+     → ToolCallStart
+     → ToolCallArgs
+     → ToolCallEnd
+     → ToolCallResult
+
+   文档内容
+     → TextMessageStart
+     → TextMessageContent
+     → TextMessageEnd
+
+   关闭文档面板工具
+     → ToolCallStart
+     → ToolCallArgs
+     → ToolCallEnd
+     → ToolCallResult
+   ```
+
+2. **前端：监听工具事件并维护文档面板**
+
+   在前端监听事件流：
+
+   - 当捕捉到 `open_report_document` 工具事件时：创建文档面板，并将其后的文本消息内容写入该文档面板；
+   - 当捕捉到 `close_report_document` 工具事件时：关闭文档面板（或将其标记为生成完成）。
+
+实际效果如下图所示，完整示例可参考 [examples/agui/server/report](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/server/report)，前端实现可参考 [examples/agui/client/tdesign-chat](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/client/tdesign-chat)。
+
+![report](../assets/gif/agui/report.gif)

@@ -123,9 +123,14 @@ type sessionStateJSONMatcher struct {
 
 func (m *sessionStateJSONMatcher) Match(v driver.Value) bool {
 	m.t.Helper()
-	stateBytes, ok := v.([]byte)
-	if !ok {
-		m.t.Errorf("expected []byte for state, got %T", v)
+	var stateBytes []byte
+	switch vv := v.(type) {
+	case []byte:
+		stateBytes = vv
+	case string:
+		stateBytes = []byte(vv)
+	default:
+		m.t.Errorf("expected []byte or string for state, got %T", v)
 		return false
 	}
 
@@ -2794,6 +2799,30 @@ func TestNewService_WithAllOptions(t *testing.T) {
 	err = svc.Close()
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestNewService_WithSummarizerStartsAsyncWorker(t *testing.T) {
+	db, _, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	require.NoError(t, err)
+	defer db.Close()
+
+	originalBuilder := storage.GetClientBuilder()
+	defer storage.SetClientBuilder(originalBuilder)
+
+	storage.SetClientBuilder(func(builderOpts ...storage.ClientBuilderOpt) (storage.Client, error) {
+		return &mockMySQLClient{db: db}, nil
+	})
+
+	svc, err := NewService(
+		WithMySQLClientDSN("test:test@tcp(localhost:3306)/testdb"),
+		WithSkipDBInit(true),
+		WithAsyncSummaryNum(2),
+		WithSummarizer(&mockSummarizer{}),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, svc)
+	assert.NotNil(t, svc.asyncWorker)
+	assert.NoError(t, svc.Close())
 }
 
 // mockDBInit mocks the database initialization process

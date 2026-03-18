@@ -258,10 +258,18 @@ func Tracef(format string, args ...any) {
 var TracefContext = func(
 	_ context.Context, format string, args ...any,
 ) {
+	if !traceEnabled {
+		return
+	}
 	ContextDefault.Debugf("[TRACE] "+format, args...)
 }
 
 // SetTraceEnabled sets the trace enabled flag.
 func SetTraceEnabled(enabled bool) {
 	traceEnabled = enabled
+}
+
+// IsTraceEnabled reports whether trace-level logging is currently active.
+func IsTraceEnabled() bool {
+	return traceEnabled
 }
