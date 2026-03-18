@@ -21,7 +21,7 @@ import (
 )
 
 type fakeTranslator struct {
-	events      [][]aguievents.Event
+	events       [][]aguievents.Event
 	translateErr error
 }
 
