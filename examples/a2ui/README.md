@@ -27,9 +27,9 @@ a2ui/
   - Sends `userAction` events when a rendered button is clicked.
 - The client generates a 7-character alphabetic `threadId` by default; refreshing the page creates a new conversation id.
 
-## Demo Video
+## Demo Screenshot
 
-- A2UI example walkthrough: [a2ui.mp4](../../.resource/images/examples/a2ui.mp4)
+![A2UI Example Screenshot](../../.resource/images/examples/a2ui.png)
 
 ## Prerequisites
 
