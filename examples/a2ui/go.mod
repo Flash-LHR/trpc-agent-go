@@ -13,9 +13,10 @@ require (
 )
 
 require (
-	github.com/ag-ui-protocol/ag-ui/sdks/community/go v0.0.0-20260201021820-c2d2db22a1c9 // indirect
+	github.com/ag-ui-protocol/ag-ui/sdks/community/go v0.0.0-20260305114736-115a967b66a9 // indirect
 	github.com/bmatcuk/doublestar/v4 v4.9.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
+	github.com/creack/pty v1.1.24 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -23,7 +24,6 @@ require (
 	github.com/openai/openai-go v1.12.0 // indirect
 	github.com/panjf2000/ants/v2 v2.10.0 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
-	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
@@ -46,5 +46,6 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240822170219-fc7c04adadcd // indirect
 	google.golang.org/grpc v1.65.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 	trpc.group/trpc-go/trpc-a2a-go v0.2.5 // indirect
 )
