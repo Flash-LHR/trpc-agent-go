@@ -1,6 +1,6 @@
 name: Owner Review Policy
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
   pull_request_review:
     types: [submitted, dismissed]
@@ -15,54 +15,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-go@v5
         with:
           go-version: "1.21"
-      - name: Validate owner review policy
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      - name: Test owner review policy
         shell: bash
         run: |
           set -euo pipefail
-
-          policy_dir=".github/scripts/owner-review-policy"
-          if [ -d "${policy_dir}" ]; then
-            go run "./${policy_dir}"
-            exit 0
-          fi
-
-          # Bootstrap the policy script only for the PR that first introduces it.
-          bootstrap_dir=".github/.owner-review-policy-bootstrap"
-          mkdir -p "${bootstrap_dir}"
-
-          python - <<'PY'
-          import base64
-          import json
-          import os
-          import urllib.request
-
-          token = os.environ["GITHUB_TOKEN"]
-          repo = os.environ["PR_HEAD_REPO"]
-          sha = os.environ["PR_HEAD_SHA"]
-          path = ".github/scripts/owner-review-policy/main.go"
-          url = f"https://api.github.com/repos/{repo}/contents/{path}?ref={sha}"
-          req = urllib.request.Request(
-              url,
-              headers={
-                  "Accept": "application/vnd.github+json",
-                  "Authorization": f"Bearer {token}",
-                  "User-Agent": "trpc-agent-go-owner-review-policy-bootstrap",
-              },
-          )
-          with urllib.request.urlopen(req) as response:
-              payload = json.load(response)
-          content = base64.b64decode(payload["content"])
-          output_path = os.path.join(".github", ".owner-review-policy-bootstrap", "main.go")
-          with open(output_path, "wb") as file:
-              file.write(content)
-          PY
-
-          go run ./.github/.owner-review-policy-bootstrap
+          cd .github/scripts/owner-review-policy
+          go test ./...
+      - name: Validate owner review policy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd .github/scripts/owner-review-policy
+          go run .

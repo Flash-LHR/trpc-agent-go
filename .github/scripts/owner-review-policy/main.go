@@ -10,11 +10,13 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"sort"
@@ -29,6 +31,8 @@ const (
 	defaultGitHubAPIURL   = "https://api.github.com"
 	perPage               = 100
 )
+
+var githubAPIClient = &http.Client{Timeout: 30 * time.Second}
 
 type config struct {
 	APIURL         string
@@ -50,6 +54,8 @@ type pullRequestPayload struct {
 }
 
 type pullRequestBase struct {
+	Ref  string            `json:"ref"`
+	SHA  string            `json:"sha"`
 	Repo repositoryPayload `json:"repo"`
 }
 
@@ -78,6 +84,11 @@ type reviewerState struct {
 	ID          int64
 	State       string
 	SubmittedAt time.Time
+}
+
+type repositoryContentPayload struct {
+	Content  string `json:"content"`
+	Encoding string `json:"encoding"`
 }
 
 type codeOwnerRule struct {
@@ -118,9 +129,9 @@ func main() {
 	if repository == "" {
 		failf("Unable to determine repository full name from event payload or environment.")
 	}
-	rules, err := parseCodeownersFile(cfg.CodeownersPath)
+	rules, err := loadCodeownersRules(cfg, repository, codeownersRef(event.PullRequest.Base))
 	if err != nil {
-		failf("Unable to parse %s: %v", cfg.CodeownersPath, err)
+		failf("Unable to load CODEOWNERS rules: %v", err)
 	}
 	files, err := fetchPullRequestFiles(cfg, repository, event.PullRequest.Number)
 	if err != nil {
@@ -154,9 +165,6 @@ func loadConfig() (config, error) {
 	if cfg.APIURL == "" {
 		cfg.APIURL = defaultGitHubAPIURL
 	}
-	if cfg.CodeownersPath == "" {
-		cfg.CodeownersPath = defaultCodeownersPath
-	}
 	if cfg.EventPath == "" {
 		return config{}, errors.New("GITHUB_EVENT_PATH is required")
 	}
@@ -181,12 +189,34 @@ func loadEvent(eventPath string) (pullRequestEvent, error) {
 	return event, nil
 }
 
+func loadCodeownersRules(cfg config, repository, ref string) ([]codeOwnerRule, error) {
+	if cfg.CodeownersPath != "" {
+		return parseCodeownersFile(cfg.CodeownersPath)
+	}
+	if strings.TrimSpace(repository) == "" {
+		return nil, errors.New("base repository full name is required to fetch CODEOWNERS")
+	}
+	if strings.TrimSpace(ref) == "" {
+		return nil, errors.New("pull request base ref is required to fetch CODEOWNERS")
+	}
+	// Always evaluate CODEOWNERS from the base revision so a pull request cannot relax its own review policy.
+	data, err := fetchRepositoryFile(cfg, repository, defaultCodeownersPath, ref)
+	if err != nil {
+		return nil, err
+	}
+	return parseCodeownersContent(string(data))
+}
+
 func parseCodeownersFile(filePath string) ([]codeOwnerRule, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, err
 	}
-	lines := strings.Split(string(data), "\n")
+	return parseCodeownersContent(string(data))
+}
+
+func parseCodeownersContent(content string) ([]codeOwnerRule, error) {
+	lines := strings.Split(content, "\n")
 	rules := make([]codeOwnerRule, 0, len(lines))
 	for _, rawLine := range lines {
 		line := strings.TrimSpace(rawLine)
@@ -210,6 +240,30 @@ func parseCodeownersFile(filePath string) ([]codeOwnerRule, error) {
 		return nil, errors.New("CODEOWNERS file does not contain any active rules")
 	}
 	return rules, nil
+}
+
+func fetchRepositoryFile(cfg config, repository, filePath, ref string) ([]byte, error) {
+	normalizedPath := normalizeRepoPath(filePath)
+	endpoint := fmt.Sprintf(
+		"%s/repos/%s/contents/%s?ref=%s",
+		strings.TrimRight(cfg.APIURL, "/"),
+		repository,
+		normalizedPath,
+		url.QueryEscape(strings.TrimSpace(ref)),
+	)
+	var response repositoryContentPayload
+	if err := fetchJSON(cfg.Token, endpoint, &response); err != nil {
+		return nil, err
+	}
+	if strings.ToLower(strings.TrimSpace(response.Encoding)) != "base64" {
+		return nil, fmt.Errorf("unsupported encoding %q for %s", response.Encoding, normalizedPath)
+	}
+	content := strings.ReplaceAll(response.Content, "\n", "")
+	data, err := base64.StdEncoding.DecodeString(content)
+	if err != nil {
+		return nil, fmt.Errorf("unable to decode %s: %w", normalizedPath, err)
+	}
+	return data, nil
 }
 
 func fetchPullRequestFiles(cfg config, repository string, pullNumber int) ([]pullRequestFile, error) {
@@ -252,7 +306,7 @@ func fetchJSON(token, endpoint string, out any) error {
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", "trpc-agent-go-owner-review-policy")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := githubAPIClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -345,6 +399,13 @@ func reviewStateFromReview(review pullRequestReview) reviewerState {
 		State:       strings.ToUpper(strings.TrimSpace(review.State)),
 		SubmittedAt: submittedAt,
 	}
+}
+
+func codeownersRef(base pullRequestBase) string {
+	if strings.TrimSpace(base.SHA) != "" {
+		return strings.TrimSpace(base.SHA)
+	}
+	return strings.TrimSpace(base.Ref)
 }
 
 func evaluatePolicy(rules []codeOwnerRule, author string, changedPaths, approvers []string) (evaluationResult, error) {

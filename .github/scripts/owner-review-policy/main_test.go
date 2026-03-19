@@ -17,8 +17,19 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestLoadConfigDoesNotForceLocalCodeownersPath(t *testing.T) {
+	t.Setenv("GITHUB_API_URL", "")
+	t.Setenv("CODEOWNERS_PATH", "")
+	t.Setenv("GITHUB_EVENT_PATH", "/tmp/event.json")
+	t.Setenv("GITHUB_REPOSITORY", "trpc-group/trpc-agent-go")
+	t.Setenv("GITHUB_TOKEN", "token")
+	cfg, err := loadConfig()
+	assert.NoError(t, err)
+	assert.Empty(t, cfg.CodeownersPath)
+	assert.Equal(t, defaultGitHubAPIURL, cfg.APIURL)
+}
+
 func TestParseCodeownersFile(t *testing.T) {
-	t.Helper()
 	tempDir := t.TempDir()
 	codeownersPath := filepath.Join(tempDir, "CODEOWNERS")
 	content := "# Comment line.\n\n* @sandyskies\n/agent/ @sandyskies @WineChord\n"
@@ -38,7 +49,6 @@ func TestParseCodeownersFile(t *testing.T) {
 }
 
 func TestOwnersForPathUsesLastMatch(t *testing.T) {
-	t.Helper()
 	rules := []codeOwnerRule{
 		{Pattern: "*", Owners: []string{"@sandyskies"}},
 		{Pattern: "/agent/", Owners: []string{"@sandyskies", "@winechord"}},
@@ -50,7 +60,6 @@ func TestOwnersForPathUsesLastMatch(t *testing.T) {
 }
 
 func TestEvaluatePolicySkipsExternalOwnerRequirementForOwnedPaths(t *testing.T) {
-	t.Helper()
 	rules := []codeOwnerRule{
 		{Pattern: "*", Owners: []string{"@sandyskies"}},
 		{Pattern: "/agent/", Owners: []string{"@sandyskies", "@winechord"}},
@@ -63,7 +72,6 @@ func TestEvaluatePolicySkipsExternalOwnerRequirementForOwnedPaths(t *testing.T) 
 }
 
 func TestEvaluatePolicyRequiresAnyExternalOwnerAcrossMultipleModules(t *testing.T) {
-	t.Helper()
 	rules := []codeOwnerRule{
 		{Pattern: "*", Owners: []string{"@sandyskies"}},
 		{Pattern: "/agent/", Owners: []string{"@sandyskies", "@winechord"}},
@@ -78,7 +86,6 @@ func TestEvaluatePolicyRequiresAnyExternalOwnerAcrossMultipleModules(t *testing.
 }
 
 func TestEvaluatePolicyFailsWithoutExternalOwnerApproval(t *testing.T) {
-	t.Helper()
 	rules := []codeOwnerRule{
 		{Pattern: "*", Owners: []string{"@sandyskies"}},
 		{Pattern: "/artifact/", Owners: []string{"@sandyskies", "@liuzengh"}},
@@ -91,7 +98,6 @@ func TestEvaluatePolicyFailsWithoutExternalOwnerApproval(t *testing.T) {
 }
 
 func TestLatestApprovedReviewersUsesLatestReviewStatePerReviewer(t *testing.T) {
-	t.Helper()
 	submittedAt := time.Date(2026, time.March, 19, 10, 0, 0, 0, time.UTC)
 	reviews := []pullRequestReview{
 		{ID: 1, State: "APPROVED", SubmittedAt: ptrTime(submittedAt), User: userPayload{Login: "flash-lhr"}},
@@ -103,7 +109,6 @@ func TestLatestApprovedReviewersUsesLatestReviewStatePerReviewer(t *testing.T) {
 }
 
 func TestLatestApprovedReviewersKeepsApprovalAfterCommentOnlyReview(t *testing.T) {
-	t.Helper()
 	submittedAt := time.Date(2026, time.March, 19, 10, 0, 0, 0, time.UTC)
 	reviews := []pullRequestReview{
 		{ID: 1, State: "APPROVED", SubmittedAt: ptrTime(submittedAt), User: userPayload{Login: "flash-lhr"}},
