@@ -1,0 +1,66 @@
+name: Owner Review Policy Refresh
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+permissions:
+  actions: write
+  pull-requests: read
+jobs:
+  rerun-owner-review-policy:
+    name: rerun-owner-review-policy
+    if: ${{ github.event.pull_request.state == 'open' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPOSITORY: ${{ github.repository }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Refresh owner review policy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Review events should refresh the single pull_request-based owner check.
+          selected_run=""
+          for attempt in 1 2 3 4 5; do
+            selected_run="$(
+              gh run list \
+                --repo "${REPOSITORY}" \
+                --workflow owner-review-policy.yml \
+                --limit 20 \
+                --json databaseId,event,headSha,status \
+              | python - <<'PY'
+          import json
+          import os
+          import sys
+
+          head_sha = os.environ["PR_HEAD_SHA"]
+          runs = json.load(sys.stdin)
+          for run in runs:
+              if run["event"] != "pull_request":
+                  continue
+              if run["headSha"] != head_sha:
+                  continue
+              print(f'{run["databaseId"]} {run["status"]}')
+              break
+          PY
+            )"
+            if [ -n "${selected_run}" ]; then
+              break
+            fi
+            sleep 3
+          done
+
+          if [ -z "${selected_run}" ]; then
+            echo "::warning::No pull_request owner review policy run found for ${PR_HEAD_SHA}."
+            exit 0
+          fi
+
+          run_id="${selected_run%% *}"
+          run_status="${selected_run#* }"
+          if [ "${run_status}" = "queued" ] || [ "${run_status}" = "in_progress" ]; then
+            echo "The pull_request owner review policy run is already ${run_status}."
+            exit 0
+          fi
+
+          gh run rerun "${run_id}" --repo "${REPOSITORY}"
