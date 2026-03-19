@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1127,6 +1128,69 @@ func TestLLMAgent_OptionsWithStructuredOutputJSONSchema(t *testing.T) {
 	require.Equal(t, "output", opts.StructuredOutput.JSONSchema.Name)
 	require.True(t, opts.StructuredOutput.JSONSchema.Strict)
 	require.Equal(t, "test description", opts.StructuredOutput.JSONSchema.Description)
+}
+
+func TestLLMAgent_SetupInvocation_UsesRunStructuredOutputOverride(t *testing.T) {
+	type agentOutput struct {
+		AgentField string `json:"agent_field"`
+	}
+	type runOutput struct {
+		RunField string `json:"run_field"`
+	}
+
+	agt := New(
+		"test-agent",
+		WithStructuredOutputJSON(new(agentOutput), true, "agent description"),
+	)
+	inv := &agent.Invocation{}
+	agent.WithStructuredOutputJSON(new(runOutput), true, "run description")(&inv.RunOptions)
+
+	agt.setupInvocation(inv)
+
+	require.NotNil(t, inv.StructuredOutput)
+	require.NotNil(t, inv.StructuredOutput.JSONSchema)
+	require.Equal(t, "runOutput", inv.StructuredOutput.JSONSchema.Name)
+	require.Equal(t, "run description", inv.StructuredOutput.JSONSchema.Description)
+	require.Equal(t, reflect.TypeOf((*runOutput)(nil)), inv.StructuredOutputType)
+}
+
+func TestLLMAgent_Run_UsesRunStructuredOutputWithoutStaticOutputProcessor(t *testing.T) {
+	type runOutput struct {
+		RunField string `json:"run_field"`
+	}
+
+	agt := New(
+		"test-agent",
+		WithModel(&mockModelWithResponse{
+			response: &model.Response{
+				Choices: []model.Choice{{
+					Message: model.NewAssistantMessage(`{"run_field":"ok"}`),
+				}},
+				Done: true,
+			},
+		}),
+	)
+	inv := &agent.Invocation{
+		Message:      model.NewUserMessage("hi"),
+		InvocationID: "test-invocation",
+		Session:      &session.Session{ID: "test-session"},
+	}
+	agent.WithStructuredOutputJSON(new(runOutput), true, "run description")(&inv.RunOptions)
+
+	eventCh, err := agt.Run(context.Background(), inv)
+	require.NoError(t, err)
+
+	var structured any
+	for evt := range eventCh {
+		if evt != nil && evt.StructuredOutput != nil {
+			structured = evt.StructuredOutput
+		}
+	}
+
+	require.NotNil(t, structured)
+	result, ok := structured.(*runOutput)
+	require.True(t, ok)
+	require.Equal(t, "ok", result.RunField)
 }
 
 // TestLLMAgent_OptionsWithAddCurrentTime tests WithAddCurrentTime option.

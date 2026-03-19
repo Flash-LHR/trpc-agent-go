@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"trpc.group/trpc-go/trpc-agent-go/artifact"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/internal/jsonschema"
 	"trpc.group/trpc-go/trpc-agent-go/internal/util"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/searchfilter"
 	"trpc.group/trpc-go/trpc-agent-go/log"
@@ -463,6 +464,60 @@ func WithGlobalInstruction(instruction string) RunOption {
 	}
 }
 
+// WithStructuredOutputJSONSchema sets a JSON schema structured output for this run.
+func WithStructuredOutputJSONSchema(name string, schema map[string]any, strict bool, description string) RunOption {
+	return func(opts *RunOptions) {
+		if schema == nil {
+			return
+		}
+		if name == "" {
+			name = "output"
+		}
+		opts.StructuredOutput = &model.StructuredOutput{
+			Type: model.StructuredOutputJSONSchema,
+			JSONSchema: &model.JSONSchemaConfig{
+				Name:        name,
+				Schema:      schema,
+				Strict:      strict,
+				Description: description,
+			},
+		}
+	}
+}
+
+// WithStructuredOutputJSON sets a JSON schema structured output for this run.
+// The schema is constructed automatically from the provided example type.
+func WithStructuredOutputJSON(examplePtr any, strict bool, description string) RunOption {
+	return func(opts *RunOptions) {
+		// Infer reflect.Type from examplePtr.
+		var t reflect.Type
+		if examplePtr == nil {
+			return
+		}
+		if rt := reflect.TypeOf(examplePtr); rt.Kind() == reflect.Pointer {
+			t = rt
+		} else {
+			t = reflect.PointerTo(rt)
+		}
+		gen := jsonschema.New()
+		schema := gen.Generate(t.Elem())
+		name := t.Elem().Name()
+		if name == "" {
+			name = "output"
+		}
+		opts.StructuredOutput = &model.StructuredOutput{
+			Type: model.StructuredOutputJSONSchema,
+			JSONSchema: &model.JSONSchemaConfig{
+				Name:        name,
+				Schema:      schema,
+				Strict:      strict,
+				Description: description,
+			},
+		}
+		opts.StructuredOutputType = t
+	}
+}
+
 // WithToolFilter sets a custom tool filter function for this specific run.
 // The filter function receives a context and a tool, and returns true if the tool should be included.
 //
@@ -734,6 +789,12 @@ type RunOptions struct {
 	// this request only.
 	GlobalInstruction string
 
+	// StructuredOutput defines how the model should produce structured output for this run.
+	StructuredOutput *model.StructuredOutput
+
+	// StructuredOutputType is the Go type to unmarshal the final JSON into for this run.
+	StructuredOutputType reflect.Type
+
 	// ToolFilter is a custom function to filter tools for this run.
 	// If set, only tools for which the filter returns true will be available to the model.
 	// If nil, all registered tools will be available (default behavior).
@@ -809,12 +870,16 @@ func (inv *Invocation) Clone(invocationOpts ...InvocationOptions) *Invocation {
 	if inv == nil {
 		return nil
 	}
+	clonedRunOptions := inv.RunOptions
+	// Structured output is scoped to one invocation and should not leak into child clones.
+	clonedRunOptions.StructuredOutput = nil
+	clonedRunOptions.StructuredOutputType = nil
 	newInv := &Invocation{
 		InvocationID:    uuid.NewString(),
 		Session:         inv.Session,
 		SessionService:  inv.SessionService,
 		Message:         inv.Message,
-		RunOptions:      inv.RunOptions,
+		RunOptions:      clonedRunOptions,
 		MemoryService:   inv.MemoryService,
 		ArtifactService: inv.ArtifactService,
 		Plugins:         inv.Plugins,
