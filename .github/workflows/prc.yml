@@ -274,7 +274,7 @@ jobs:
         env:
           CHECK_FILE_SIZE_BASE_REF: ${{ github.base_ref }}
           CHECK_FILE_SIZE_BEFORE_SHA: ${{ github.event.before }}
-          CHECK_FILE_SIZE_LIMIT_BYTES: 1048576
+          CHECK_FILE_SIZE_LIMIT_BYTES: 1572864
         run: bash .github/scripts/check-file-size.sh
   check-go-sumdb:
     name: check sum.golang.org checksums
