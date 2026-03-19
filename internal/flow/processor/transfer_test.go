@@ -299,7 +299,6 @@ func TestTransferResponseProc_PreservesRunStructuredOutput(t *testing.T) {
 		agent.WithInvocationAgent(parent),
 		agent.WithInvocationID("inv-run-structured-output"),
 		agent.WithInvocationRunOptions(runOpts),
-		agent.WithInvocationStructuredOutput(runOpts.StructuredOutput),
 		agent.WithInvocationTransferInfo(&agent.TransferInfo{TargetAgentName: "child"}),
 	)
 	rsp := &model.Response{ID: "r-run-structured-output"}
