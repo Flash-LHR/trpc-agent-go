@@ -794,15 +794,18 @@ func (a *LLMAgent) setupInvocation(invocation *agent.Invocation) {
 	invocation.Agent = a
 	invocation.AgentName = a.name
 
-	// Propagate structured output configuration into invocation and request path.
+	// Lift run-scoped structured output into the current invocation once.
 	if invocation.StructuredOutput == nil {
 		invocation.StructuredOutput = invocation.RunOptions.StructuredOutput
 	}
-	if invocation.StructuredOutput == nil {
-		invocation.StructuredOutput = a.structuredOutput
-	}
 	if invocation.StructuredOutputType == nil {
 		invocation.StructuredOutputType = invocation.RunOptions.StructuredOutputType
+	}
+	// Clear run-scoped values after they are attached to this invocation so child invocations do not inherit them.
+	invocation.RunOptions.StructuredOutput = nil
+	invocation.RunOptions.StructuredOutputType = nil
+	if invocation.StructuredOutput == nil {
+		invocation.StructuredOutput = a.structuredOutput
 	}
 	if invocation.StructuredOutputType == nil {
 		invocation.StructuredOutputType = a.structuredOutputType

@@ -870,16 +870,12 @@ func (inv *Invocation) Clone(invocationOpts ...InvocationOptions) *Invocation {
 	if inv == nil {
 		return nil
 	}
-	clonedRunOptions := inv.RunOptions
-	// Structured output is scoped to one invocation and should not leak into child clones.
-	clonedRunOptions.StructuredOutput = nil
-	clonedRunOptions.StructuredOutputType = nil
 	newInv := &Invocation{
 		InvocationID:    uuid.NewString(),
 		Session:         inv.Session,
 		SessionService:  inv.SessionService,
 		Message:         inv.Message,
-		RunOptions:      clonedRunOptions,
+		RunOptions:      inv.RunOptions,
 		MemoryService:   inv.MemoryService,
 		ArtifactService: inv.ArtifactService,
 		Plugins:         inv.Plugins,

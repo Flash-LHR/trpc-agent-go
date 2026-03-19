@@ -809,7 +809,7 @@ func TestWithGlobalInstruction_Integration(t *testing.T) {
 	)
 }
 
-func TestInvocationCloneDropsStructuredOutput(t *testing.T) {
+func TestInvocationClonePreservesRunStructuredOutputButDropsInvocationStructuredOutput(t *testing.T) {
 	type MyStruct struct {
 		Field string `json:"field"`
 	}
@@ -833,8 +833,8 @@ func TestInvocationCloneDropsStructuredOutput(t *testing.T) {
 	cloned := inv.Clone()
 
 	require.NotNil(t, cloned)
-	require.Nil(t, cloned.RunOptions.StructuredOutput)
-	require.Nil(t, cloned.RunOptions.StructuredOutputType)
+	require.Equal(t, structuredOutput, cloned.RunOptions.StructuredOutput)
+	require.Equal(t, reflect.TypeOf((*MyStruct)(nil)), cloned.RunOptions.StructuredOutputType)
 	require.Nil(t, cloned.StructuredOutput)
 	require.Nil(t, cloned.StructuredOutputType)
 }

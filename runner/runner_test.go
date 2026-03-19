@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/agent/chainagent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/graphagent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	artifactinmemory "trpc.group/trpc-go/trpc-agent-go/artifact/inmemory"
@@ -241,6 +242,37 @@ func collectStructuredOutput(events <-chan *event.Event) any {
 	return structured
 }
 
+func runRunnerWithTypedStructuredOutput(
+	t *testing.T,
+	ag agent.Agent,
+	description string,
+) *runnerStructuredOutputTypedPayload {
+	t.Helper()
+	r := NewRunner(
+		"typed-structured-output-wrapper-app",
+		ag,
+		WithSessionService(sessioninmemory.NewSessionService()),
+	)
+	eventCh, err := r.Run(
+		context.Background(),
+		"user-wrapper",
+		"session-wrapper",
+		model.NewUserMessage("hello"),
+		agent.WithStructuredOutputJSON(
+			new(runnerStructuredOutputTypedPayload),
+			true,
+			description,
+		),
+	)
+	require.NoError(t, err)
+	structured := collectStructuredOutput(eventCh)
+	payload, ok := structured.(*runnerStructuredOutputTypedPayload)
+	require.True(t, ok, "expected typed structured output payload")
+	require.Equal(t, "ok", payload.Answer)
+	require.Equal(t, 7, payload.Score)
+	return payload
+}
+
 func TestRunner_Run_WithRunStructuredOutputJSON_InjectsSchemaAndEmitsTypedPayload(t *testing.T) {
 	modelImpl := &capturingStructuredOutputModel{
 		name:    "typed-structured-output-model",
@@ -360,6 +392,64 @@ func TestRunner_Run_WithRunStructuredOutputJSONSchema_InjectsSchemaAndEmitsUntyp
 	assert.Contains(t, systemContent, `"status"`)
 	assert.Contains(t, systemContent, `"count"`)
 	assert.NotContains(t, systemContent, "You MAY call tools")
+}
+
+func TestRunner_Run_WithRunStructuredOutputJSON_PassesThroughChainAgent(t *testing.T) {
+	const description = "Return one typed payload through chain."
+	modelImpl := &capturingStructuredOutputModel{
+		name:    "chain-structured-output-model",
+		content: `{"answer":"ok","score":7}`,
+	}
+	leaf := llmagent.New(
+		"chain-leaf-agent",
+		llmagent.WithModel(modelImpl),
+	)
+	ag := chainagent.New(
+		"chain-wrapper-agent",
+		chainagent.WithSubAgents([]agent.Agent{leaf}),
+	)
+
+	runRunnerWithTypedStructuredOutput(t, ag, description)
+
+	captured := modelImpl.LatestRequest()
+	require.NotNil(t, captured, "expected one model request to be captured")
+	require.NotNil(t, captured.structuredOutput)
+	require.NotNil(t, captured.structuredOutput.JSONSchema)
+	require.Equal(t, "runnerStructuredOutputTypedPayload", captured.structuredOutput.JSONSchema.Name)
+	require.Equal(t, description, captured.structuredOutput.JSONSchema.Description)
+}
+
+func TestRunner_Run_WithRunStructuredOutputJSON_PassesThroughGraphAgent(t *testing.T) {
+	const description = "Return one typed payload through graph."
+	modelImpl := &capturingStructuredOutputModel{
+		name:    "graph-structured-output-model",
+		content: `{"answer":"ok","score":7}`,
+	}
+	leaf := llmagent.New(
+		"graph-leaf-agent",
+		llmagent.WithModel(modelImpl),
+	)
+	compiled, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddAgentNode(leaf.Info().Name).
+		SetEntryPoint(leaf.Info().Name).
+		SetFinishPoint(leaf.Info().Name).
+		Compile()
+	require.NoError(t, err)
+	ag, err := graphagent.New(
+		"graph-wrapper-agent",
+		compiled,
+		graphagent.WithSubAgents([]agent.Agent{leaf}),
+	)
+	require.NoError(t, err)
+
+	runRunnerWithTypedStructuredOutput(t, ag, description)
+
+	captured := modelImpl.LatestRequest()
+	require.NotNil(t, captured, "expected one model request to be captured")
+	require.NotNil(t, captured.structuredOutput)
+	require.NotNil(t, captured.structuredOutput.JSONSchema)
+	require.Equal(t, "runnerStructuredOutputTypedPayload", captured.structuredOutput.JSONSchema.Name)
+	require.Equal(t, description, captured.structuredOutput.JSONSchema.Description)
 }
 
 func TestRunner_SessionIntegration(t *testing.T) {
