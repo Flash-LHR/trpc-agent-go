@@ -348,6 +348,7 @@ func hasStaticInstructionProcessor(options *Options) bool {
 		options.GlobalInstruction != "" ||
 		len(options.ModelInstructions) > 0 ||
 		len(options.ModelGlobalInstructions) > 0 ||
+		options.OutputSchema != nil ||
 		(options.StructuredOutput != nil && options.StructuredOutput.JSONSchema != nil)
 }
 

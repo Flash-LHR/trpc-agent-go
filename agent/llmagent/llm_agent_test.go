@@ -864,6 +864,43 @@ func TestLLMAgent_New_WithStructuredOutputJSONSchema_AllowsTools(t *testing.T) {
 	})
 }
 
+func TestLLMAgent_OutputSchemaOnly_InjectsJSONInstructions(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"status": map[string]any{"type": "string"},
+		},
+	}
+	agt := New(
+		"test-agent",
+		WithOutputSchema(schema),
+	)
+
+	reqProcs := buildRequestProcessorsWithAgent(agt, &agt.option)
+	var instrProc *processor.InstructionRequestProcessor
+	for _, rp := range reqProcs {
+		if p, ok := rp.(*processor.InstructionRequestProcessor); ok {
+			instrProc = p
+			break
+		}
+	}
+	require.NotNil(t, instrProc)
+
+	inv := &agent.Invocation{InvocationID: testModelPromptInvocationID}
+	agt.setupInvocation(inv)
+
+	req := &model.Request{
+		Messages: []model.Message{model.NewUserMessage("hi")},
+	}
+	eventCh := make(chan *event.Event, 10)
+	instrProc.ProcessRequest(context.Background(), inv, req, eventCh)
+
+	require.NotEmpty(t, req.Messages)
+	require.Equal(t, model.RoleSystem, req.Messages[0].Role)
+	require.Contains(t, req.Messages[0].Content, "IMPORTANT: Return ONLY a JSON object")
+	require.Contains(t, req.Messages[0].Content, `"status"`)
+}
+
 // TestLLMAgent_InvocationContextAccess verifies that LLMAgent can access invocation
 // from context when called through runner (after removing duplicate injection).
 func TestLLMAgent_InvocationContextAccess(t *testing.T) {
