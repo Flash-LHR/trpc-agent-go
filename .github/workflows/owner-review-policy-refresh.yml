@@ -20,7 +20,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Review events should refresh the single pull_request-based owner check.
+          # Review events should refresh the single trusted pull_request_target owner check.
           selected_run=""
           for attempt in 1 2 3 4 5; do
             selected_run="$(
@@ -37,7 +37,7 @@ jobs:
           head_sha = os.environ["PR_HEAD_SHA"]
           runs = json.load(sys.stdin)
           for run in runs:
-              if run["event"] != "pull_request":
+              if run["event"] != "pull_request_target":
                   continue
               if run["headSha"] != head_sha:
                   continue
@@ -52,14 +52,14 @@ jobs:
           done
 
           if [ -z "${selected_run}" ]; then
-            echo "::warning::No pull_request owner review policy run found for ${PR_HEAD_SHA}."
+            echo "::warning::No pull_request_target owner review policy run found for ${PR_HEAD_SHA}."
             exit 0
           fi
 
           run_id="${selected_run%% *}"
           run_status="${selected_run#* }"
           if [ "${run_status}" = "queued" ] || [ "${run_status}" = "in_progress" ]; then
-            echo "The pull_request owner review policy run is already ${run_status}."
+            echo "The pull_request_target owner review policy run is already ${run_status}."
             exit 0
           fi
 
