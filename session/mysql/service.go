@@ -135,14 +135,13 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 	}
 
 	// Start async summary workers if summary generation is configured.
-	if isummary.HasSummarizer(opts.summarizer, opts.summarizerResolver) && opts.asyncSummaryNum > 0 {
+	if isummary.HasSummarizer(opts.summarizer) && opts.asyncSummaryNum > 0 {
 		s.asyncWorker = isummary.NewAsyncSummaryWorker(isummary.AsyncSummaryConfig{
-			Summarizer:         opts.summarizer,
-			SummarizerResolver: opts.summarizerResolver,
-			AsyncSummaryNum:    opts.asyncSummaryNum,
-			SummaryQueueSize:   opts.summaryQueueSize,
-			SummaryJobTimeout:  opts.summaryJobTimeout,
-			CreateSummaryFunc:  s.CreateSessionSummary,
+			Summarizer:        opts.summarizer,
+			AsyncSummaryNum:   opts.asyncSummaryNum,
+			SummaryQueueSize:  opts.summaryQueueSize,
+			SummaryJobTimeout: opts.summaryJobTimeout,
+			CreateSummaryFunc: s.CreateSessionSummary,
 		})
 		s.asyncWorker.Start()
 	}
@@ -294,7 +293,7 @@ func (s *Service) CreateSession(
 				WHERE app_name = ? AND user_id = ? AND session_id = ? AND deleted_at IS NULL`,
 				s.tableSessionStates,
 			),
-			sessBytes, sessState.CreatedAt, sessState.UpdatedAt, expiresAt,
+			string(sessBytes), sessState.CreatedAt, sessState.UpdatedAt, expiresAt,
 			key.AppName, key.UserID, key.SessionID,
 		)
 	} else {
@@ -304,7 +303,7 @@ func (s *Service) CreateSession(
 				VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				s.tableSessionStates,
 			),
-			key.AppName, key.UserID, key.SessionID, sessBytes,
+			key.AppName, key.UserID, key.SessionID, string(sessBytes),
 			sessState.CreatedAt, sessState.UpdatedAt, expiresAt,
 		)
 	}
@@ -633,7 +632,7 @@ func (s *Service) UpdateSessionState(ctx context.Context, key session.Key, state
 	_, err = s.mysqlClient.Exec(ctx,
 		fmt.Sprintf(`UPDATE %s SET state = ?, updated_at = ?, expires_at = ?
 		 WHERE app_name = ? AND user_id = ? AND session_id = ? AND deleted_at IS NULL`, s.tableSessionStates),
-		updatedStateBytes, now, expiresAt,
+		string(updatedStateBytes), now, expiresAt,
 		key.AppName, key.UserID, key.SessionID)
 
 	if err != nil {
