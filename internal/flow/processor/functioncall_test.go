@@ -4549,7 +4549,7 @@ func TestExecuteToolWithCallbacks_AfterToolReceivesNormalizedResultAndMeta(t *te
 		},
 	}
 
-	_, res, _, err := proc.executeToolWithCallbacks(
+	_, res, _, _, err := proc.executeToolWithCallbacks(
 		context.Background(),
 		nil,
 		model.ToolCall{Function: model.FunctionDefinitionParam{Name: "t"}},
@@ -4601,7 +4601,7 @@ func TestExecuteToolWithCallbacks_PluginAfterToolReceivesNormalizedResultAndMeta
 		},
 	}
 
-	_, res, _, err := proc.executeToolWithCallbacks(
+	_, res, _, _, err := proc.executeToolWithCallbacks(
 		context.Background(),
 		inv,
 		model.ToolCall{Function: model.FunctionDefinitionParam{Name: "t"}},
