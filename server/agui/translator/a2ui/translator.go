@@ -119,6 +119,53 @@ func (t *a2uiTranslator) Translate(
 	return outEvents, nil
 }
 
+// PostRunFinalizationEvents finalizes pending A2UI text streams after a run ends.
+func (t *a2uiTranslator) PostRunFinalizationEvents(ctx context.Context) ([]aguievents.Event, error) {
+	finalizer, ok := t.inner.(translator.PostRunFinalizingTranslator)
+	if !ok {
+		return nil, nil
+	}
+	translated, err := finalizer.PostRunFinalizationEvents(ctx)
+	outEvents := make([]aguievents.Event, 0, len(translated))
+	for _, translatedEvent := range translated {
+		switch translatedEvent.Type() {
+		case aguievents.EventTypeTextMessageStart:
+			if t.receiving {
+				return nil, errors.Join(err, errors.New("text message start event received but already receiving text message"))
+			}
+			t.parser.reset()
+			t.receiving = true
+		case aguievents.EventTypeTextMessageContent:
+			if !t.receiving {
+				return nil, errors.Join(err, errors.New("text message content event received but not receiving text message"))
+			}
+			contentEvent, ok := translatedEvent.(*aguievents.TextMessageContentEvent)
+			if !ok {
+				return nil, errors.Join(err, fmt.Errorf("invalid text message content event: %T", translatedEvent))
+			}
+			lines := t.parser.append(contentEvent.Delta)
+			outEvents = append(outEvents, t.toRawEvents(lines)...)
+		case aguievents.EventTypeTextMessageEnd:
+			if !t.receiving {
+				return nil, errors.Join(err, errors.New("text message end event received but not receiving text message"))
+			}
+			lines := t.parser.flush()
+			t.receiving = false
+			outEvents = append(outEvents, t.toRawEvents(lines)...)
+		default:
+			if t.passThroughEventHook != nil && t.passThroughEventHook(ctx, translatedEvent) {
+				outEvents = append(outEvents, translatedEvent)
+			}
+		}
+	}
+	if t.receiving {
+		lines := t.parser.flush()
+		t.receiving = false
+		outEvents = append(outEvents, t.toRawEvents(lines)...)
+	}
+	return outEvents, err
+}
+
 func (t *a2uiTranslator) toRawEvents(lines []string) []aguievents.Event {
 	if len(lines) == 0 {
 		return nil

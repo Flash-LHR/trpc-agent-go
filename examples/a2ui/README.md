@@ -45,7 +45,7 @@ export OPENAI_BASE_URL="https://api.openai.com/v1"   # or your compatible endpoi
 ## Run the server
 
 ```bash
-cd examples/a2ui
+cd examples/a2ui/server
 go run .
 ```
 
@@ -95,7 +95,7 @@ The server only logs error-level messages in this example and does not print eve
 
 - No frontend response:
   - Verify endpoint URL and port match the server.
-  - Make sure `go run .` process is still running.
+  - Make sure the `go run .` process in `examples/a2ui/server` is still running.
 - Missing or incomplete rendering:
   - Verify the server emits valid A2UI events such as `surfaceUpdate` and `beginRendering`.
   - Check that AG-UI raw event payloads contain A2UI-compatible data and source.

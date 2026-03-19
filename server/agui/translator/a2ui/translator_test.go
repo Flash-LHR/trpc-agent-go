@@ -25,6 +25,11 @@ type fakeTranslator struct {
 	translateErr error
 }
 
+type finalizingFakeTranslator struct {
+	*fakeTranslator
+	finalizationEvents [][]aguievents.Event
+}
+
 func (f *fakeTranslator) Translate(ctx context.Context, event *agentevent.Event) ([]aguievents.Event, error) {
 	_ = ctx
 	_ = event
@@ -36,6 +41,18 @@ func (f *fakeTranslator) Translate(ctx context.Context, event *agentevent.Event)
 	}
 	chunk := f.events[0]
 	f.events = f.events[1:]
+	return chunk, nil
+}
+
+func (f *finalizingFakeTranslator) PostRunFinalizationEvents(
+	ctx context.Context,
+) ([]aguievents.Event, error) {
+	_ = ctx
+	if len(f.finalizationEvents) == 0 {
+		return nil, nil
+	}
+	chunk := f.finalizationEvents[0]
+	f.finalizationEvents = f.finalizationEvents[1:]
 	return chunk, nil
 }
 
@@ -180,6 +197,69 @@ func TestA2UITranslatorHandlesContentAndEndInSameTranslateCall(t *testing.T) {
 	raw, ok := out[0].(*aguievents.RawEvent)
 	assert.True(t, ok)
 	assert.Equal(t, "single", raw.Event.(map[string]any)["type"])
+}
+
+func TestA2UITranslatorPostRunFinalizationConvertsInnerFinalizerEvents(t *testing.T) {
+	inner := &finalizingFakeTranslator{
+		fakeTranslator: &fakeTranslator{
+			events: [][]aguievents.Event{
+				{
+					aguievents.NewTextMessageStartEvent("msg-1", aguievents.WithRole("assistant")),
+					aguievents.NewTextMessageContentEvent("msg-1", `{"type":"final"}`),
+				},
+			},
+		},
+		finalizationEvents: [][]aguievents.Event{
+			{
+				aguievents.NewTextMessageEndEvent("msg-1"),
+			},
+		},
+	}
+	factory := NewFactory(func(_ context.Context, _ *adapter.RunAgentInput, _ ...translator.Option) (translator.Translator, error) {
+		return inner, nil
+	}, nil)
+	translated, err := factory(context.Background(), &adapter.RunAgentInput{})
+	assert.NoError(t, err)
+	out, err := translated.Translate(context.Background(), &agentevent.Event{})
+	assert.NoError(t, err)
+	assert.Empty(t, out)
+	finalizer, ok := translated.(translator.PostRunFinalizingTranslator)
+	assert.True(t, ok)
+	out, err = finalizer.PostRunFinalizationEvents(context.Background())
+	assert.NoError(t, err)
+	assert.Len(t, out, 1)
+	raw, ok := out[0].(*aguievents.RawEvent)
+	assert.True(t, ok)
+	assert.Equal(t, "final", raw.Event.(map[string]any)["type"])
+}
+
+func TestA2UITranslatorPostRunFinalizationHandlesFinalizerTextStream(t *testing.T) {
+	inner := &finalizingFakeTranslator{
+		fakeTranslator: &fakeTranslator{},
+		finalizationEvents: [][]aguievents.Event{
+			{
+				aguievents.NewTextMessageStartEvent("msg-1", aguievents.WithRole("assistant")),
+				aguievents.NewTextMessageContentEvent("msg-1", `{"type":"streamed"}`+"\n"+`{"type":"tail"}`),
+				aguievents.NewTextMessageEndEvent("msg-1"),
+			},
+		},
+	}
+	factory := NewFactory(func(_ context.Context, _ *adapter.RunAgentInput, _ ...translator.Option) (translator.Translator, error) {
+		return inner, nil
+	}, nil)
+	translated, err := factory(context.Background(), &adapter.RunAgentInput{})
+	assert.NoError(t, err)
+	finalizer, ok := translated.(translator.PostRunFinalizingTranslator)
+	assert.True(t, ok)
+	out, err := finalizer.PostRunFinalizationEvents(context.Background())
+	assert.NoError(t, err)
+	assert.Len(t, out, 2)
+	first, ok := out[0].(*aguievents.RawEvent)
+	assert.True(t, ok)
+	second, ok := out[1].(*aguievents.RawEvent)
+	assert.True(t, ok)
+	assert.Equal(t, "streamed", first.Event.(map[string]any)["type"])
+	assert.Equal(t, "tail", second.Event.(map[string]any)["type"])
 }
 
 func TestA2UITranslatorReturnsErrorWhenTextMessageStartNestedWithoutEnd(t *testing.T) {
