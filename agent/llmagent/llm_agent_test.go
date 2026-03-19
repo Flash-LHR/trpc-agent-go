@@ -1152,8 +1152,10 @@ func TestLLMAgent_SetupInvocation_UsesRunStructuredOutputOverride(t *testing.T) 
 	require.Equal(t, "runOutput", inv.StructuredOutput.JSONSchema.Name)
 	require.Equal(t, "run description", inv.StructuredOutput.JSONSchema.Description)
 	require.Equal(t, reflect.TypeOf((*runOutput)(nil)), inv.StructuredOutputType)
-	require.Nil(t, inv.RunOptions.StructuredOutput)
-	require.Nil(t, inv.RunOptions.StructuredOutputType)
+	require.NotNil(t, inv.RunOptions.StructuredOutput)
+	require.NotNil(t, inv.RunOptions.StructuredOutput.JSONSchema)
+	require.Equal(t, "runOutput", inv.RunOptions.StructuredOutput.JSONSchema.Name)
+	require.Equal(t, reflect.TypeOf((*runOutput)(nil)), inv.RunOptions.StructuredOutputType)
 }
 
 func TestLLMAgent_Run_UsesRunStructuredOutputWithoutStaticOutputProcessor(t *testing.T) {

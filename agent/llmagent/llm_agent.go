@@ -801,9 +801,7 @@ func (a *LLMAgent) setupInvocation(invocation *agent.Invocation) {
 	if invocation.StructuredOutputType == nil {
 		invocation.StructuredOutputType = invocation.RunOptions.StructuredOutputType
 	}
-	// Clear run-scoped values after they are attached to this invocation so child invocations do not inherit them.
-	invocation.RunOptions.StructuredOutput = nil
-	invocation.RunOptions.StructuredOutputType = nil
+	// Keep run-scoped values on RunOptions so clone-based handoffs can reuse the same output contract.
 	if invocation.StructuredOutput == nil {
 		invocation.StructuredOutput = a.structuredOutput
 	}
