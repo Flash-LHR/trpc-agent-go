@@ -102,6 +102,17 @@ func TestLatestApprovedReviewersUsesLatestReviewStatePerReviewer(t *testing.T) {
 	assert.Equal(t, []string{"liuzengh"}, latestApprovedReviewers(reviews, "author"))
 }
 
+func TestLatestApprovedReviewersKeepsApprovalAfterCommentOnlyReview(t *testing.T) {
+	t.Helper()
+	submittedAt := time.Date(2026, time.March, 19, 10, 0, 0, 0, time.UTC)
+	reviews := []pullRequestReview{
+		{ID: 1, State: "APPROVED", SubmittedAt: ptrTime(submittedAt), User: userPayload{Login: "flash-lhr"}},
+		{ID: 2, State: "COMMENTED", SubmittedAt: ptrTime(submittedAt.Add(time.Minute)), User: userPayload{Login: "flash-lhr"}},
+		{ID: 3, State: "COMMENTED", SubmittedAt: ptrTime(submittedAt.Add(2 * time.Minute)), User: userPayload{Login: "liuzengh"}},
+	}
+	assert.Equal(t, []string{"flash-lhr"}, latestApprovedReviewers(reviews, "author"))
+}
+
 func ptrTime(value time.Time) *time.Time {
 	return &value
 }

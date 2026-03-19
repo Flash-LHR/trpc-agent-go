@@ -294,8 +294,12 @@ func collectChangedPaths(files []pullRequestFile) []string {
 
 func latestApprovedReviewers(reviews []pullRequestReview, author string) []string {
 	authorLogin := normalizeLogin(author)
+	orderedReviews := append([]pullRequestReview(nil), reviews...)
+	sort.Slice(orderedReviews, func(i, j int) bool {
+		return reviewIsNewer(reviewStateFromReview(orderedReviews[j]), reviewStateFromReview(orderedReviews[i]))
+	})
 	latestByReviewer := map[string]reviewerState{}
-	for _, review := range reviews {
+	for _, review := range orderedReviews {
 		login := normalizeLogin(review.User.Login)
 		if login == "" || login == authorLogin {
 			continue
@@ -304,19 +308,12 @@ func latestApprovedReviewers(reviews []pullRequestReview, author string) []strin
 		if state == "" || state == "PENDING" {
 			continue
 		}
-		submittedAt := time.Time{}
-		if review.SubmittedAt != nil {
-			submittedAt = review.SubmittedAt.UTC()
+		current := reviewStateFromReview(review)
+		if state == "COMMENTED" {
+			// Comment-only reviews should not clear a prior approval state.
+			continue
 		}
-		current := reviewerState{
-			ID:          review.ID,
-			State:       state,
-			SubmittedAt: submittedAt,
-		}
-		existing, ok := latestByReviewer[login]
-		if !ok || reviewIsNewer(current, existing) {
-			latestByReviewer[login] = current
-		}
+		latestByReviewer[login] = current
 	}
 	approvers := []string{}
 	for reviewer, state := range latestByReviewer {
@@ -336,6 +333,18 @@ func reviewIsNewer(current, existing reviewerState) bool {
 		return false
 	}
 	return current.ID > existing.ID
+}
+
+func reviewStateFromReview(review pullRequestReview) reviewerState {
+	submittedAt := time.Time{}
+	if review.SubmittedAt != nil {
+		submittedAt = review.SubmittedAt.UTC()
+	}
+	return reviewerState{
+		ID:          review.ID,
+		State:       strings.ToUpper(strings.TrimSpace(review.State)),
+		SubmittedAt: submittedAt,
+	}
 }
 
 func evaluatePolicy(rules []codeOwnerRule, author string, changedPaths, approvers []string) (evaluationResult, error) {
