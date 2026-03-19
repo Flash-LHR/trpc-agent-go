@@ -1,7 +1,9 @@
 name: Owner Review Policy
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+  pull_request_review:
+    types: [submitted, dismissed]
 permissions:
   contents: read
   pull-requests: read
@@ -22,6 +24,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ ! -d .github/scripts/owner-review-policy ]; then
+            echo "The trusted owner review policy module is not available on the default branch yet."
+            exit 0
+          fi
           # Always run the trusted policy implementation from the default branch.
           cd .github/scripts/owner-review-policy
           go test ./...
@@ -31,6 +37,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ ! -d .github/scripts/owner-review-policy ]; then
+            echo "The trusted owner review policy module is not available on the default branch yet."
+            exit 0
+          fi
           # The policy implementation reads pull request state through the GitHub API.
           cd .github/scripts/owner-review-policy
           go run .
