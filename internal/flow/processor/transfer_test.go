@@ -203,6 +203,7 @@ func (t timeoutTransferController) OnTransfer(
 type structuredOutputCaptureModel struct {
 	name       string
 	mu         sync.Mutex
+	invoked    bool
 	seen       bool
 	schemaName string
 }
@@ -216,6 +217,7 @@ func (m *structuredOutputCaptureModel) Run(
 		inv.StructuredOutputType = inv.RunOptions.StructuredOutputType
 	}
 	m.mu.Lock()
+	m.invoked = true
 	if inv != nil &&
 		inv.StructuredOutput != nil &&
 		inv.StructuredOutput.JSONSchema != nil {
@@ -238,10 +240,10 @@ func (m *structuredOutputCaptureModel) SubAgents() []agent.Agent { return nil }
 
 func (m *structuredOutputCaptureModel) FindSubAgent(string) agent.Agent { return nil }
 
-func (m *structuredOutputCaptureModel) Snapshot() (bool, string) {
+func (m *structuredOutputCaptureModel) Snapshot() (bool, bool, string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.seen, m.schemaName
+	return m.invoked, m.seen, m.schemaName
 }
 
 func TestTransferResponseProc_ControllerNodeTimeout(t *testing.T) {
@@ -313,7 +315,8 @@ func TestTransferResponseProc_PreservesRunStructuredOutput(t *testing.T) {
 	close(out)
 	for range out {
 	}
-	seen, schemaName := target.Snapshot()
+	invoked, seen, schemaName := target.Snapshot()
+	require.True(t, invoked)
 	require.True(t, seen)
 	require.Equal(t, "run_output", schemaName)
 }
@@ -345,7 +348,8 @@ func TestTransferResponseProc_DoesNotPropagateInvocationStructuredOutputWithoutR
 	close(out)
 	for range out {
 	}
-	seen, _ := target.Snapshot()
+	invoked, seen, _ := target.Snapshot()
+	require.True(t, invoked)
 	require.False(t, seen)
 }
 
