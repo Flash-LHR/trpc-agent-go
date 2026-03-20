@@ -23,6 +23,8 @@ import (
 
 const defaultSandboxMaxTimeout = 30 * time.Minute
 
+const defaultSandboxPath = "/usr/local/bin:/usr/bin:/bin"
+
 var (
 	errSandboxUnsupported     = errors.New("sandboxed hostexec is only supported on linux")
 	errSandboxBaseDirRequired = errors.New("sandboxed hostexec requires base dir")
@@ -278,11 +280,7 @@ func collectSandboxBaselineEnv(
 		}
 	}
 	if _, ok := out["PATH"]; !ok {
-		if value, found := os.LookupEnv("PATH"); found && value != "" {
-			out["PATH"] = value
-		} else {
-			out["PATH"] = "/usr/bin:/bin"
-		}
+		out["PATH"] = defaultSandboxPath
 	}
 	return out
 }
