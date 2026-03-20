@@ -418,11 +418,9 @@ func evaluatePolicy(rules []codeOwnerRule, author string, changedPaths, approver
 		if len(owners) == 0 {
 			continue
 		}
-		if containsString(owners, authorOwner) {
-			continue
-		}
 		fileOwners := make([]string, 0, len(owners))
 		for _, owner := range owners {
+			// Remove only the author from the owner set so co-owners can still satisfy the external approval requirement.
 			if owner == authorOwner {
 				continue
 			}
