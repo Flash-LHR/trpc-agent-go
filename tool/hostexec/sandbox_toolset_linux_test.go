@@ -13,6 +13,8 @@ package hostexec
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -259,6 +261,125 @@ func TestNewSandboxedToolSet_KillSessionKillsProcessGroup(t *testing.T) {
 	}, 3*time.Second, 50*time.Millisecond)
 }
 
+func TestSandboxConfigHelpers(t *testing.T) {
+	allowed := buildAllowedEnvSet([]string{"LANG", "HOSTEXEC_ALLOWED"})
+	require.Contains(t, allowed, "PATH")
+	require.Contains(t, allowed, "HOME")
+	require.Contains(t, allowed, "TMPDIR")
+	filtered := filterSandboxEnvMap(
+		map[string]string{
+			"HOSTEXEC_ALLOWED": "1",
+			"HOME":             "/tmp/custom-home",
+			" ":                "skip",
+		},
+		allowed,
+	)
+	require.Equal(t, map[string]string{"HOSTEXEC_ALLOWED": "1"}, filtered)
+	merged := mergeSandboxEnv(
+		resolvedSandboxedConfig{
+			baselineEnv: map[string]string{
+				"PATH":   "/usr/bin:/bin",
+				"HOME":   "/tmp",
+				"TMPDIR": "/tmp",
+			},
+			baseEnv:       map[string]string{"LANG": "C"},
+			allowedEnvSet: allowed,
+		},
+		map[string]string{
+			"HOSTEXEC_ALLOWED": "2",
+			"HOME":             "/tmp/ignored",
+		},
+	)
+	require.Equal(t, "/tmp", merged["HOME"])
+	require.Equal(t, "C", merged["LANG"])
+	require.Equal(t, "2", merged["HOSTEXEC_ALLOWED"])
+	require.True(t, pathsOverlap("/tmp/base", "/tmp/base/sub"))
+	require.False(t, pathsOverlap("/tmp/base", "/tmp/elsewhere"))
+	require.NoError(t, probeSandboxReadiness(resolvedSandboxedConfig{
+		bwrapPath:   "/usr/bin/bwrap",
+		baseDirReal: "/tmp",
+		shellPath:   "/bin/sh",
+	}))
+	require.ErrorContains(t, probeSandboxReadiness(resolvedSandboxedConfig{}), "sandbox bwrap path is empty")
+	filePath := filepath.Join(t.TempDir(), "file.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("x"), 0o644))
+	_, err := realpathDir(filePath)
+	require.ErrorContains(t, err, "path is not a directory")
+}
+
+func TestSandboxToolSet_HelperBranches(t *testing.T) {
+	var nilSet *sandboxedToolSet
+	require.NoError(t, nilSet.Close())
+	set := &sandboxedToolSet{name: "sandbox-tool"}
+	require.Equal(t, "sandbox-tool", set.Name())
+	require.Nil(t, set.Tools(context.Background()))
+	var execTool *sandboxedExecCommandTool
+	require.Equal(t, toolExecCommand, execTool.Declaration().Name)
+	_, err := execTool.Call(
+		context.Background(),
+		mustJSON(t, map[string]any{"command": "echo hi"}),
+	)
+	require.EqualError(t, err, errExecToolNotConfigured)
+	var writeTool *sandboxedWriteStdinTool
+	require.Equal(t, toolWriteStdin, writeTool.Declaration().Name)
+	_, err = writeTool.Call(
+		context.Background(),
+		mustJSON(t, map[string]any{"session_id": "x"}),
+	)
+	require.EqualError(t, err, errWriteToolNotConfigured)
+	var killTool *sandboxedKillSessionTool
+	require.Equal(t, toolKillSession, killTool.Declaration().Name)
+	_, err = killTool.Call(
+		context.Background(),
+		mustJSON(t, map[string]any{"session_id": "x"}),
+	)
+	require.EqualError(t, err, errKillToolNotConfigured)
+}
+
+func TestBwrapSandboxProcess_HelperBranches(t *testing.T) {
+	proc := &bwrapSandboxProcess{}
+	state, err := proc.Wait()
+	require.NoError(t, err)
+	require.Nil(t, state)
+	require.NoError(t, proc.SignalTerminate())
+	require.NoError(t, proc.ForceKill())
+	require.NoError(t, proc.Close())
+}
+
+func TestSandboxedSession_HelperBranches(t *testing.T) {
+	sess := newSandboxedSession("s", "cmd", 1)
+	require.True(t, sess.doneAt().IsZero())
+	sess.appendOutput("first\nsecond\n")
+	require.Equal(t, 1, sess.lineBase)
+	require.Equal(t, []string{"second"}, sess.lines)
+	sess.partial = "tail"
+	sess.markDone(7)
+	require.False(t, sess.doneAt().IsZero())
+	out, code := sess.allOutput()
+	require.Equal(t, "second\ntail", out)
+	require.Equal(t, 7, code)
+	canceled := false
+	idle := newSandboxedSession("idle", "cmd", defaultMaxLines)
+	idle.cancel = func() { canceled = true }
+	require.NoError(t, idle.kill(context.Background(), -1))
+	require.True(t, canceled)
+	closeErr := errors.New("close failed")
+	closeCount := 0
+	closer := newSandboxedSession("close", "cmd", defaultMaxLines)
+	closer.closeIO = func() error {
+		closeCount++
+		return closeErr
+	}
+	require.ErrorIs(t, closer.close(), closeErr)
+	require.NoError(t, closer.close())
+	require.Equal(t, 1, closeCount)
+	force := &stubSandboxProcess{}
+	forced := newSandboxedSession("force", "cmd", defaultMaxLines)
+	forced.proc = force
+	require.NoError(t, forced.kill(context.Background(), 0))
+	require.True(t, force.forceKillCalled)
+}
+
 func sandboxToolSetTools(
 	t *testing.T,
 	set tool.ToolSet,
@@ -396,4 +517,37 @@ func firstPID(output string) int {
 		}
 	}
 	return 0
+}
+
+type stubSandboxProcess struct {
+	forceKillCalled bool
+}
+
+func (s *stubSandboxProcess) Stdin() io.WriteCloser {
+	return nil
+}
+
+func (s *stubSandboxProcess) Stdout() io.ReadCloser {
+	return nil
+}
+
+func (s *stubSandboxProcess) Stderr() io.ReadCloser {
+	return nil
+}
+
+func (s *stubSandboxProcess) Wait() (*os.ProcessState, error) {
+	return nil, nil
+}
+
+func (s *stubSandboxProcess) SignalTerminate() error {
+	return nil
+}
+
+func (s *stubSandboxProcess) ForceKill() error {
+	s.forceKillCalled = true
+	return nil
+}
+
+func (s *stubSandboxProcess) Close() error {
+	return nil
 }
