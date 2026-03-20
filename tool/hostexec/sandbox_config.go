@@ -29,6 +29,7 @@ var (
 	errSandboxTTYUnsupported  = errors.New("sandboxed hostexec does not support tty")
 )
 
+// SandboxedConfig configures the Linux sandboxed hostexec tool set.
 type SandboxedConfig struct {
 	Name           string
 	BaseDir        string
