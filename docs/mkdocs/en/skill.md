@@ -52,8 +52,8 @@ the prompt up-front, it can dominate your prompt-token budget and even
 exceed the model context window.
 
 For a reproducible, **runtime** token comparison (progressive disclosure
-vs full injection), measure prompt and tool usage in your own workflow
-under both loading strategies.
+vs full injection), see [trpc-agent-go-benchmark/anthropic_skills/README.md](https://github.com/trpc-group/trpc-agent-go-benchmark/blob/main/anthropic_skills/README.md) and run
+the `token-report` suite described there.
 
 ### Prompt Cache
 
@@ -93,8 +93,8 @@ Enable tool-result materialization with:
 To restore the legacy fallback behavior in summary mode:
 `llmagent.WithSkipSkillsFallbackOnSessionSummary(false)`.
 
-To measure the impact in a real tool-using flow, compare cache hit rate,
-latency, and token usage in your own production-like workload.
+To measure the impact in a real tool-using flow, run the
+[trpc-agent-go-benchmark/anthropic_skills](https://github.com/trpc-group/trpc-agent-go-benchmark/tree/main/anthropic_skills) `prompt-cache` suite.
 
 How this relates to `SkillLoadMode` (common pitfall):
 

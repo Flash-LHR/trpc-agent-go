@@ -50,7 +50,8 @@ Agent Skills 把可复用的任务封装为“技能目录”，用 `SKILL.md`
 直接超过模型上下文窗口。
 
 想要**可复现、基于真实运行**的 token 对比（渐进披露 vs 全量注入），
-建议在你自己的工作流里分别记录两种加载方式下的 prompt 与工具调用开销。
+可参考 [trpc-agent-go-benchmark/anthropic_skills/README.md](https://github.com/trpc-group/trpc-agent-go-benchmark/blob/main/anthropic_skills/README.md)，并按其中说明运行
+`token-report` 套件。
 
 ### Prompt Cache
 
@@ -84,8 +85,8 @@ Session summary 提醒：如果你启用了会话摘要注入
 如果你希望在 summary 场景恢复旧的回退行为：
 `llmagent.WithSkipSkillsFallbackOnSessionSummary(false)`。
 
-要在真实工具链路中测量提升，建议对比你自己的生产近似负载中的缓存命中率、
-延迟与 token 使用情况。
+要在真实工具链路中测量提升，参见 [trpc-agent-go-benchmark/anthropic_skills](https://github.com/trpc-group/trpc-agent-go-benchmark/tree/main/anthropic_skills) 的
+`prompt-cache` 套件。
 
 与 `SkillLoadMode` 的关系（容易踩坑）：
 

@@ -389,6 +389,9 @@ err := kb.Load(ctx,
 我们使用 [RAGAS](https://docs.ragas.io/) 框架对 tRPC-Agent-Go、LangChain、Agno 和 CrewAI 进行了全面的 RAG 质量评测。
 
 
+> **详细文档**: 完整的评测方案、参数配置和结果分析请参考 [knowledge/README.zh_CN.md](https://github.com/trpc-group/trpc-agent-go-benchmark/blob/main/knowledge/README.zh_CN.md)
+
+
 ### 评测方案
 
 - **数据集**: HuggingFace 文档数据集（[m-ric/huggingface_doc](https://huggingface.co/datasets/m-ric/huggingface_doc)）
