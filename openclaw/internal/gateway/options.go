@@ -11,8 +11,12 @@
 package gateway
 
 import (
+	"context"
 	"strings"
 
+	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
@@ -21,12 +25,30 @@ import (
 // SessionIDFunc builds a session ID for the inbound message.
 type SessionIDFunc func(InboundMessage) (string, error)
 
+// RunOptionInput describes one gateway run before invoking the runner.
+type RunOptionInput struct {
+	Inbound   InboundMessage
+	UserID    string
+	SessionID string
+	RequestID string
+	Message   model.Message
+	Trace     *debugrecorder.Trace
+}
+
+// RunOptionResolver decorates context and options for one gateway run.
+type RunOptionResolver func(
+	ctx context.Context,
+	input RunOptionInput,
+) (context.Context, []agent.RunOption)
+
 type options struct {
-	basePath     string
-	messagesPath string
-	statusPath   string
-	cancelPath   string
-	healthPath   string
+	basePath      string
+	messagesPath  string
+	streamPath    string
+	streamPathSet bool
+	statusPath    string
+	cancelPath    string
+	healthPath    string
 
 	maxBodyBytes int64
 	maxPartBytes int64
@@ -41,6 +63,8 @@ type options struct {
 	allowUsers      map[string]struct{}
 	requireMention  bool
 	mentionPatterns []string
+
+	runOptionResolver RunOptionResolver
 
 	recorder *debugrecorder.Recorder
 	uploads  *uploads.Store
@@ -73,6 +97,13 @@ func newOptions(opts ...Option) options {
 	if strings.TrimSpace(o.messagesPath) == "" {
 		o.messagesPath = defaultMessagesPath
 	}
+	if o.streamPathSet {
+		if strings.TrimSpace(o.streamPath) == "" {
+			o.streamPath = defaultMessagesStreamPath
+		}
+	} else {
+		o.streamPath = o.messagesPath + gwproto.MessagesStreamSuffix
+	}
 	if strings.TrimSpace(o.statusPath) == "" {
 		o.statusPath = defaultStatusPath
 	}
@@ -102,6 +133,15 @@ func WithBasePath(basePath string) Option {
 func WithMessagesPath(path string) Option {
 	return func(o *options) {
 		o.messagesPath = path
+	}
+}
+
+// WithMessagesStreamPath sets the relative path for the streaming
+// messages endpoint.
+func WithMessagesStreamPath(path string) Option {
+	return func(o *options) {
+		o.streamPath = path
+		o.streamPathSet = true
 	}
 }
 
@@ -250,6 +290,35 @@ func WithMentionPatterns(patterns ...string) Option {
 func WithDebugRecorder(rec *debugrecorder.Recorder) Option {
 	return func(o *options) {
 		o.recorder = rec
+	}
+}
+
+// WithRunOptionResolver decorates one gateway run before runner.Run.
+func WithRunOptionResolver(resolver RunOptionResolver) Option {
+	return func(o *options) {
+		if resolver == nil {
+			o.runOptionResolver = nil
+			return
+		}
+		prev := o.runOptionResolver
+		if prev == nil {
+			o.runOptionResolver = resolver
+			return
+		}
+		o.runOptionResolver = func(
+			ctx context.Context,
+			input RunOptionInput,
+		) (context.Context, []agent.RunOption) {
+			prevCtx, prevOpts := prev(ctx, input)
+			if prevCtx == nil {
+				prevCtx = ctx
+			}
+			nextCtx, nextOpts := resolver(prevCtx, input)
+			if nextCtx == nil {
+				nextCtx = prevCtx
+			}
+			return nextCtx, append(prevOpts, nextOpts...)
+		}
 	}
 }
 

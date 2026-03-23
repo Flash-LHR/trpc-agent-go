@@ -15,13 +15,15 @@ Background references:
 
 ### 🎯 What You Get
 
+- 🧭 Built-in tool profiles: `full` (default) or `knowledge_only`
 - 🔎 Overview injection (name + description) to guide selection
 - 📥 `skill_load` to pull `SKILL.md` body and selected docs on demand
 - 📚 `skill_select_docs` to add/replace/clear docs
 - 🧾 `skill_list_docs` to list available docs
-- 🏃 `skill_run` to execute commands, returning stdout/stderr and
+- 🏃 `skill_run` to execute commands in the `full` profile, returning stdout/stderr and
   output files
-- ⌨️ `skill_exec` plus session tools for interactive stdin/TTY flows
+- ⌨️ `skill_exec` plus session tools for interactive stdin/TTY flows in the
+  `full` profile
 - 🗂️ Output file collection via glob patterns with MIME detection
 - 🧩 Pluggable local or container workspace executors (local by default)
 - 🧱 Declarative `inputs`/`outputs`: map inputs and collect/inline/
@@ -50,7 +52,7 @@ the prompt up-front, it can dominate your prompt-token budget and even
 exceed the model context window.
 
 For a reproducible, **runtime** token comparison (progressive disclosure
-vs full injection), see `benchmark/anthropic_skills/README.md` and run
+vs full injection), see [trpc-agent-go-benchmark/anthropic_skills/README.md](https://github.com/trpc-group/trpc-agent-go-benchmark/blob/main/anthropic_skills/README.md) and run
 the `token-report` suite described there.
 
 ### Prompt Cache
@@ -92,7 +94,7 @@ To restore the legacy fallback behavior in summary mode:
 `llmagent.WithSkipSkillsFallbackOnSessionSummary(false)`.
 
 To measure the impact in a real tool-using flow, run the
-`benchmark/anthropic_skills` `prompt-cache` suite.
+[trpc-agent-go-benchmark/anthropic_skills](https://github.com/trpc-group/trpc-agent-go-benchmark/tree/main/anthropic_skills) `prompt-cache` suite.
 
 How this relates to `SkillLoadMode` (common pitfall):
 
@@ -221,8 +223,7 @@ export SKILLS_ROOT=/path/to/skills
 
 ### 2) Enable Skills in an Agent
 
-Provide a repository and an executor. If not set, a local executor is
-used for convenience during development.
+Provide a repository to `LLMAgent`.
 
 ```go
 import (
@@ -238,8 +239,21 @@ agent := llmagent.New(
     "skills-assistant",
     llmagent.WithSkills(repo),
     llmagent.WithCodeExecutor(exec),
+    llmagent.WithEnableCodeExecutionResponseProcessor(false),
     // Optional: keep the system prompt stable for prompt caching.
     llmagent.WithSkillsLoadedContentInToolResults(true),
+)
+```
+
+Knowledge-only mode:
+
+```go
+agent := llmagent.New(
+    "skills-assistant",
+    llmagent.WithSkills(repo),
+    llmagent.WithSkillToolProfile(
+        llmagent.SkillToolProfileKnowledgeOnly,
+    ),
 )
 ```
 
@@ -247,9 +261,20 @@ Key points:
 - Request processor injects overview and on‑demand content:
   [internal/flow/processor/skills.go]
   (https://github.com/trpc-group/trpc-agent-go/blob/main/internal/flow/processor/skills.go)
-- Tools are auto‑registered with `WithSkills`: `skill_load`,
-  `skill_select_docs`, `skill_list_docs`, and `skill_run` show up
-  automatically; no manual wiring required.
+- `WithSkills` auto-registers built-in skill tools; no manual wiring is
+  required.
+  - Default `full` profile: `skill_load`, `skill_select_docs`,
+    `skill_list_docs`, `skill_run`, and — when the executor supports
+    interactive sessions — `skill_exec`, `skill_write_stdin`,
+    `skill_poll_session`, `skill_kill_session`.  If the executor does
+    not implement `InteractiveProgramRunner` (and no local fallback
+    applies), these session tools are omitted and the corresponding
+    prompt guidance is suppressed.
+  - `knowledge_only` profile: only `skill_load`, `skill_select_docs`,
+    and `skill_list_docs`.
+  - Executor requirement follows the profile:
+    `full` usually also needs `WithCodeExecutor(...)`;
+    `knowledge_only` does not.
 - Note: when `WithCodeExecutor` is set, LLMAgent will (by default) try to
   execute Markdown fenced code blocks in model responses. If you only need
   the executor for `skill_run`, disable this behavior with
@@ -258,8 +283,8 @@ Key points:
   block after the `Available skills:` list in the system message.
   - Disable it (to save prompt tokens): `llmagent.WithSkillsToolingGuidance("")`.
   - Or replace it with your own text: `llmagent.WithSkillsToolingGuidance("...")`.
-  - If you disable it, make sure your instruction tells the model when to use
-    `skill_load`, `skill_select_docs`, and `skill_run`.
+  - If you disable it, make sure your instruction tells the model which
+    skill tools are available in your chosen profile.
   - Loader: [tool/skill/load.go](https://github.com/trpc-group/trpc-agent-go/blob/main/tool/skill/load.go)
   - Runner: [tool/skill/run.go](https://github.com/trpc-group/trpc-agent-go/blob/main/tool/skill/run.go)
 
@@ -267,6 +292,11 @@ Key points:
 
 Interactive demo:
 [examples/skillrun/main.go](https://github.com/trpc-group/trpc-agent-go/blob/main/examples/skillrun/main.go)
+
+This demo and the related skill-focused examples ( `skill`, `skilldynamicschema` and
+`structuredoutputskills`) explicitly set
+`llmagent.WithEnableCodeExecutionResponseProcessor(false)` so fenced code
+blocks in assistant text do not auto-execute while `skill_run` is enabled.
 
 ```bash
 cd examples/skillrun
@@ -282,6 +312,9 @@ for skills like `whisper` (audio) and `ocr` (images).
 
 SkillLoadMode demo (no API key required):
 [examples/skillloadmode/README.md](https://github.com/trpc-group/trpc-agent-go/blob/main/examples/skillloadmode/README.md)
+
+SkillToolProfile demo (no API key required):
+[examples/skilltoolprofile/README.md](https://github.com/trpc-group/trpc-agent-go/blob/main/examples/skilltoolprofile/README.md)
 
 Sub-agent skill isolation demo (AgentTool + Skills):
 [examples/skillisolation/README.md](https://github.com/trpc-group/trpc-agent-go/blob/main/examples/skillisolation/README.md)
@@ -308,6 +341,8 @@ Natural prompts:
   needed based on the overview.
 - When needed, the model calls `skill_load` for body/docs, then
   `skill_run` to execute and return output files.
+- In `knowledge_only`, the model can still load skill instructions/docs,
+  but it must use them as guidance rather than execute skill scripts.
 
 ## SKILL.md Anatomy
 
@@ -353,6 +388,8 @@ Behavior:
 - Writes session-scoped `temp:*` keys:
   - `temp:skill:loaded_by_agent:<agent>/<name>` = "1"
   - `temp:skill:docs_by_agent:<agent>/<name>` = "*" or JSON array
+  - `temp:skill:loaded_order_by_agent:<agent>` = JSON array of touched
+    skill names, from oldest to newest
   - Legacy keys (`temp:skill:loaded:<name>`, `temp:skill:docs:<name>`) are
     still supported and migrated when seen.
 - Multi-agent note: sub-agents typically share the same Session. With
@@ -458,7 +495,8 @@ Notes:
 
 - `SkillLoadModeTurn` (default) clears the agent-scoped `temp:skill:*`
   keys (for example, `temp:skill:loaded_by_agent:*` /
-  `temp:skill:docs_by_agent:*`) at the start of the **next**
+  `temp:skill:docs_by_agent:*` /
+  `temp:skill:loaded_order_by_agent:*`) at the start of the **next**
   `Runner.Run` call, so the loaded list is usually non-empty only within
   the current turn/tool loop.
 - `SkillLoadModeSession` keeps them across turns, so the loaded list can
@@ -472,8 +510,9 @@ the built-in option:
 - `llmagent.WithMaxLoadedSkills(N)`
 
 This enforces the cap **before every model request** by clearing older
-`temp:skill:*` state keys, based on recent `skill_load` /
-`skill_select_docs` tool responses in the session.
+`temp:skill:*` state keys. Recent skill touches are tracked in session
+state and updated by `skill_load` / `skill_select_docs`, so the cap does
+not depend on alphabetical fallback or surviving tool-result history.
 
 Example:
 
@@ -855,6 +894,8 @@ Behavior:
 - Updates doc selection state for the current agent:
   - `temp:skill:docs_by_agent:<agent>/<name>` = `*` for include all
   - `temp:skill:docs_by_agent:<agent>/<name>` = JSON array for explicit list
+  - Also refreshes `temp:skill:loaded_order_by_agent:<agent>` so
+    `WithMaxLoadedSkills(N)` treats doc selection as a recent touch
   - Legacy key `temp:skill:docs:<name>` is still supported and migrated.
 
 ### `skill_list_docs`

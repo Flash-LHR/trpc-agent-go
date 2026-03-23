@@ -17,6 +17,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -27,6 +28,7 @@ import (
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -106,6 +108,10 @@ func (ga *GraphAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-
 	ga.setupInvocation(invocation)
 	out := make(chan *event.Event, ga.eventChannelBufferSize(invocation))
 	runCtx := agent.CloneContext(ctx)
+	if invocation.RunOptions.DisableTracing && ga.agentCallbacks == nil && !barrier.Enabled(invocation) {
+		go ga.runWithoutBarrier(runCtx, invocation, out)
+		return out, nil
+	}
 	go ga.runWithBarrier(runCtx, invocation, out)
 	return out, nil
 }
@@ -118,20 +124,74 @@ func (ga *GraphAgent) eventChannelBufferSize(invocation *agent.Invocation) int {
 	return ga.channelBufferSize
 }
 
+func (ga *GraphAgent) runWithoutBarrier(ctx context.Context, invocation *agent.Invocation, out chan<- *event.Event) {
+	initialState := ga.createInitialState(ctx, invocation)
+	innerChan, err := ga.executor.Execute(ctx, initialState, invocation)
+	if err != nil {
+		evt := event.NewErrorEvent(invocation.InvocationID, invocation.AgentName,
+			model.ErrorTypeFlowError, err.Error())
+		defer close(out)
+		if emitErr := agent.EmitEvent(ctx, invocation, out, evt); emitErr != nil {
+			log.Errorf("graphagent: emit error event failed: %v", emitErr)
+		}
+		return
+	}
+	ga.forwardEventStream(ctx, innerChan, out)
+}
+
+func (ga *GraphAgent) forwardEventStream(ctx context.Context, innerChan <-chan *event.Event, out chan<- *event.Event) {
+	defer close(out)
+	for evt := range innerChan {
+		if err := event.EmitEvent(ctx, out, evt); err != nil {
+			log.Errorf("graphagent: emit event failed: %v.", err)
+			return
+		}
+	}
+}
+
 // runWithBarrier emits a start barrier, waits for completion, then runs the graph with callbacks
 // pipeline and forwards all events to the provided output channel.
 func (ga *GraphAgent) runWithBarrier(ctx context.Context, invocation *agent.Invocation, out chan<- *event.Event) {
-	ctx, span := trace.Tracer.Start(ctx, fmt.Sprintf("%s %s", itelemetry.OperationInvokeAgent, invocation.AgentName))
-	itelemetry.TraceBeforeInvokeAgent(span, invocation, ga.description, "", nil)
-	defer span.End()
+	var span oteltrace.Span
+	stream := resolveGraphAgentStream(invocation)
+	tracingEnabled := !invocation.RunOptions.DisableTracing
+	if tracingEnabled {
+		ctx, span = trace.Tracer.Start(ctx, fmt.Sprintf("%s %s", itelemetry.OperationInvokeAgent, invocation.AgentName))
+		itelemetry.TraceBeforeInvokeAgent(
+			span,
+			invocation,
+			ga.description,
+			"",
+			&model.GenerationConfig{Stream: stream},
+		)
+	}
 	defer close(out)
+	var trackerErr error
+	tracker := itelemetry.NewInvokeAgentTracker(ctx, invocation, stream, &trackerErr)
+	tokenUsage := &itelemetry.TokenUsage{}
+	var fullRespEvent *event.Event
+	var operationErrorType string
+	defer func() {
+		if tracingEnabled && fullRespEvent != nil {
+			itelemetry.TraceAfterInvokeAgent(span, fullRespEvent, tokenUsage, tracker.FirstTokenTimeDuration())
+		}
+		tracker.SetResponseErrorType(resolveGraphAgentErrorType(fullRespEvent, operationErrorType))
+		tracker.RecordMetrics()()
+		if tracingEnabled {
+			span.End()
+		}
+	}()
 	// Emit a barrier event and wait for completion in a dedicated goroutine so that the runner can append all prior
 	// events before GraphAgent reads history.
 	if err := ga.emitStartBarrierAndWait(ctx, invocation, out); err != nil {
 		evt := event.NewErrorEvent(invocation.InvocationID, invocation.AgentName,
 			model.ErrorTypeFlowError, err.Error())
-		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(attribute.String(itelemetry.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeFlowError)))
+		fullRespEvent = evt
+		operationErrorType = itelemetry.ToErrorType(err, model.ErrorTypeFlowError)
+		if tracingEnabled {
+			span.SetStatus(codes.Error, err.Error())
+			span.SetAttributes(attribute.String(semconvtrace.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeFlowError)))
+		}
 		if emitErr := agent.EmitEvent(ctx, invocation, out, evt); emitErr != nil {
 			log.Errorf("graphagent: emit error event failed: %v", emitErr)
 		}
@@ -141,21 +201,81 @@ func (ga *GraphAgent) runWithBarrier(ctx context.Context, invocation *agent.Invo
 	if err != nil {
 		evt := event.NewErrorEvent(invocation.InvocationID, invocation.AgentName,
 			model.ErrorTypeFlowError, err.Error())
-		span.SetStatus(codes.Error, err.Error())
-		span.SetAttributes(attribute.String(itelemetry.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeFlowError)))
+		fullRespEvent = evt
+		operationErrorType = itelemetry.ToErrorType(err, model.ErrorTypeFlowError)
+		if tracingEnabled {
+			span.SetStatus(codes.Error, err.Error())
+			span.SetAttributes(attribute.String(semconvtrace.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeFlowError)))
+		}
 		if emitErr := agent.EmitEvent(ctx, invocation, out, evt); emitErr != nil {
 			log.Errorf("graphagent: emit error event failed: %v.", emitErr)
 		}
 		return
 	}
 	for evt := range innerChan {
+		fullRespEvent = recordTraceEvent(tracker, tokenUsage, fullRespEvent, evt)
 		if err := event.EmitEvent(ctx, out, evt); err != nil {
-			span.SetStatus(codes.Error, err.Error())
-			span.SetAttributes(attribute.String(itelemetry.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeFlowError)))
+			operationErrorType = itelemetry.ToErrorType(err, model.ErrorTypeFlowError)
+			if tracingEnabled {
+				span.SetStatus(codes.Error, err.Error())
+				span.SetAttributes(attribute.String(semconvtrace.KeyErrorType, itelemetry.ToErrorType(err, model.ErrorTypeFlowError)))
+			}
 			log.Errorf("graphagent: emit event failed: %v.", err)
 			return
 		}
 	}
+}
+
+// resolveGraphAgentStream returns the effective streaming mode for GraphAgent.
+// Graph-based executions default to streaming unless the caller explicitly
+// overrides the run with agent.WithStream(false).
+func resolveGraphAgentStream(invocation *agent.Invocation) bool {
+	if invocation != nil && invocation.RunOptions.Stream != nil {
+		return *invocation.RunOptions.Stream
+	}
+	return true
+}
+
+// resolveGraphAgentErrorType collapses the final GraphAgent metric error type.
+// Transport or orchestration failures win because they indicate the invocation
+// itself failed even if a response event had already been observed. Otherwise,
+// use the final response event so after-agent callbacks can replace an earlier
+// failure with a successful custom response.
+func resolveGraphAgentErrorType(fullRespEvent *event.Event, operationErrorType string) string {
+	if operationErrorType != "" {
+		return operationErrorType
+	}
+	if fullRespEvent == nil || fullRespEvent.Response == nil || fullRespEvent.Response.Error == nil {
+		return ""
+	}
+	return fullRespEvent.Response.Error.Type
+}
+
+func recordTraceEvent(
+	tracker *itelemetry.InvokeAgentTracker,
+	tokenUsage *itelemetry.TokenUsage,
+	fullRespEvent *event.Event,
+	evt *event.Event,
+) *event.Event {
+	if evt == nil || evt.Response == nil {
+		return fullRespEvent
+	}
+	if tracker != nil {
+		tracker.TrackResponse(evt.Response)
+	}
+	if evt.Response.IsPartial {
+		return fullRespEvent
+	}
+	if !evt.IsError() && !evt.Response.IsValidContent() &&
+		!(evt.Done && evt.Object == graph.ObjectTypeGraphExecution) {
+		return fullRespEvent
+	}
+	if evt.Response.Usage != nil && tokenUsage != nil {
+		tokenUsage.PromptTokens += evt.Response.Usage.PromptTokens
+		tokenUsage.CompletionTokens += evt.Response.Usage.CompletionTokens
+		tokenUsage.TotalTokens += evt.Response.Usage.TotalTokens
+	}
+	return evt
 }
 
 // emitStartBarrierAndWait emits a barrier event and waits until the runner has processed it,

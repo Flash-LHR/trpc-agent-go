@@ -43,10 +43,12 @@ import (
 const (
 	defaultBasePath = "/v1"
 
-	defaultMessagesPath = "/gateway/messages"
-	defaultStatusPath   = "/gateway/status"
-	defaultCancelPath   = "/gateway/cancel"
-	defaultHealthPath   = "/healthz"
+	defaultMessagesPath       = "/gateway/messages"
+	defaultMessagesStreamPath = defaultMessagesPath +
+		gwproto.MessagesStreamSuffix
+	defaultStatusPath = "/gateway/status"
+	defaultCancelPath = "/gateway/cancel"
+	defaultHealthPath = "/healthz"
 
 	defaultChannelName = "http"
 	threadKindDM       = "dm"
@@ -54,8 +56,12 @@ const (
 
 	headerAllow       = "Allow"
 	headerContentType = "Content-Type"
+	headerCacheCtrl   = "Cache-Control"
+	headerConnection  = "Connection"
 
-	contentTypeJSON = "application/json"
+	contentTypeJSON     = "application/json"
+	cacheControlNoCache = "no-cache"
+	connectionKeepAlive = "keep-alive"
 
 	methodPost = "POST"
 	methodGet  = "GET"
@@ -68,6 +74,7 @@ const (
 
 	emptyReplyFallbackText = "I didn't produce a visible " +
 		"reply. Please try again."
+	runCanceledMessage = "request canceled"
 )
 
 var errEmptyReplyValue = errors.New(errEmptyReply)
@@ -115,6 +122,7 @@ func DefaultSessionID(msg InboundMessage) (string, error) {
 type Server struct {
 	basePath     string
 	messagesPath string
+	streamPath   string
 	statusPath   string
 	cancelPath   string
 	healthPath   string
@@ -129,11 +137,14 @@ type Server struct {
 
 	sessionIDFunc SessionIDFunc
 
-	allowUsers      map[string]struct{}
-	requireMention  bool
-	mentionPatterns []string
+	allowUsers        map[string]struct{}
+	requireMention    bool
+	mentionPatterns   []string
+	runOptionResolver RunOptionResolver
 
 	lanes *laneLocker
+
+	canceled *cancelTracker
 
 	handler http.Handler
 
@@ -159,6 +170,10 @@ func New(r runner.Runner, opts ...Option) (*Server, error) {
 	messagesPath, err := joinURLPath(options.basePath, options.messagesPath)
 	if err != nil {
 		return nil, fmt.Errorf("gateway: join messages path: %w", err)
+	}
+	streamPath, err := joinURLPath(options.basePath, options.streamPath)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: join stream path: %w", err)
 	}
 	statusPath, err := joinURLPath(options.basePath, options.statusPath)
 	if err != nil {
@@ -198,25 +213,28 @@ func New(r runner.Runner, opts ...Option) (*Server, error) {
 	}
 
 	s := &Server{
-		basePath:         options.basePath,
-		messagesPath:     messagesPath,
-		statusPath:       statusPath,
-		cancelPath:       cancelPath,
-		healthPath:       options.healthPath,
-		maxBodyBytes:     options.maxBodyBytes,
-		maxPartBytes:     options.maxPartBytes,
-		partFetcher:      fetcher,
-		runner:           r,
-		managed:          managed,
-		sessionIDFunc:    sessionIDFunc,
-		allowUsers:       options.allowUsers,
-		requireMention:   options.requireMention,
-		mentionPatterns:  options.mentionPatterns,
-		lanes:            newLaneLocker(),
-		recorder:         options.recorder,
-		uploads:          options.uploads,
-		audioTranscriber: audioTranscriber,
-		personaStore:     options.personaStore,
+		basePath:          options.basePath,
+		messagesPath:      messagesPath,
+		streamPath:        streamPath,
+		statusPath:        statusPath,
+		cancelPath:        cancelPath,
+		healthPath:        options.healthPath,
+		maxBodyBytes:      options.maxBodyBytes,
+		maxPartBytes:      options.maxPartBytes,
+		partFetcher:       fetcher,
+		runner:            r,
+		managed:           managed,
+		sessionIDFunc:     sessionIDFunc,
+		allowUsers:        options.allowUsers,
+		requireMention:    options.requireMention,
+		mentionPatterns:   options.mentionPatterns,
+		runOptionResolver: options.runOptionResolver,
+		lanes:             newLaneLocker(),
+		canceled:          newCancelTracker(),
+		recorder:          options.recorder,
+		uploads:           options.uploads,
+		audioTranscriber:  audioTranscriber,
+		personaStore:      options.personaStore,
 	}
 
 	mux := http.NewServeMux()
@@ -240,6 +258,12 @@ func (s *Server) MessagesPath() string {
 	return s.messagesPath
 }
 
+// MessagesStreamPath returns the full path for the streaming messages
+// endpoint.
+func (s *Server) MessagesStreamPath() string {
+	return s.streamPath
+}
+
 // StatusPath returns the full path for the status endpoint.
 func (s *Server) StatusPath() string {
 	return s.statusPath
@@ -258,6 +282,8 @@ func (s *Server) HealthPath() string {
 func (s *Server) setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(s.messagesPath, s.handleMessages)
 	mux.HandleFunc(s.messagesPath+"/", s.handleMessages)
+	mux.HandleFunc(s.streamPath, s.handleMessagesStream)
+	mux.HandleFunc(s.streamPath+"/", s.handleMessagesStream)
 
 	mux.HandleFunc(s.statusPath, s.handleStatus)
 	mux.HandleFunc(s.statusPath+"/", s.handleStatus)
@@ -427,23 +453,17 @@ func (s *Server) writeError(
 
 func (s *Server) run(
 	ctx context.Context,
-	userID string,
-	sessionID string,
-	requestID string,
-	msg model.Message,
+	run preparedMessageRun,
 ) (string, string, error) {
 	var (
 		reply    string
 		resolved string
 		runErr   error
 	)
-	s.lanes.withLock(sessionID, func() {
+	s.lanes.withLock(run.sessionID, func() {
 		reply, resolved, runErr = s.runLocked(
 			ctx,
-			userID,
-			sessionID,
-			requestID,
-			msg,
+			run,
 		)
 	})
 	return reply, resolved, runErr
@@ -451,39 +471,29 @@ func (s *Server) run(
 
 func (s *Server) runLocked(
 	ctx context.Context,
-	userID string,
-	sessionID string,
-	requestID string,
-	msg model.Message,
+	run preparedMessageRun,
 ) (string, string, error) {
 	trace := debugrecorder.TraceFromContext(ctx)
-
-	runOpts := make([]agent.RunOption, 0, 1)
-	if requestID != "" {
-		runOpts = append(runOpts, agent.WithRequestID(requestID))
-	}
-	if messages := s.injectedContextMessages(
-		userID,
-		sessionID,
-	); len(messages) > 0 {
-		runOpts = append(
-			runOpts,
-			agent.WithInjectedContextMessages(messages),
-		)
-	}
 
 	if trace != nil {
 		_ = trace.Record(
 			debugrecorder.KindGatewayRun,
 			map[string]any{
-				"user_id":    userID,
-				"session_id": sessionID,
-				"request_id": requestID,
+				"user_id":    run.userID,
+				"session_id": run.sessionID,
+				"request_id": run.requestID,
 			},
 		)
 	}
 
-	events, err := s.runner.Run(ctx, userID, sessionID, msg, runOpts...)
+	ctx, runOpts := s.resolveRunOptions(ctx, run)
+	events, err := s.runner.Run(
+		ctx,
+		run.userID,
+		run.sessionID,
+		run.userMsg,
+		runOpts...,
+	)
 	if err != nil {
 		if trace != nil {
 			_ = trace.RecordError(err)
@@ -512,6 +522,61 @@ func (s *Server) runLocked(
 		return "", result.RequestID, errEmptyReplyValue
 	}
 	return result.Text, result.RequestID, nil
+}
+
+func (s *Server) resolveRunOptions(
+	ctx context.Context,
+	run preparedMessageRun,
+) (context.Context, []agent.RunOption) {
+	runOpts := s.runOptions(
+		run.userID,
+		run.sessionID,
+		run.requestID,
+	)
+	if s == nil || s.runOptionResolver == nil {
+		return ctx, runOpts
+	}
+
+	resolvedCtx, extra := s.runOptionResolver(
+		ctx,
+		RunOptionInput{
+			Inbound:   run.inbound,
+			UserID:    run.userID,
+			SessionID: run.sessionID,
+			RequestID: run.requestID,
+			Message:   run.userMsg,
+			Trace:     debugrecorder.TraceFromContext(ctx),
+		},
+	)
+	if resolvedCtx != nil {
+		ctx = resolvedCtx
+	}
+	if len(extra) == 0 {
+		return ctx, runOpts
+	}
+	runOpts = append(runOpts, extra...)
+	return ctx, runOpts
+}
+
+func (s *Server) runOptions(
+	userID string,
+	sessionID string,
+	requestID string,
+) []agent.RunOption {
+	runOpts := make([]agent.RunOption, 0, 1)
+	if requestID != "" {
+		runOpts = append(runOpts, agent.WithRequestID(requestID))
+	}
+	if messages := s.injectedContextMessages(
+		userID,
+		sessionID,
+	); len(messages) > 0 {
+		runOpts = append(
+			runOpts,
+			agent.WithInjectedContextMessages(messages),
+		)
+	}
+	return runOpts
 }
 
 type replyAccumulator struct {
@@ -585,6 +650,47 @@ func (a *replyAccumulator) consumeDelta(rsp *model.Response) {
 type laneLocker struct {
 	mu    sync.Mutex
 	lanes map[string]*laneEntry
+}
+
+type cancelTracker struct {
+	mu  sync.Mutex
+	ids map[string]struct{}
+}
+
+func newCancelTracker() *cancelTracker {
+	return &cancelTracker{
+		ids: make(map[string]struct{}),
+	}
+}
+
+func (t *cancelTracker) Mark(requestID string) {
+	if t == nil {
+		return
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ids[requestID] = struct{}{}
+}
+
+func (t *cancelTracker) Take(requestID string) bool {
+	if t == nil {
+		return false
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.ids[requestID]; !ok {
+		return false
+	}
+	delete(t.ids, requestID)
+	return true
 }
 
 func newLaneLocker() *laneLocker {

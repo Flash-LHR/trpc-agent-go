@@ -48,9 +48,14 @@ summarizer := summary.NewSummarizer(
 
 ```go
 import (
+    "context"
     "time"
+    "trpc.group/trpc-go/trpc-agent-go/session/clickhouse"
     "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
+    "trpc.group/trpc-go/trpc-agent-go/session/mysql"
+    "trpc.group/trpc-go/trpc-agent-go/session/postgres"
     "trpc.group/trpc-go/trpc-agent-go/session/redis"
+    "trpc.group/trpc-go/trpc-agent-go/session/summary"
 )
 
 // 内存存储（开发/测试）
@@ -146,6 +151,36 @@ type SessionSummarizer interface {
 }
 ```
 
+## 上下文感知的摘要检查
+
+已发布的 `SessionSummarizer` 接口保持不变。
+
+如果摘要触发条件依赖请求上下文，可以直接使用 `ContextChecker`
+以及带 context 的检查选项：
+
+```go
+type asyncSummaryKey struct{}
+
+eventThreshold := summary.CheckEventThreshold(20)
+
+summarizer := summary.NewSummarizer(
+    summaryModel,
+    summary.WithChecksAnyContext(
+        func(ctx context.Context, sess *session.Session) bool {
+            if eventThreshold(sess) {
+                return true
+            }
+            async, _ := ctx.Value(asyncSummaryKey{}).(bool)
+            return async
+        },
+    ),
+)
+```
+
+框架本身不会为摘要触发方式预留 context key。如果业务需要区分不同的
+摘要入口，可以在调用 session API 之前自行往 `ctx` 写入标记，并在
+`ContextChecker` 中读取。
+
 ## 摘要器选项
 
 ### 触发条件
@@ -162,6 +197,10 @@ type SessionSummarizer interface {
 | --- | --- |
 | `WithChecksAll(checks ...Checker)` | 要求所有条件都满足（AND 逻辑），使用 `Check*` 函数 |
 | `WithChecksAny(checks ...Checker)` | 任何条件满足即触发（OR 逻辑），使用 `Check*` 函数 |
+| `WithChecksAllContext(checks ...ContextChecker)` | 要求所有带请求上下文的条件都满足（AND 逻辑） |
+| `WithChecksAnyContext(checks ...ContextChecker)` | 任一带请求上下文的条件满足即触发（OR 逻辑） |
+
+`ContextChecker` 的签名为 `(ctx context.Context, sess *session.Session)`。
 
 **注意**：在 `WithChecksAll` 和 `WithChecksAny` 中使用 `Check*` 函数（如 `CheckEventThreshold`），而不是 `With*` 函数。
 
@@ -557,7 +596,8 @@ llmagent.WithAddSessionSummary(true)
 
 **工作方式**：
 
-- 会话摘要作为独立的系统消息插入到第一个现有系统消息之后
+- 会话摘要**合并到已有的系统消息中**（如果存在），否则作为新的系统消息插入到开头
+- 这确保了与要求单条系统消息位于开头的模型兼容（如 Qwen3.5 系列）
 - 包含摘要时间点之后的**所有增量事件**（不截断）
 - 保证完整上下文：浓缩历史 + 完整新对话
 - **`WithMaxHistoryRuns` 参数被忽略**
@@ -567,16 +607,23 @@ llmagent.WithAddSessionSummary(true)
 ```
 ┌─────────────────────────────────────────┐
 │ System Prompt                           │
-├─────────────────────────────────────────┤
-│ Session Summary (system message)        │ ← Compressed history
+│ (merged with Session Summary)           │ ← 系统提示 + 浓缩历史
 ├─────────────────────────────────────────┤
 │ Event 1 (after summary)                 │ ┐
 │ Event 2                                 │ │
-│ Event 3                                 │ │ New events after summary
-│ ...                                     │ │ (fully retained)
+│ Event 3                                 │ │ 摘要后的新事件
+│ ...                                     │ │ (完整保留)
 │ Event N (current message)               │ ┘
 └─────────────────────────────────────────┘
 ```
+
+**模型兼容性**：
+
+部分 LLM 提供商对系统消息的位置和数量有严格要求：
+
+- **Qwen3.5 系列**等模型要求系统消息必须位于对话开头，且不支持多条系统消息
+- 默认的合并行为可避免 `System message must be at the beginning` 等错误
+- 预加载的内存内容也会通过相同机制合并到系统消息中
 
 ### 模式 2：不使用摘要
 

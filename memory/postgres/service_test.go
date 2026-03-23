@@ -52,6 +52,18 @@ func TestServiceOpts_WithMemoryLimit(t *testing.T) {
 	assert.Equal(t, limit, opts.memoryLimit)
 }
 
+func TestServiceOpts_SearchOptions(t *testing.T) {
+	opts := ServiceOpts{}
+
+	WithMinSearchScore(0.6)(&opts)
+	WithMaxResults(25)(&opts)
+	WithMinSearchScore(-1)(&opts)
+	WithMaxResults(-1)(&opts)
+
+	assert.Equal(t, 0.6, opts.searchMinScore)
+	assert.Equal(t, 25, opts.maxSearchResults)
+}
+
 func TestServiceOpts_WithHost(t *testing.T) {
 	opts := ServiceOpts{}
 	host := "localhost"
@@ -1139,7 +1151,7 @@ func TestService_UpdateMemory_Success(t *testing.T) {
 	entryData, _ := json.Marshal(entry)
 
 	mock.ExpectQuery("SELECT memory_data").WillReturnRows(sqlmock.NewRows([]string{"memory_data"}).AddRow(entryData))
-	mock.ExpectExec("UPDATE.*SET memory_data").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE.*SET memory_id = .*memory_data").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err := svc.UpdateMemory(ctx, memoryKey, "new content", []string{"new"})
 	require.NoError(t, err)
@@ -1779,7 +1791,7 @@ func TestService_UpdateMemory_UpdateError(t *testing.T) {
 	mock.ExpectQuery("SELECT memory_data").WillReturnRows(
 		sqlmock.NewRows([]string{"memory_data"}).AddRow(entryData),
 	)
-	mock.ExpectExec("UPDATE.*SET memory_data").WillReturnError(fmt.Errorf("update failed"))
+	mock.ExpectExec("UPDATE.*SET memory_id = .*memory_data").WillReturnError(fmt.Errorf("update failed"))
 
 	err := svc.UpdateMemory(ctx, memoryKey, "new content", []string{"new"})
 	require.Error(t, err)

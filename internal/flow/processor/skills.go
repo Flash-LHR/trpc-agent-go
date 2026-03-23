@@ -19,6 +19,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/internal/skillprofile"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
@@ -26,6 +27,8 @@ import (
 
 const (
 	skillsOverviewHeader = "Available skills:"
+
+	skillsCapabilityHeader = "Skill tool availability:"
 
 	skillsToolingGuidanceHeader = "Tooling and workspace guidance:"
 
@@ -44,10 +47,12 @@ const (
 )
 
 type skillsRequestProcessorOptions struct {
-	toolingGuidance *string
-	loadMode        string
-	toolResultMode  bool
-	maxLoadedSkills int
+	toolingGuidance   *string
+	loadMode          string
+	toolResultMode    bool
+	maxLoadedSkills   int
+	toolProfile       string
+	execToolsDisabled bool
 }
 
 // SkillsRequestProcessorOption configures SkillsRequestProcessor.
@@ -98,14 +103,32 @@ func WithSkillsLoadedContentInToolResults(
 	}
 }
 
+// WithSkillToolProfile configures the registered skill tool profile so the
+// processor can emit mode-appropriate guidance.
+func WithSkillToolProfile(profile string) SkillsRequestProcessorOption {
+	return func(o *skillsRequestProcessorOptions) {
+		o.toolProfile = profile
+	}
+}
+
+// WithSkillExecToolsDisabled tells the processor that skill_exec and its
+// companion session tools were not registered (e.g. because the executor
+// does not support interactive sessions).  The processor omits the
+// corresponding guidance lines so the model is never taught to use tools
+// it cannot call.
+func WithSkillExecToolsDisabled() SkillsRequestProcessorOption {
+	return func(o *skillsRequestProcessorOptions) {
+		o.execToolsDisabled = true
+	}
+}
+
 // WithMaxLoadedSkills caps how many skills remain "loaded" in session
 // state.
 //
 // When max <= 0, no cap is applied (default behavior).
 //
-// When max > 0, the processor keeps at most max most-recently loaded
-// skills (skill_load / skill_select_docs) and offloads the rest by
-// clearing their state keys.
+// When max > 0, the processor keeps at most max most-recently touched
+// skills and offloads the rest by clearing their state keys.
 func WithMaxLoadedSkills(max int) SkillsRequestProcessorOption {
 	return func(o *skillsRequestProcessorOptions) {
 		o.maxLoadedSkills = max
@@ -124,11 +147,13 @@ func WithMaxLoadedSkills(max int) SkillsRequestProcessorOption {
 //   - skill.DocsKey(agentName, skillName) ->
 //     "*" or JSON array of file names.
 type SkillsRequestProcessor struct {
-	repo            skill.Repository
-	toolingGuidance *string
-	loadMode        string
-	toolResultMode  bool
-	maxLoadedSkills int
+	repo              skill.Repository
+	toolingGuidance   *string
+	loadMode          string
+	toolResultMode    bool
+	maxLoadedSkills   int
+	toolProfile       string
+	execToolsDisabled bool
 }
 
 const (
@@ -148,11 +173,13 @@ func NewSkillsRequestProcessor(
 		opt(&options)
 	}
 	return &SkillsRequestProcessor{
-		repo:            repo,
-		toolingGuidance: options.toolingGuidance,
-		loadMode:        normalizeSkillLoadMode(options.loadMode),
-		toolResultMode:  options.toolResultMode,
-		maxLoadedSkills: options.maxLoadedSkills,
+		repo:              repo,
+		toolingGuidance:   options.toolingGuidance,
+		loadMode:          normalizeSkillLoadMode(options.loadMode),
+		toolResultMode:    options.toolResultMode,
+		maxLoadedSkills:   options.maxLoadedSkills,
+		toolProfile:       skillprofile.Normalize(options.toolProfile),
+		execToolsDisabled: options.execToolsDisabled,
 	}
 }
 
@@ -278,7 +305,7 @@ func (p *SkillsRequestProcessor) maybeCapLoadedSkills(
 		keepSet[name] = struct{}{}
 	}
 
-	delta := make(map[string][]byte, len(loaded)*2)
+	delta := make(map[string][]byte, len(loaded)*2+1)
 	var kept []string
 	for _, name := range loaded {
 		if _, ok := keepSet[name]; ok {
@@ -293,6 +320,10 @@ func (p *SkillsRequestProcessor) maybeCapLoadedSkills(
 		inv.Session.SetState(docsKey, nil)
 		delta[docsKey] = nil
 	}
+	orderKey := skill.LoadedOrderKey(inv.AgentName)
+	orderValue := skill.MarshalLoadedOrder(keep)
+	inv.Session.SetState(orderKey, orderValue)
+	delta[orderKey] = orderValue
 	if len(delta) > 0 {
 		agent.EmitEvent(ctx, inv, ch, event.New(
 			inv.InvocationID,
@@ -313,21 +344,14 @@ func keepMostRecentSkills(
 		return nil
 	}
 
-	loadedSet := loadedSkillSet(loaded)
-	if len(loadedSet) == 0 {
+	order := loadedSkillOrder(inv, loaded)
+	if len(order) == 0 {
 		return nil
 	}
-
-	keep, seen := mostRecentSkillsFromEvents(
-		inv.Session.GetEvents(),
-		inv.AgentName,
-		loadedSet,
-		max,
-	)
-	if len(keep) >= max {
-		return keep
+	if len(order) <= max {
+		return append([]string(nil), order...)
 	}
-	return fillSkillsAlphabetically(keep, seen, loaded, max)
+	return append([]string(nil), order[len(order)-max:]...)
 }
 
 func loadedSkillSet(loaded []string) map[string]struct{} {
@@ -342,49 +366,107 @@ func loadedSkillSet(loaded []string) map[string]struct{} {
 	return out
 }
 
-func mostRecentSkillsFromEvents(
+func loadedSkillOrder(
+	inv *agent.Invocation,
+	loaded []string,
+) []string {
+	if inv == nil || inv.Session == nil {
+		return nil
+	}
+
+	loadedSet := loadedSkillSet(loaded)
+	if len(loadedSet) == 0 {
+		return nil
+	}
+
+	order := loadedSkillOrderFromState(inv, loadedSet)
+	if len(order) < len(loadedSet) {
+		order = appendSkillsToOrderFromEvents(
+			order,
+			inv.Session.GetEvents(),
+			inv.AgentName,
+			loadedSet,
+		)
+	}
+	if len(order) < len(loadedSet) {
+		order = fillLoadedSkillOrderAlphabetically(
+			order,
+			loadedSet,
+		)
+	}
+	return order
+}
+
+func loadedSkillOrderFromState(
+	inv *agent.Invocation,
+	loadedSet map[string]struct{},
+) []string {
+	if inv == nil || inv.Session == nil {
+		return nil
+	}
+
+	raw, ok := inv.Session.GetState(skill.LoadedOrderKey(inv.AgentName))
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+
+	order := skill.ParseLoadedOrder(raw)
+	if len(order) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(order))
+	seen := make(map[string]struct{}, len(order))
+	for _, name := range order {
+		if _, ok := loadedSet[name]; !ok {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		out = append(out, name)
+		seen[name] = struct{}{}
+	}
+	return out
+}
+
+func appendSkillsToOrderFromEvents(
+	order []string,
 	events []event.Event,
 	agentName string,
 	loadedSet map[string]struct{},
-	max int,
-) ([]string, map[string]struct{}) {
-	keep := make([]string, 0, max)
-	seen := make(map[string]struct{}, max)
-	for i := len(events) - 1; i >= 0 && len(keep) < max; i-- {
-		keep = appendSkillsFromToolResponseEvent(
+) []string {
+	for i := 0; i < len(events); i++ {
+		order = appendSkillsToOrderFromToolResponseEvent(
 			events[i],
 			agentName,
 			loadedSet,
-			seen,
-			keep,
-			max,
+			order,
 		)
 	}
-	return keep, seen
+	return order
 }
 
-func appendSkillsFromToolResponseEvent(
+func appendSkillsToOrderFromToolResponseEvent(
 	ev event.Event,
 	agentName string,
 	loadedSet map[string]struct{},
-	seen map[string]struct{},
-	keep []string,
-	max int,
+	order []string,
 ) []string {
 	if agentName != "" && ev.Author != agentName {
-		return keep
+		return order
 	}
 	if ev.Response == nil {
-		return keep
+		return order
 	}
 	if ev.Object != model.ObjectTypeToolResponse {
-		return keep
+		return order
 	}
 	if len(ev.Choices) == 0 {
-		return keep
+		return order
 	}
 
-	for j := len(ev.Choices) - 1; j >= 0 && len(keep) < max; j-- {
+	for j := 0; j < len(ev.Choices); j++ {
 		msg := ev.Choices[j].Message
 		if msg.Role != model.RoleTool {
 			continue
@@ -400,38 +482,25 @@ func appendSkillsFromToolResponseEvent(
 		if _, ok := loadedSet[name]; !ok {
 			continue
 		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		keep = append(keep, name)
-		seen[name] = struct{}{}
+		order = skill.TouchLoadedOrder(order, name)
 	}
-	return keep
+	return order
 }
 
-func fillSkillsAlphabetically(
-	keep []string,
-	seen map[string]struct{},
-	loaded []string,
-	max int,
+func fillLoadedSkillOrderAlphabetically(
+	order []string,
+	loadedSet map[string]struct{},
 ) []string {
-	sorted := append([]string(nil), loaded...)
-	sort.Strings(sorted)
-	for _, name := range sorted {
-		if len(keep) == max {
-			break
-		}
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
+	seen := loadedSkillSet(order)
+	var sorted []string
+	for name := range loadedSet {
 		if _, ok := seen[name]; ok {
 			continue
 		}
-		keep = append(keep, name)
-		seen[name] = struct{}{}
+		sorted = append(sorted, name)
 	}
-	return keep
+	sort.Strings(sorted)
+	return append(order, sorted...)
 }
 
 func skillNameFromToolResponse(msg model.Message) string {
@@ -485,9 +554,11 @@ func clearSkillState(inv *agent.Invocation) map[string][]byte {
 	delta := make(map[string][]byte)
 	loadedPrefix := skill.LoadedPrefix(inv.AgentName)
 	docsPrefix := skill.DocsPrefix(inv.AgentName)
+	orderKey := skill.LoadedOrderKey(inv.AgentName)
 	for k, v := range state {
 		if !strings.HasPrefix(k, loadedPrefix) &&
-			!strings.HasPrefix(k, docsPrefix) {
+			!strings.HasPrefix(k, docsPrefix) &&
+			k != orderKey {
 			continue
 		}
 		if len(v) == 0 {
@@ -511,7 +582,7 @@ func (p *SkillsRequestProcessor) maybeOffloadLoadedSkills(
 		len(loaded) == 0 {
 		return
 	}
-	delta := make(map[string][]byte, len(loaded)*2)
+	delta := make(map[string][]byte, len(loaded)*2+1)
 	for _, name := range loaded {
 		loadedKey := skill.LoadedKey(inv.AgentName, name)
 		inv.Session.SetState(loadedKey, nil)
@@ -521,6 +592,9 @@ func (p *SkillsRequestProcessor) maybeOffloadLoadedSkills(
 		inv.Session.SetState(docsKey, nil)
 		delta[docsKey] = nil
 	}
+	orderKey := skill.LoadedOrderKey(inv.AgentName)
+	inv.Session.SetState(orderKey, nil)
+	delta[orderKey] = nil
 	agent.EmitEvent(ctx, inv, ch, event.New(
 		inv.InvocationID,
 		inv.AgentName,
@@ -540,6 +614,9 @@ func (p *SkillsRequestProcessor) injectOverview(req *model.Request) {
 	for _, s := range sums {
 		line := fmt.Sprintf("- %s: %s\n", s.Name, s.Description)
 		b.WriteString(line)
+	}
+	if capability := p.capabilityGuidanceText(); capability != "" {
+		b.WriteString(capability)
 	}
 	if guidance := p.toolingGuidanceText(); guidance != "" {
 		b.WriteString(guidance)
@@ -565,12 +642,65 @@ func (p *SkillsRequestProcessor) injectOverview(req *model.Request) {
 
 func (p *SkillsRequestProcessor) toolingGuidanceText() string {
 	if p.toolingGuidance == nil {
-		return defaultToolingAndWorkspaceGuidance()
+		return defaultToolingAndWorkspaceGuidance(
+			p.toolProfile, p.execToolsDisabled,
+		)
 	}
 	return normalizeGuidance(*p.toolingGuidance)
 }
 
-func defaultToolingAndWorkspaceGuidance() string {
+func (p *SkillsRequestProcessor) capabilityGuidanceText() string {
+	if !skillprofile.IsKnowledgeOnly(p.toolProfile) {
+		return ""
+	}
+	if p.toolingGuidance != nil && *p.toolingGuidance == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(skillsCapabilityHeader)
+	b.WriteString("\n")
+	b.WriteString("- This profile supports skill discovery and knowledge ")
+	b.WriteString("loading only.\n")
+	b.WriteString("- Execution-oriented skill tools are unavailable in ")
+	b.WriteString("the current mode.\n")
+	b.WriteString("- If a loaded skill describes scripts, shell commands, ")
+	b.WriteString("workspace paths, generated files, or interactive flows, ")
+	b.WriteString("treat that content as reference only. Use other ")
+	b.WriteString("registered tools for real actions, or explain that ")
+	b.WriteString("execution is unavailable in the current mode.\n")
+	return b.String()
+}
+
+func defaultToolingAndWorkspaceGuidance(
+	profile string, execToolsDisabled bool,
+) string {
+	if skillprofile.IsKnowledgeOnly(profile) {
+		return defaultKnowledgeOnlyGuidance()
+	}
+	return defaultFullToolingAndWorkspaceGuidance(execToolsDisabled)
+}
+
+func defaultKnowledgeOnlyGuidance() string {
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(skillsToolingGuidanceHeader)
+	b.WriteString("\n")
+	b.WriteString("- Use skills for progressive disclosure only: load ")
+	b.WriteString("SKILL.md first, then inspect only the documentation ")
+	b.WriteString("needed for the current task.\n")
+	b.WriteString("- Avoid include_all_docs unless the user asks or the ")
+	b.WriteString("task genuinely needs the full doc set.\n")
+	b.WriteString("- Treat loaded skill content as domain guidance. Do ")
+	b.WriteString("not claim you executed scripts, shell commands, or ")
+	b.WriteString("interactive flows described by the skill.\n")
+	b.WriteString("- If a skill depends on execution to complete the ")
+	b.WriteString("task, switch to other registered tools (for example, ")
+	b.WriteString("MCP tools) or explain the limitation clearly.\n")
+	return b.String()
+}
+
+func defaultFullToolingAndWorkspaceGuidance(execToolsDisabled bool) string {
 	var b strings.Builder
 	b.WriteString("\n")
 	b.WriteString(skillsToolingGuidanceHeader)
@@ -649,14 +779,20 @@ func defaultToolingAndWorkspaceGuidance() string {
 	b.WriteString("the skill docs or bundled scripts, plus the minimal ")
 	b.WriteString("read-only probe commands needed to verify external ")
 	b.WriteString("CLI behavior.\n")
-	b.WriteString("- Use skill_exec when a command may stay running, ")
-	b.WriteString("prompt for input, or require incremental stdin/TTY ")
-	b.WriteString("interaction. Then use skill_write_stdin or ")
-	b.WriteString("skill_poll_session until it exits, and ")
-	b.WriteString("skill_kill_session to stop it if needed.\n")
-	b.WriteString("- For CLIs that launch $EDITOR, prefer editor_text ")
-	b.WriteString("on skill_run or skill_exec instead of trying to ")
-	b.WriteString("drive a full-screen editor through stdin.\n")
+	if !execToolsDisabled {
+		b.WriteString("- Use skill_exec when a command may stay running, ")
+		b.WriteString("prompt for input, or require incremental stdin/TTY ")
+		b.WriteString("interaction. Then use skill_write_stdin or ")
+		b.WriteString("skill_poll_session until it exits, and ")
+		b.WriteString("skill_kill_session to stop it if needed.\n")
+		b.WriteString("- For CLIs that launch $EDITOR, prefer editor_text ")
+		b.WriteString("on skill_run or skill_exec instead of trying to ")
+		b.WriteString("drive a full-screen editor through stdin.\n")
+	} else {
+		b.WriteString("- For CLIs that launch $EDITOR, prefer editor_text ")
+		b.WriteString("on skill_run instead of trying to drive a ")
+		b.WriteString("full-screen editor through stdin.\n")
+	}
 	b.WriteString("- Safe probe commands include patterns such as ")
 	b.WriteString("`--help`, `-h`, `--version`, or `<subcommand> ")
 	b.WriteString("--help` when exact syntax is uncertain or a command ")

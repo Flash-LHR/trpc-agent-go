@@ -5,11 +5,52 @@
 本目录是一个基于 `trpc-agent-go` 构建的小型可运行二进制文件，实现了类 OpenClaw 架构：
 
 - 一个长期运行的 **gateway** 进程（HTTP 端点）。
+- 一个可选的 **A2A** 接口，可作为子 agent / 沙箱入口。
 - 真正的 IM **通道**：Telegram（长轮询）。
 - 基于 DM（私聊）与群组聊天派生的稳定 **session_id**。
 - 通过 `llmagent` 内置的 skills 工具支持技能。
 
 本项目旨在作为添加更多通道（企业微信、Slack 等）和强化运维控制的起点。
+
+详细指南：
+[OpenClaw Runtime Guide (English)](../docs/mkdocs/en/openclaw-runtime.md)
+| [OpenClaw Runtime 指南（中文）](../docs/mkdocs/zh/openclaw-runtime.md)
+
+## 安装预编译 release
+
+如果你想直接拿到可运行的二进制，而不是通过 `go run`，可以使用公网安装
+脚本：
+
+```bash
+curl -fsSL \
+  https://github.com/trpc-group/trpc-agent-go/releases/latest/download/openclaw-install.sh \
+  | bash
+```
+
+默认安装 profile 是 `stdin`，因此第一次运行不需要模型凭据。
+安装脚本默认会把 GitHub 版本的配置和状态目录写到
+`~/.trpc-agent-go-github/openclaw`。
+
+如果安装后还找不到 `openclaw`，直接执行安装脚本输出里的 PATH 命令。
+对于 bash，持久化写法如下：
+
+```bash
+grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.bashrc" || \
+  printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$HOME/.bashrc"
+. "$HOME/.bashrc"
+```
+
+然后直接启动：
+
+```bash
+openclaw
+```
+
+更多说明：
+[INSTALL.md](./INSTALL.md)
+| [INSTALL.zh_CN.md](./INSTALL.zh_CN.md)
+| [RELEASE.md](./RELEASE.md)
+| [RELEASE.zh_CN.md](./RELEASE.zh_CN.md)
 
 ## 快速开始
 
@@ -58,7 +99,8 @@ OpenClaw 支持 YAML 配置文件，以避免冗长的 CLI 参数列表。
 
 - 传入 `-config /path/to/openclaw.yaml`，或
 - 设置 `OPENCLAW_CONFIG=/path/to/openclaw.yaml`。
-- 如果两者都未设置，OpenClaw 还会尝试 `~/.trpc-agent-go/openclaw/openclaw.yaml`
+- 如果两者都未设置，OpenClaw 还会尝试
+  `~/.trpc-agent-go-github/openclaw/openclaw.yaml`
   （仅当文件存在时）。
 
 CLI 参数始终会覆盖配置文件中的值。
@@ -194,6 +236,45 @@ go run ./cmd/openclaw -config ./openclaw.yaml
     自定义类型仍需自定义二进制文件。参见 `openclaw/INTEGRATIONS.md` 和
     `openclaw/EXTENDING.md`。
 
+## 将 OpenClaw 暴露为 A2A 子 agent
+
+OpenClaw 可以在 HTTP gateway 旁边原生发布 A2A 接口。
+当你需要把一个带完整 skills / 二进制环境的 OpenClaw 沙箱挂到
+另一个 `trpc-agent-go` 主脑下面时，这就是推荐做法。
+
+YAML：
+
+```yaml
+a2a:
+  enabled: true
+  host: "http://127.0.0.1:8080/a2a"
+  user_id_header: "X-User-ID" # 可选
+  streaming: true
+  advertise_tools: false
+  name: "openclaw-sandbox"
+  description: "Sandbox agent for bundled skills and host binaries."
+```
+
+CLI：
+
+```bash
+cd openclaw
+go run ./cmd/openclaw \
+  -a2a \
+  -a2a-host http://127.0.0.1:8080/a2a
+```
+
+说明：
+
+- `a2a.host` 必须带一个非根路径，例如 `/a2a`。
+- A2A 接口和 gateway 复用同一个 OpenClaw runner、session、
+  memory、skills 和 tools。
+- 默认 agent card 只发布一个稳定的 “OpenClaw sandbox” skill，
+  不会把所有 tool 全部展开。只有在调用方确实需要逐 tool 元数据时，
+  才建议开启 `advertise_tools: true`。
+- 可运行示例见
+  [`./examples/a2a_subagent`](./examples/a2a_subagent/)。
+
 ## 自定义 Prompt
 
 OpenClaw 支持通过以下方式自定义主 agent 的 prompt：
@@ -259,6 +340,47 @@ curl -sS 'http://127.0.0.1:8080/v1/gateway/messages' \
   -H 'Content-Type: application/json' \
   -d '{"from":"alice","text":"Hello"}'
 ```
+
+通过 HTTP SSE 流式发送一条消息：
+
+```bash
+curl -N 'http://127.0.0.1:8080/v1/gateway/messages:stream' \
+  -H 'Content-Type: application/json' \
+  -d '{"from":"alice","text":"Hello"}'
+```
+
+该接口会输出按行分隔的 SSE 事件。每个 `data:` 载荷都是一个带稳定
+`type` 字段的 JSON `StreamEvent`：
+
+- `run.started`
+- `run.ignored`
+- `run.progress`
+- `message.delta`
+- `message.completed`
+- `run.completed`
+- `run.error`
+
+典型成功流程：
+
+1. `run.started`
+2. 零个或多个 `run.progress`
+3. 零个或多个 `message.delta`
+4. `message.completed`
+5. `run.completed`
+
+`run.progress` 是低频、系统生成的阶段状态更新，适合下游通道在没有
+正文之前展示一条简短的“仍在处理中”提示，而不是去猜测半截文本。
+首版使用的稳定阶段包括：
+
+- `preparing`
+- `reading_document`
+- `reading_spreadsheet`
+- `running_tool`
+- `summarizing`
+
+对于进程内集成，如果 `deps.Gateway` 同时实现了
+`registry.StreamingGatewayClient`，channel 插件可以优先调用
+`StreamMessage(...)`。
 
 发送多模态消息：
 
@@ -334,12 +456,21 @@ curl -sS 'http://127.0.0.1:8080/v1/gateway/messages' \
 注意：OpenAI Chat Completions 不支持像图片/音频那样的原始文件输入。
 OpenClaw 会将入站的 `file` 和 `video` 部分持久化到 state 目录下的
 稳定宿主机路径，在 session 历史中保留这些引用，并将它们暴露给 tools。
-实际上，这意味着后续轮次仍然可以通过 `exec_command`
+实际上，这意味着后续轮次仍然可以通过 `read_document`、
+`read_spreadsheet` 或 `exec_command`
 （`$OPENCLAW_LAST_UPLOAD_PATH`、`$OPENCLAW_LAST_UPLOAD_NAME`、
 `$OPENCLAW_LAST_UPLOAD_MIME`、`$OPENCLAW_LAST_PDF_PATH`、
 `$OPENCLAW_LAST_AUDIO_PATH`、`$OPENCLAW_LAST_VIDEO_PATH`、
 `$OPENCLAW_LAST_IMAGE_PATH`、`$OPENCLAW_SESSION_UPLOADS_DIR`）或
 `skill_run`（`host://...` 输入暂存到 `$WORK_DIR/inputs`）操作同一个上传文件。
+
+对于常见文件读取任务，优先使用内置的一方工具：
+
+- `read_document`：稳定读取 PDF、DOCX 和文本类上传文件。
+- `read_spreadsheet`：稳定读取 XLSX 和 CSV 上传文件。
+
+`exec_command` 继续保留为兜底工具，用于转换、复杂脚本和这些文件工具
+无法覆盖的宿主机任务。
 
 ## 使用真实模型运行（OpenAI）
 
@@ -633,7 +764,7 @@ OpenClaw 根据入站消息是 DM（私聊）还是群组消息来派生 `sessio
 OpenClaw 将 Telegram `getUpdates` 偏移存储在磁盘上，以便重启后
 可以从上次处理的更新继续。
 
-- 默认 state 目录：`$HOME/.trpc-agent-go/openclaw`
+- 默认 state 目录：`$HOME/.trpc-agent-go-github/openclaw`
 - 通过 `-state-dir` 覆盖
 
 首次运行时（当偏移文件不存在时），轮询器默认会排空待处理的更新，
@@ -766,10 +897,15 @@ OpenClaw 将上游 OpenClaw 技能包打包在 `openclaw/skills/` 下
 2) 项目 AgentSkills：`./.agents/skills`
 3) 个人 AgentSkills：`$HOME/.agents/skills`
 4) 托管技能：`<state-dir>/skills`
-5) 仓库内置技能（从仓库根目录运行时）：`./openclaw/skills`
-6) 额外目录：`-skills-extra-dirs`（逗号分隔，最低优先级）
+5) 已安装 release 自带的内置技能：`<state-dir>/bundled-skills`
+6) 仓库内置技能（从仓库根目录运行时）：`./openclaw/skills`
+7) 额外目录：`-skills-extra-dirs`（逗号分隔，最低优先级）
 
 如果两个技能同名，优先级更高的那个生效。
+
+预编译 release 每次安装和升级时都会刷新
+`<state-dir>/bundled-skills`，而 `<state-dir>/skills` 仍然留给你放自己的
+托管技能。
 
 ### OpenClaw 元数据过滤（可选）
 

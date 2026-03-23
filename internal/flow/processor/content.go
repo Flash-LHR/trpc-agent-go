@@ -107,8 +107,13 @@ type ContentRequestProcessor struct {
 	// conversations. Default is ReasoningContentModeDiscardPreviousTurns, which is
 	// recommended for DeepSeek thinking mode.
 	ReasoningContentMode string
-	// PreloadMemory sets the number of memories to preload into system prompt.
-	// When > 0, the specified number of most recent memories are loaded.
+	// PreloadMemory controls framework-side memory preload.
+	// When > 0, it acts as an adaptive preload budget:
+	//   - If total memories <= N, preload all memories.
+	//   - If total memories > N, preload top-N search results.
+	//   - If query extraction is empty, the search fails, or the search
+	//     returns no matches, fall back to loading up to N memories
+	//     directly.
 	// When 0, no memories are preloaded (use tools instead).
 	// When < 0 (default), all memories are loaded.
 	PreloadMemory int
@@ -190,13 +195,16 @@ func WithReasoningContentMode(mode string) ContentOption {
 	}
 }
 
-// WithPreloadMemory sets the number of memories to preload into system prompt.
+// WithPreloadMemory sets the framework-side memory preload behavior.
 //   - Set to 0 (default) to disable preloading (use tools instead).
-//   - Set to N (N > 0) to load the most recent N memories.
+//   - Set to N (N > 0) to use adaptive preload with budget N.
+//     Small memory sets are preloaded in full. Larger sets use search and
+//     fall back to loading up to N memories directly when search cannot
+//     provide usable results.
 //   - Set to -1 to load all memories.
 //     WARNING: Loading all memories may significantly increase token usage
 //     and API costs, especially for users with many stored memories.
-//     Consider using a positive limit (e.g., 10-50) for production use.
+//     Consider using a positive budget (e.g., 10-50) for production use.
 func WithPreloadMemory(limit int) ContentOption {
 	return func(p *ContentRequestProcessor) {
 		p.PreloadMemory = limit
@@ -299,42 +307,20 @@ func (p *ContentRequestProcessor) ProcessRequest(
 		if !skipHistory && p.AddSessionSummary && p.TimelineFilterMode == TimelineFilterAll {
 			// Fetch session summary early so we can insert it after other
 			// semi-stable system blocks (for example, preloaded memories).
-			summaryMsg, summaryUpdatedAt =
-				p.getSessionSummaryMessage(invocation)
+			summaryMsg, summaryUpdatedAt = p.getSessionSummaryMessage(invocation)
 		}
 
 		// Preload memories into system prompt if configured.
-		// PreloadMemory: 0 = disabled, -1 = all, N > 0 = most recent N.
+		// PreloadMemory: 0 = disabled, -1 = all, N > 0 = adaptive preload budget.
 		if p.PreloadMemory != 0 && invocation.MemoryService != nil {
 			if memMsg := p.getPreloadMemoryMessage(ctx, invocation); memMsg != nil {
-				// Insert memory as a system message after the last system
-				// message to keep stable instructions cacheable.
-				systemMsgIndex := findLastSystemMessageIndex(
-					req.Messages,
-				)
-				if systemMsgIndex >= 0 {
-					req.Messages = append(req.Messages[:systemMsgIndex+1],
-						append([]model.Message{*memMsg}, req.Messages[systemMsgIndex+1:]...)...)
-				} else {
-					req.Messages = append([]model.Message{*memMsg}, req.Messages...)
-				}
+				p.injectSystemContextMessage(req, *memMsg)
 			}
 		}
 
 		if summaryMsg != nil {
-			invocation.SetState(
-				contentHasSessionSummaryStateKey,
-				true,
-			)
-			// Insert summary as a separate system message after the last
-			// system message to keep stable instructions cacheable.
-			systemMsgIndex := findLastSystemMessageIndex(req.Messages)
-			if systemMsgIndex >= 0 {
-				req.Messages = append(req.Messages[:systemMsgIndex+1],
-					append([]model.Message{*summaryMsg}, req.Messages[systemMsgIndex+1:]...)...)
-			} else {
-				req.Messages = append([]model.Message{*summaryMsg}, req.Messages...)
-			}
+			invocation.SetState(contentHasSessionSummaryStateKey, true)
+			p.injectSystemContextMessage(req, *summaryMsg)
 		}
 
 		if skipHistory {
@@ -376,6 +362,28 @@ func (p *ContentRequestProcessor) ProcessRequest(
 		invocation.AgentName,
 		event.WithObject(model.ObjectTypePreprocessingContent),
 	))
+}
+
+// injectSystemContextMessage injects summary or memory context into request.
+// It merges the content into an existing system message if one exists,
+// or prepends as a new system message if none exists.
+func (p *ContentRequestProcessor) injectSystemContextMessage(
+	req *model.Request,
+	msg model.Message,
+) {
+	if msg.Role != model.RoleSystem {
+		return
+	}
+	systemMsgIndex := findSystemMessageIndex(req.Messages)
+	if systemMsgIndex >= 0 {
+		if req.Messages[systemMsgIndex].Content == "" {
+			req.Messages[systemMsgIndex].Content = msg.Content
+			return
+		}
+		req.Messages[systemMsgIndex].Content += "\n\n" + msg.Content
+		return
+	}
+	req.Messages = append([]model.Message{msg}, req.Messages...)
 }
 
 // injectInjectedContextMessages inserts per-run context messages into the request
@@ -1512,20 +1520,82 @@ func (p *ContentRequestProcessor) getPreloadMemoryMessage(
 	if userKey.AppName == "" || userKey.UserID == "" {
 		return nil
 	}
-	// Handle PreloadMemory: 0 = disabled, -1 = all, N > 0 = most recent N.
+	// Handle PreloadMemory: 0 = disabled, -1 = all, N > 0 = adaptive budget.
 	if p.PreloadMemory == 0 {
-		// PreloadMemory = 0 means disabled, return nil.
 		return nil
 	}
-	// PreloadMemory = -1 means all memories, use 0 for ReadMemories (no limit).
-	// PreloadMemory = N > 0 means most recent N memories.
-	// Here we use max to handle the case when PreloadMemory is negative.
-	limit := max(p.PreloadMemory, 0)
+	if p.PreloadMemory < 0 {
+		return p.loadPreloadMemoryMessage(ctx, inv, userKey, 0)
+	}
+	return p.getAdaptivePreloadMemoryMessage(ctx, inv, userKey, p.PreloadMemory)
+}
+
+// getAdaptivePreloadMemoryMessage preloads all memories for small memory sets
+// and falls back to query-aware search for larger sets.
+func (p *ContentRequestProcessor) getAdaptivePreloadMemoryMessage(
+	ctx context.Context,
+	inv *agent.Invocation,
+	userKey memory.UserKey,
+	budget int,
+) *model.Message {
+	const preloadProbeExtra = 1
+	probeLimit := budget + preloadProbeExtra
+	probeEntries, err := inv.MemoryService.ReadMemories(ctx, userKey, probeLimit)
+	if err != nil {
+		log.WarnfContext(ctx, "Failed to probe memories for preload: %v", err)
+		return nil
+	}
+	if len(probeEntries) == 0 {
+		return nil
+	}
+	if len(probeEntries) <= budget {
+		return newPreloadMemoryMessage(probeEntries)
+	}
+
+	query := buildPreloadSearchQuery(inv.Message)
+	if query == "" {
+		return p.loadPreloadMemoryMessage(ctx, inv, userKey, budget)
+	}
+
+	searchOpts := memory.SearchOptions{
+		Query:        query,
+		MaxResults:   budget,
+		Deduplicate:  true,
+		HybridSearch: true,
+	}
+	memories, err := inv.MemoryService.SearchMemories(
+		ctx,
+		userKey,
+		query,
+		memory.WithSearchOptions(searchOpts),
+	)
+	if err != nil {
+		log.WarnfContext(ctx, "Failed to search memories for preload: %v", err)
+		return p.loadPreloadMemoryMessage(ctx, inv, userKey, budget)
+	}
+	if len(memories) == 0 {
+		return p.loadPreloadMemoryMessage(ctx, inv, userKey, budget)
+	}
+	return newPreloadMemoryMessage(memories)
+}
+
+// loadPreloadMemoryMessage loads memories directly and formats them as a
+// system message.
+func (p *ContentRequestProcessor) loadPreloadMemoryMessage(
+	ctx context.Context,
+	inv *agent.Invocation,
+	userKey memory.UserKey,
+	limit int,
+) *model.Message {
 	memories, err := inv.MemoryService.ReadMemories(ctx, userKey, limit)
 	if err != nil {
 		log.WarnfContext(ctx, "Failed to preload memories: %v", err)
 		return nil
 	}
+	return newPreloadMemoryMessage(memories)
+}
+
+func newPreloadMemoryMessage(memories []*memory.Entry) *model.Message {
 	if len(memories) == 0 {
 		return nil
 	}
@@ -1535,17 +1605,59 @@ func (p *ContentRequestProcessor) getPreloadMemoryMessage(
 	}
 }
 
+// buildPreloadSearchQuery extracts the current user text used for adaptive
+// preload search.
+func buildPreloadSearchQuery(msg model.Message) string {
+	parts := make([]string, 0, 1+len(msg.ContentParts))
+	if text := strings.TrimSpace(msg.Content); text != "" {
+		parts = append(parts, text)
+	}
+	for _, part := range msg.ContentParts {
+		if part.Type != model.ContentTypeText || part.Text == nil {
+			continue
+		}
+		text := strings.TrimSpace(*part.Text)
+		if text == "" {
+			continue
+		}
+		parts = append(parts, text)
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
 // formatMemoryContent formats memories for system prompt injection.
 func formatMemoryContent(memories []*memory.Entry) string {
 	var sb strings.Builder
 	sb.WriteString("## User Memories\n\n")
-	sb.WriteString("The following are memories about the user:\n\n")
+	sb.WriteString("The following are stored memories about the user. ")
+	sb.WriteString("Use these to answer questions. Episodic memories include ")
+	sb.WriteString("event details (time, participants, location).\n\n")
 	for _, mem := range memories {
 		if mem == nil || mem.Memory == nil {
 			continue
 		}
-		fmt.Fprintf(&sb, "ID: %s\n", mem.ID)
-		fmt.Fprintf(&sb, "Memory: %s\n\n", mem.Memory.Memory)
+		fmt.Fprintf(&sb, "- [%s] %s", mem.ID, mem.Memory.Memory)
+		// Append metadata inline for richer context.
+		var meta []string
+		if mem.Memory.Kind != "" {
+			meta = append(meta, fmt.Sprintf("kind=%s", mem.Memory.Kind))
+		}
+		if mem.Memory.EventTime != nil {
+			meta = append(meta, fmt.Sprintf("date=%s", mem.Memory.EventTime.Format("2006-01-02")))
+		}
+		if len(mem.Memory.Participants) > 0 {
+			meta = append(meta, fmt.Sprintf("with=%s", strings.Join(mem.Memory.Participants, ", ")))
+		}
+		if mem.Memory.Location != "" {
+			meta = append(meta, fmt.Sprintf("at=%s", mem.Memory.Location))
+		}
+		if len(mem.Memory.Topics) > 0 {
+			meta = append(meta, fmt.Sprintf("topics=%s", strings.Join(mem.Memory.Topics, ", ")))
+		}
+		if len(meta) > 0 {
+			fmt.Fprintf(&sb, " (%s)", strings.Join(meta, "; "))
+		}
+		sb.WriteString("\n")
 	}
 	return sb.String()
 }

@@ -20,6 +20,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/evaluator/registry"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/metric"
 	metricinmemory "trpc.group/trpc-go/trpc-agent-go/evaluation/metric/inmemory"
+	metricregistry "trpc.group/trpc-go/trpc-agent-go/evaluation/metric/registry"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/service"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 )
@@ -33,11 +34,13 @@ type options struct {
 	evalResultManager                 evalresult.Manager
 	metricManager                     metric.Manager
 	registry                          registry.Registry
+	metricRegistry                    metricregistry.Registry
 	evalService                       service.Service
 	expectedRunner                    runner.Runner
 	callbacks                         *service.Callbacks
 	judgeRunner                       runner.Runner
 	numRuns                           int
+	numRunsParallelEnabled            *bool
 	evalCaseParallelism               *int
 	evalCaseParallelInferenceEnabled  *bool
 	evalCaseParallelEvaluationEnabled *bool
@@ -53,6 +56,7 @@ func newOptions(opt ...Option) *options {
 		evalResultManager: evalresultinmemory.New(),
 		metricManager:     metricinmemory.New(),
 		registry:          registry.New(),
+		metricRegistry:    metricregistry.New(),
 	}
 	// Apply user options.
 	for _, o := range opt {
@@ -92,6 +96,13 @@ func WithRegistry(r registry.Registry) Option {
 	}
 }
 
+// WithMetricRegistry sets the metric runtime registry.
+func WithMetricRegistry(r metricregistry.Registry) Option {
+	return func(o *options) {
+		o.metricRegistry = r
+	}
+}
+
 // WithEvaluationService sets the evaluation service.
 func WithEvaluationService(s service.Service) Option {
 	return func(o *options) {
@@ -124,6 +135,13 @@ func WithExpectedRunner(r runner.Runner) Option {
 func WithNumRuns(numRuns int) Option {
 	return func(o *options) {
 		o.numRuns = numRuns
+	}
+}
+
+// WithNumRunsParallelEnabled enables or disables parallel execution across evaluation runs.
+func WithNumRunsParallelEnabled(enabled bool) Option {
+	return func(o *options) {
+		o.numRunsParallelEnabled = &enabled
 	}
 }
 
@@ -178,6 +196,9 @@ func (o *options) validate(requireEvalService bool) error {
 	}
 	if o.registry == nil {
 		return errors.New("registry is nil")
+	}
+	if o.metricRegistry == nil {
+		return errors.New("metric registry is nil")
 	}
 	if requireEvalService && o.evalService == nil {
 		return errors.New("eval service is nil")

@@ -46,9 +46,14 @@ Integrate the summarizer into a session service:
 
 ```go
 import (
+    "context"
     "time"
+    "trpc.group/trpc-go/trpc-agent-go/session/clickhouse"
     "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
+    "trpc.group/trpc-go/trpc-agent-go/session/mysql"
+    "trpc.group/trpc-go/trpc-agent-go/session/postgres"
     "trpc.group/trpc-go/trpc-agent-go/session/redis"
+    "trpc.group/trpc-go/trpc-agent-go/session/summary"
 )
 
 // Memory storage (dev/test)
@@ -141,6 +146,37 @@ type SessionSummarizer interface {
 }
 ```
 
+## Context-Aware Summary Checks
+
+The released `SessionSummarizer` interface stays unchanged.
+
+When summary gating depends on request context, use `ContextChecker` with the
+context-aware check options:
+
+```go
+type asyncSummaryKey struct{}
+
+eventThreshold := summary.CheckEventThreshold(20)
+
+summarizer := summary.NewSummarizer(
+    summaryModel,
+    summary.WithChecksAnyContext(
+        func(ctx context.Context, sess *session.Session) bool {
+            if eventThreshold(sess) {
+                return true
+            }
+            async, _ := ctx.Value(asyncSummaryKey{}).(bool)
+            return async
+        },
+    ),
+)
+```
+
+The framework does not reserve any context keys for summary triggering. If your
+application needs to distinguish different summary entry points, annotate the
+context before calling the session APIs and read the value inside your
+`ContextChecker`.
+
 ## Summarizer Options
 
 ### Trigger Conditions
@@ -157,8 +193,13 @@ type SessionSummarizer interface {
 | --- | --- |
 | `WithChecksAll(checks ...Checker)` | All conditions must be met (AND logic), use `Check*` functions |
 | `WithChecksAny(checks ...Checker)` | Any condition triggers (OR logic), use `Check*` functions |
+| `WithChecksAllContext(checks ...ContextChecker)` | All request-scoped conditions must be met (AND logic) |
+| `WithChecksAnyContext(checks ...ContextChecker)` | Any request-scoped condition triggers (OR logic) |
 
-**Note**: Use `Check*` functions (e.g., `CheckEventThreshold`) inside `WithChecksAll` and `WithChecksAny`, not `With*` functions.
+`ContextChecker` receives `(ctx context.Context, sess *session.Session)`.
+
+**Note**: Use `Check*` functions (for example `CheckEventThreshold`) inside
+`WithChecksAll` and `WithChecksAny`, not `With*` functions.
 
 ```go
 // AND logic: all conditions must be met
@@ -551,7 +592,8 @@ llmagent.WithAddSessionSummary(true)
 
 **How it works**:
 
-- Session summary is inserted as a standalone system message after the first existing system message
+- Session summary is **merged into the existing system message** if one exists, or prepended as a new system message if none exists
+- This ensures compatibility with models that require a single system message at the beginning (e.g., Qwen3.5 series)
 - Includes **all incremental events** after the summary point (no truncation)
 - Guarantees complete context: compressed history + full new conversation
 - **`WithMaxHistoryRuns` parameter is ignored**
@@ -561,8 +603,7 @@ llmagent.WithAddSessionSummary(true)
 ```
 ┌─────────────────────────────────────────┐
 │ System Prompt                           │
-├─────────────────────────────────────────┤
-│ Session Summary (system message)        │ ← Compressed history
+│ (merged with Session Summary)           │ ← System prompt + compressed history
 ├─────────────────────────────────────────┤
 │ Event 1 (after summary)                 │ ┐
 │ Event 2                                 │ │
@@ -571,6 +612,14 @@ llmagent.WithAddSessionSummary(true)
 │ Event N (current message)               │ ┘
 └─────────────────────────────────────────┘
 ```
+
+**Model Compatibility**:
+
+Some LLM providers have strict requirements for system message placement and count:
+
+- **Qwen3.5 series** and similar models require the system message to be at the beginning and do not support multiple system messages
+- The default merging behavior prevents errors like `System message must be at the beginning`
+- Preloaded memory content is also merged into the system message using the same mechanism
 
 ### Mode 2: Without Summary
 

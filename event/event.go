@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -260,8 +261,9 @@ func (e *Event) IsRunnerCompletion() bool {
 	return e.Done && e.Object == model.ObjectTypeRunnerCompletion
 }
 
-// IsError reports whether this event should be treated as a terminal error event.
-// Events with ObjectTypeError or Response.Error are considered terminal failures.
+// IsError reports whether this event carries any error signal.
+// It is broader than IsTerminalError and also matches non-terminal graph
+// observability events such as graph.node.error.
 func (e *Event) IsError() bool {
 	if e == nil || e.Response == nil {
 		return false
@@ -269,9 +271,52 @@ func (e *Event) IsError() bool {
 	return e.Object == model.ObjectTypeError || e.Error != nil
 }
 
+// IsTerminalError reports whether this event represents a terminal failure for
+// the overall run.
+func (e *Event) IsTerminalError() bool {
+	if e == nil || e.Response == nil || e.Response.Error == nil {
+		return false
+	}
+	return e.Object == model.ObjectTypeError || e.Done
+}
+
 // EmitEvent sends an event to the channel without timeout.
 func EmitEvent(ctx context.Context, ch chan<- *Event, e *Event) error {
 	return EmitEventWithTimeout(ctx, ch, e, EmitWithoutTimeout)
+}
+
+// snapshotEvent returns a string representation of e if trace logging is
+// enabled, or an empty string otherwise. The snapshot must be taken while the
+// caller still holds exclusive ownership of *e — before ch <- e — because
+// once the send completes the receiver may mutate the struct concurrently.
+func snapshotEvent(e *Event) string {
+	if !log.IsTraceEnabled() {
+		return ""
+	}
+	return fmt.Sprintf("%+v", *e)
+}
+
+func tryEmitReadyEvent(ctx context.Context, ch chan<- *Event, e *Event) (bool, error) {
+	// Snapshot before send: once ch <- e returns, the receiver owns *e and
+	// may mutate it concurrently (runner.copyEventInvocationFields). Reading
+	// *e after the send for logging is a data race.
+	eventStr := snapshotEvent(e)
+	select {
+	case ch <- e:
+		log.TracefContext(ctx, "EmitEventWithTimeout: event sent, event: %s", eventStr)
+		return true, nil
+	case <-ctx.Done():
+		err := ctx.Err()
+		log.WarnfContext(
+			ctx,
+			"EmitEventWithTimeout: context error: %v, event: %+v",
+			err,
+			*e,
+		)
+		return true, err
+	default:
+		return false, nil
+	}
 }
 
 // EmitEventWithTimeout sends an event to the channel with optional timeout.
@@ -299,9 +344,14 @@ func EmitEventWithTimeout(ctx context.Context, ch chan<- *Event,
 		e.RequestID, cap(ch), len(ch), e.Branch)
 
 	if timeout == EmitWithoutTimeout {
+		if handled, err := tryEmitReadyEvent(ctx, ch, e); handled {
+			return err
+		}
+		// Fall back to a blocking send. Snapshot before send — same race as above.
+		eventStr := snapshotEvent(e)
 		select {
 		case ch <- e:
-			log.TracefContext(ctx, "EmitEventWithTimeout: event sent, event: %+v", *e)
+			log.TracefContext(ctx, "EmitEventWithTimeout: event sent, event: %s", eventStr)
 		case <-ctx.Done():
 			err := ctx.Err()
 			log.WarnfContext(
@@ -315,11 +365,17 @@ func EmitEventWithTimeout(ctx context.Context, ch chan<- *Event,
 		return nil
 	}
 
+	if handled, err := tryEmitReadyEvent(ctx, ch, e); handled {
+		return err
+	}
+
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	// Snapshot before send — same race as above.
+	eventStr := snapshotEvent(e)
 	select {
 	case ch <- e:
-		log.TracefContext(ctx, "EmitEventWithTimeout: event sent, event: %+v", *e)
+		log.TracefContext(ctx, "EmitEventWithTimeout: event sent, event: %s", eventStr)
 	case <-ctx.Done():
 		err := ctx.Err()
 		log.WarnfContext(

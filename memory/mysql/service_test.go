@@ -50,16 +50,30 @@ func setupMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 func setupMockService(_ *testing.T, db *sql.DB) *Service {
 	return &Service{
 		opts: ServiceOpts{
-			memoryLimit:  100,
-			toolCreators: make(map[string]memory.ToolCreator),
-			enabledTools: make(map[string]struct{}),
-			tableName:    "memories",
-			softDelete:   true,
+			memoryLimit:      100,
+			searchMinScore:   imemory.DefaultSearchMinScore,
+			maxSearchResults: imemory.DefaultMaxSearchResults,
+			toolCreators:     make(map[string]memory.ToolCreator),
+			enabledTools:     make(map[string]struct{}),
+			tableName:        "memories",
+			softDelete:       true,
 		},
 		db:          storage.WrapSQLDB(db),
 		tableName:   "memories",
 		cachedTools: make(map[string]tool.Tool),
 	}
+}
+
+func TestServiceOpts_SearchOptions(t *testing.T) {
+	opts := ServiceOpts{}
+
+	WithMinSearchScore(0.6)(&opts)
+	WithMaxResults(25)(&opts)
+	WithMinSearchScore(-1)(&opts)
+	WithMaxResults(-1)(&opts)
+
+	assert.Equal(t, 0.6, opts.searchMinScore)
+	assert.Equal(t, 25, opts.maxSearchResults)
 }
 
 // mockTool is a mock implementation of tool.Tool for testing.
@@ -653,7 +667,7 @@ func TestUpdateMemory_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"memory_data"}).AddRow(entryJSON))
 
 	mock.ExpectExec("UPDATE").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "app", "user", "mem123").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), "app", "user", "mem123").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err := s.UpdateMemory(ctx, memKey, "updated memory", []string{"new"})
@@ -692,8 +706,8 @@ func TestUpdateMemory_SoftDeleteFalse(t *testing.T) {
 		WithArgs("app", "user", "mem123").
 		WillReturnRows(sqlmock.NewRows([]string{"memory_data"}).AddRow(existingJSON))
 
-	mock.ExpectExec("UPDATE.*SET memory_data").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "app", "user", "mem123").
+	mock.ExpectExec("UPDATE.*SET memory_id = .*memory_data").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), "app", "user", "mem123").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	err := s.UpdateMemory(ctx, memKey, "new memory", []string{"new"})
@@ -772,7 +786,7 @@ func TestUpdateMemory_UpdateError(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"memory_data"}).AddRow(entryJSON))
 
 	mock.ExpectExec("UPDATE").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "app", "user", "mem123").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), "app", "user", "mem123").
 		WillReturnError(errors.New("update error"))
 
 	err := s.UpdateMemory(ctx, memKey, "updated memory", []string{"new"})

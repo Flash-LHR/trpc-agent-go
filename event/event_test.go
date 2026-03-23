@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
@@ -258,6 +259,68 @@ func TestEmitEventWithTimeout(t *testing.T) {
 	}
 }
 
+func TestEmitEventWithTimeout_TraceEnabled(t *testing.T) {
+	log.SetTraceEnabled(true)
+	t.Cleanup(func() {
+		log.SetTraceEnabled(false)
+	})
+
+	ctx := context.Background()
+	evt := New("invocationID", "author")
+
+	buffered := make(chan *Event, 1)
+	require.NoError(t, EmitEventWithTimeout(ctx, buffered, evt, EmitWithoutTimeout))
+	require.Same(t, evt, <-buffered)
+
+	buffered = make(chan *Event, 1)
+	require.NoError(t, EmitEventWithTimeout(ctx, buffered, evt, time.Second))
+	require.Same(t, evt, <-buffered)
+}
+
+func TestEmitEventWithTimeout_TraceEnabled_BlockingSend(t *testing.T) {
+	log.SetTraceEnabled(true)
+	t.Cleanup(func() { log.SetTraceEnabled(false) })
+
+	ctx := context.Background()
+	evt := New("invocationID", "author")
+
+	// Unbuffered channel — tryEmitReadyEvent will return (false, nil) and
+	// fall through to the blocking send, exercising snapshotEvent when trace is on.
+	ch := make(chan *Event)
+	go func() { <-ch }()
+	require.NoError(t, EmitEventWithTimeout(ctx, ch, evt, EmitWithoutTimeout))
+
+	// Timer-based blocking send with trace enabled.
+	ch2 := make(chan *Event)
+	go func() { <-ch2 }()
+	require.NoError(t, EmitEventWithTimeout(ctx, ch2, evt, time.Second))
+}
+
+func TestTryEmitReadyEvent(t *testing.T) {
+	evt := New("invocationID", "author")
+	t.Run("ready send", func(t *testing.T) {
+		ch := make(chan *Event, 1)
+		handled, err := tryEmitReadyEvent(context.Background(), ch, evt)
+		require.True(t, handled)
+		require.NoError(t, err)
+		require.Same(t, evt, <-ch)
+	})
+	t.Run("context canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		ch := make(chan *Event)
+		handled, err := tryEmitReadyEvent(ctx, ch, evt)
+		require.True(t, handled)
+		require.ErrorIs(t, err, context.Canceled)
+	})
+	t.Run("not ready", func(t *testing.T) {
+		ch := make(chan *Event)
+		handled, err := tryEmitReadyEvent(context.Background(), ch, evt)
+		require.False(t, handled)
+		require.NoError(t, err)
+	})
+}
+
 func TestEmitEventTimeoutError_Error_And_As(t *testing.T) {
 	// Verify Error() returns the message
 	msg := "emit event timeout."
@@ -301,6 +364,23 @@ func TestIsError(t *testing.T) {
 		Done:  true,
 		Error: &model.ResponseError{Type: model.ErrorTypeAPIError, Message: "boom"},
 	}}).IsError())
+}
+
+func TestIsTerminalError(t *testing.T) {
+	var nilEvt *Event
+	require.False(t, nilEvt.IsTerminalError())
+	require.False(t, (&Event{}).IsTerminalError())
+	require.False(t, (&Event{Response: &model.Response{
+		Error: &model.ResponseError{Message: "boom"},
+	}}).IsTerminalError())
+	require.True(t, (&Event{Response: &model.Response{
+		Object: model.ObjectTypeError,
+		Error:  &model.ResponseError{Message: "boom"},
+	}}).IsTerminalError())
+	require.True(t, (&Event{Response: &model.Response{
+		Done:  true,
+		Error: &model.ResponseError{Message: "boom"},
+	}}).IsTerminalError())
 }
 
 func TestEmitEvent_WrapperAndNilChannel(t *testing.T) {

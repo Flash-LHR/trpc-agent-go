@@ -79,6 +79,8 @@ type options struct {
 	ExtraFields map[string]any
 	// Variant for model-specific behavior.
 	Variant Variant
+	// variantSet tracks whether WithVariant was explicitly provided.
+	variantSet bool
 	// Batch completion window for batch processing.
 	BatchCompletionWindow openai.BatchNewParamsCompletionWindow
 	// Batch metadata for batch processing.
@@ -128,7 +130,6 @@ var (
 			ReserveOutputTokens:    imodel.DefaultReserveOutputTokens,
 			SafetyMarginRatio:      imodel.DefaultSafetyMarginRatio,
 			InputTokensFloor:       imodel.DefaultInputTokensFloor,
-			OutputTokensFloor:      imodel.DefaultOutputTokensFloor,
 			MaxInputTokensRatio:    imodel.DefaultMaxInputTokensRatio,
 		},
 		OptimizeForCache: false,
@@ -261,6 +262,7 @@ func WithExtraFields(extraFields map[string]any) Option {
 func WithVariant(variant Variant) Option {
 	return func(opts *options) {
 		opts.Variant = variant
+		opts.variantSet = true
 	}
 }
 
@@ -409,9 +411,6 @@ func WithTokenTailoringConfig(config *model.TokenTailoringConfig) Option {
 		}
 		if config.InputTokensFloor <= 0 {
 			config.InputTokensFloor = imodel.DefaultInputTokensFloor
-		}
-		if config.OutputTokensFloor <= 0 {
-			config.OutputTokensFloor = imodel.DefaultOutputTokensFloor
 		}
 		if config.MaxInputTokensRatio <= 0 {
 			config.MaxInputTokensRatio = imodel.DefaultMaxInputTokensRatio

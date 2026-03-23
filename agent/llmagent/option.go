@@ -14,15 +14,17 @@ import (
 	"reflect"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
-	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent/internal/jsonschema"
 	"trpc.group/trpc-go/trpc-agent-go/codeexecutor"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
+	"trpc.group/trpc-go/trpc-agent-go/internal/jsonschema"
+	"trpc.group/trpc-go/trpc-agent-go/internal/skillprofile"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/searchfilter"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/planner"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
+	toolskill "trpc.group/trpc-go/trpc-agent-go/tool/skill"
 )
 
 const (
@@ -106,11 +108,15 @@ var (
 		// Default to disable memory preloading (use tools instead).
 		// PreloadMemory configuration values:
 		//   - 0 (default): Disable preloading (use tools instead).
-		//   - N > 0: Load the most recent N memories.
+		//   - N > 0: Use adaptive preload with budget N.
+		//     If query extraction is empty, the search fails, or the search
+		//     returns no matches, fall back to loading up to N memories
+		//     directly.
 		//   - -1: Load all memories.
-		//     WARNING: Loading all memories may significantly increase token usage
-		//     and API costs, especially for users with many stored memories.
-		//     Consider using a positive limit (e.g., 10-50) for production use.
+		//     WARNING: Loading all memories may significantly increase token
+		//     usage and API costs, especially for users with many stored
+		//     memories. Consider using a positive budget (e.g., 10-50) for
+		//     production use.
 		PreloadMemory: 0,
 
 		SkillLoadMode: SkillLoadModeTurn,
@@ -302,6 +308,8 @@ type Options struct {
 
 	// skillsRepository enables agent skills when non-nil.
 	skillsRepository skill.Repository
+	// skillToolProfile controls which built-in skill tools are registered.
+	skillToolProfile string
 	// skillsToolingGuidance overrides the built-in skills guidance block.
 	skillsToolingGuidance *string
 	// skillRunAllowedCommands restricts skill_run to allowlisted commands.
@@ -315,8 +323,11 @@ type Options struct {
 	// skillRunRequireSkillLoaded rejects skill_run unless the skill was
 	// loaded via skill_load in the current session state.
 	skillRunRequireSkillLoaded bool
-	messageTimelineFilterMode  string
-	messageBranchFilterMode    string
+	// skillRunStager overrides how skill_run materializes a skill in
+	// the workspace.
+	skillRunStager            toolskill.SkillStager
+	messageTimelineFilterMode string
+	messageBranchFilterMode   string
 
 	// ReasoningContentMode controls how reasoning_content is handled in
 	// multi-turn conversations. This is particularly important for DeepSeek
@@ -325,8 +336,13 @@ type Options struct {
 
 	toolFilter tool.FilterFunc
 
-	// PreloadMemory sets the number of memories to preload into system prompt.
-	// When > 0, the specified number of most recent memories are loaded.
+	// PreloadMemory controls framework-side memory preload.
+	// When > 0, it acts as an adaptive preload budget:
+	//   - If total memories <= N, preload all memories.
+	//   - If total memories > N, preload top-N search results.
+	//   - If query extraction is empty, the search fails, or the search
+	//     returns no matches, fall back to loading up to N memories
+	//     directly.
 	// When 0 (default), no memories are preloaded (use tools instead).
 	// When < 0, all memories are loaded.
 	PreloadMemory int
@@ -347,6 +363,18 @@ type Options struct {
 	// model after tool calls.
 	PostToolPrompt string
 }
+
+// SkillToolProfile controls which framework-provided skill tools are enabled.
+type SkillToolProfile string
+
+const (
+	// SkillToolProfileFull keeps the existing behavior and registers the full
+	// built-in skill tool suite, including execution tools.
+	SkillToolProfileFull SkillToolProfile = skillprofile.Full
+	// SkillToolProfileKnowledgeOnly registers only progressive-disclosure skill
+	// tools used for knowledge injection. No execution tools are exposed.
+	SkillToolProfileKnowledgeOnly SkillToolProfile = skillprofile.KnowledgeOnly
+)
 
 // WithModel sets the model to use.
 func WithModel(model model.Model) Option {
@@ -448,7 +476,8 @@ func WithCodeExecutor(ce codeexecutor.CodeExecutor) Option {
 }
 
 // WithEnableCodeExecutionResponseProcessor controls whether the agent
-// auto-executes fenced code blocks found in model responses.
+// auto-executes assistant replies that are exactly one runnable fenced
+// code block.
 func WithEnableCodeExecutionResponseProcessor(enable bool) Option {
 	return func(opts *Options) {
 		opts.EnableCodeExecutionResponseProcessor = enable
@@ -490,6 +519,18 @@ func WithSkills(repo skill.Repository) Option {
 	}
 }
 
+// WithSkillToolProfile selects which built-in skill tools are registered when
+// skills are enabled via WithSkills.
+//
+// Supported profiles:
+//   - SkillToolProfileFull (default)
+//   - SkillToolProfileKnowledgeOnly
+func WithSkillToolProfile(profile SkillToolProfile) Option {
+	return func(opts *Options) {
+		opts.skillToolProfile = string(profile)
+	}
+}
+
 // WithSkillLoadMode sets how long skill bodies/docs loaded via skill_load
 // remain available in the system prompt.
 //
@@ -506,7 +547,8 @@ func WithSkillLoadMode(mode string) Option {
 // WithMaxLoadedSkills caps how many skills remain "loaded" in session
 // state at the same time.
 //
-// When max <= 0, no cap is applied (default behavior).
+// When max <= 0, no cap is applied (default behavior). Recent skill
+// touches are tracked by skill_load / skill_select_docs state updates.
 func WithMaxLoadedSkills(max int) Option {
 	return func(opts *Options) {
 		opts.MaxLoadedSkills = max
@@ -588,6 +630,14 @@ func WithSkillRunForceSaveArtifacts(enable bool) Option {
 func WithSkillRunRequireSkillLoaded(enable bool) Option {
 	return func(opts *Options) {
 		opts.skillRunRequireSkillLoaded = enable
+	}
+}
+
+// WithSkillRunStager overrides how skill_run materializes skills into
+// the execution workspace.
+func WithSkillRunStager(stager toolskill.SkillStager) Option {
+	return func(opts *Options) {
+		opts.skillRunStager = stager
 	}
 }
 
@@ -918,13 +968,16 @@ func WithMessageFilterMode(mode MessageFilterMode) Option {
 	}
 }
 
-// WithPreloadMemory sets the number of memories to preload into system prompt.
+// WithPreloadMemory sets the framework-side preload behavior.
 //   - Set to 0 (default) to disable preloading (use tools instead).
-//   - Set to N (N > 0) to load the most recent N memories.
+//   - Set to N (N > 0) to use adaptive preload with budget N.
+//     Small memory sets are preloaded in full. Larger sets use search and
+//     fall back to loading up to N memories directly when search cannot
+//     provide usable results.
 //   - Set to -1 to load all memories.
 //     WARNING: Loading all memories may significantly increase token usage
 //     and API costs, especially for users with many stored memories.
-//     Consider using a positive limit (e.g., 10-50) for production use.
+//     Consider using a positive budget (e.g., 10-50) for production use.
 func WithPreloadMemory(limit int) Option {
 	return func(opts *Options) {
 		opts.PreloadMemory = limit
