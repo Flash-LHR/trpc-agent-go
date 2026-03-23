@@ -19,8 +19,10 @@ import (
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"trpc.group/trpc-go/trpc-agent-go/artifact"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/internal/jsonschema"
 	"trpc.group/trpc-go/trpc-agent-go/internal/util"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/searchfilter"
 	"trpc.group/trpc-go/trpc-agent-go/log"
@@ -205,6 +207,9 @@ func NewRunOptions(opts ...RunOption) RunOptions {
 	}
 	return runOpts
 }
+
+// TraceStartedCallback receives the root span context for a run.
+type TraceStartedCallback func(oteltrace.SpanContext)
 
 // WithRuntimeState sets the runtime state for the RunOptions.
 func WithRuntimeState(state map[string]any) RunOption {
@@ -467,6 +472,21 @@ func WithSpanAttributes(attrs ...attribute.KeyValue) RunOption {
 	}
 }
 
+// WithTraceStartedCallback registers a callback for the run root span.
+func WithTraceStartedCallback(
+	callback TraceStartedCallback,
+) RunOption {
+	return func(opts *RunOptions) {
+		if callback == nil {
+			return
+		}
+		opts.TraceStartedCallbacks = append(
+			opts.TraceStartedCallbacks,
+			callback,
+		)
+	}
+}
+
 // WithModel sets the model for this specific run.
 // This allows temporarily switching the model for a single request without
 // affecting other requests or the agent's default model configuration.
@@ -522,6 +542,60 @@ func WithInstruction(instruction string) RunOption {
 func WithGlobalInstruction(instruction string) RunOption {
 	return func(opts *RunOptions) {
 		opts.GlobalInstruction = instruction
+	}
+}
+
+// WithStructuredOutputJSONSchema sets a JSON schema structured output for this run.
+func WithStructuredOutputJSONSchema(name string, schema map[string]any, strict bool, description string) RunOption {
+	return func(opts *RunOptions) {
+		if schema == nil {
+			return
+		}
+		if name == "" {
+			name = "output"
+		}
+		opts.StructuredOutput = &model.StructuredOutput{
+			Type: model.StructuredOutputJSONSchema,
+			JSONSchema: &model.JSONSchemaConfig{
+				Name:        name,
+				Schema:      schema,
+				Strict:      strict,
+				Description: description,
+			},
+		}
+	}
+}
+
+// WithStructuredOutputJSON sets a JSON schema structured output for this run.
+// The schema is constructed automatically from the provided example type.
+func WithStructuredOutputJSON(examplePtr any, strict bool, description string) RunOption {
+	return func(opts *RunOptions) {
+		// Infer reflect.Type from examplePtr.
+		var t reflect.Type
+		if examplePtr == nil {
+			return
+		}
+		if rt := reflect.TypeOf(examplePtr); rt.Kind() == reflect.Pointer {
+			t = rt
+		} else {
+			t = reflect.PointerTo(rt)
+		}
+		gen := jsonschema.New()
+		schema := gen.Generate(t.Elem())
+		name := t.Elem().Name()
+		if name == "" {
+			name = "output"
+		}
+		opts.StructuredOutput = &model.StructuredOutput{
+			Type: model.StructuredOutputJSONSchema,
+			JSONSchema: &model.JSONSchemaConfig{
+				Name:        name,
+				Schema:      schema,
+				Strict:      strict,
+				Description: description,
+			},
+		}
+		opts.StructuredOutputType = t
 	}
 }
 
@@ -764,6 +838,9 @@ type RunOptions struct {
 	// SpanAttributes carries custom span attributes for this run.
 	SpanAttributes []attribute.KeyValue
 
+	// TraceStartedCallbacks run when the root span starts for this run.
+	TraceStartedCallbacks []TraceStartedCallback
+
 	// A2ARequestOptions contains A2A client request options that will be passed to
 	// A2A agent's SendMessage and StreamMessage calls. This allows callers to pass
 	// dynamic HTTP headers or other request-specific options for each run.
@@ -809,6 +886,12 @@ type RunOptions struct {
 	// If set, it temporarily overrides the agent's global instruction for
 	// this request only.
 	GlobalInstruction string
+
+	// StructuredOutput defines how the model should produce structured output for this run.
+	StructuredOutput *model.StructuredOutput
+
+	// StructuredOutputType is the Go type to unmarshal the final JSON into for this run.
+	StructuredOutputType reflect.Type
 
 	// ToolFilter is a custom function to filter tools for this run.
 	// If set, only tools for which the filter returns true will be available to the model.

@@ -27,6 +27,7 @@ type preparedMessageRun struct {
 	userID    string
 	sessionID string
 	requestID string
+	inbound   InboundMessage
 	userMsg   model.Message
 }
 
@@ -104,13 +105,7 @@ func (s *Server) ProcessMessage(
 		return rsp, status
 	}
 
-	reply, resolvedRequestID, err := s.run(
-		ctx,
-		prepared.userID,
-		prepared.sessionID,
-		prepared.requestID,
-		prepared.userMsg,
-	)
+	reply, resolvedRequestID, err := s.run(ctx, prepared)
 	if err != nil {
 		if errors.Is(err, errEmptyReplyValue) {
 			reply = emptyReplyFallbackText
@@ -259,6 +254,7 @@ func (s *Server) prepareMessageRun(
 		userID:    userID,
 		sessionID: sessionID,
 		requestID: strings.TrimSpace(req.RequestID),
+		inbound:   msg,
 		userMsg:   userMsg,
 	}, nil, http.StatusOK
 }
@@ -294,7 +290,11 @@ func (s *Server) CancelRequest(
 		}, http.StatusBadRequest
 	}
 
-	return s.managed.Cancel(rid), nil, http.StatusOK
+	canceled = s.managed.Cancel(rid)
+	if canceled && s.canceled != nil {
+		s.canceled.Mark(rid)
+	}
+	return canceled, nil, http.StatusOK
 }
 
 func (s *Server) ensureTrace(

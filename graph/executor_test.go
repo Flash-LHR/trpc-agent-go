@@ -2294,7 +2294,7 @@ func TestBeforeCallbackError_BarrierWaitsForCompletion(t *testing.T) {
 				return
 			}
 			require.NotNil(t, evt)
-			if evt.Object == model.ObjectTypeError && evt.Response != nil && evt.Response.Error != nil {
+			if evt.Object == ObjectTypeGraphNodeError && evt.Response != nil && evt.Response.Error != nil {
 				sawNodeError = true
 			}
 			if evt.Object != ObjectTypeGraphNodeBarrier {
@@ -2366,7 +2366,7 @@ func TestAfterCallbackError_BarrierWaitsForCompletion(t *testing.T) {
 				return
 			}
 			require.NotNil(t, evt)
-			if evt.Object == model.ObjectTypeError && evt.Response != nil && evt.Response.Error != nil {
+			if evt.Object == ObjectTypeGraphNodeError && evt.Response != nil && evt.Response.Error != nil {
 				sawNodeError = true
 			}
 			if evt.Object != ObjectTypeGraphNodeBarrier {

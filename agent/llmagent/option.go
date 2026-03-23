@@ -14,9 +14,9 @@ import (
 	"reflect"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
-	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent/internal/jsonschema"
 	"trpc.group/trpc-go/trpc-agent-go/codeexecutor"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
+	"trpc.group/trpc-go/trpc-agent-go/internal/jsonschema"
 	"trpc.group/trpc-go/trpc-agent-go/internal/skillprofile"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/searchfilter"
@@ -24,6 +24,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/planner"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
+	toolskill "trpc.group/trpc-go/trpc-agent-go/tool/skill"
 )
 
 const (
@@ -322,8 +323,11 @@ type Options struct {
 	// skillRunRequireSkillLoaded rejects skill_run unless the skill was
 	// loaded via skill_load in the current session state.
 	skillRunRequireSkillLoaded bool
-	messageTimelineFilterMode  string
-	messageBranchFilterMode    string
+	// skillRunStager overrides how skill_run materializes a skill in
+	// the workspace.
+	skillRunStager            toolskill.SkillStager
+	messageTimelineFilterMode string
+	messageBranchFilterMode   string
 
 	// ReasoningContentMode controls how reasoning_content is handled in
 	// multi-turn conversations. This is particularly important for DeepSeek
@@ -472,7 +476,8 @@ func WithCodeExecutor(ce codeexecutor.CodeExecutor) Option {
 }
 
 // WithEnableCodeExecutionResponseProcessor controls whether the agent
-// auto-executes fenced code blocks found in model responses.
+// auto-executes assistant replies that are exactly one runnable fenced
+// code block.
 func WithEnableCodeExecutionResponseProcessor(enable bool) Option {
 	return func(opts *Options) {
 		opts.EnableCodeExecutionResponseProcessor = enable
@@ -542,7 +547,8 @@ func WithSkillLoadMode(mode string) Option {
 // WithMaxLoadedSkills caps how many skills remain "loaded" in session
 // state at the same time.
 //
-// When max <= 0, no cap is applied (default behavior).
+// When max <= 0, no cap is applied (default behavior). Recent skill
+// touches are tracked by skill_load / skill_select_docs state updates.
 func WithMaxLoadedSkills(max int) Option {
 	return func(opts *Options) {
 		opts.MaxLoadedSkills = max
@@ -624,6 +630,14 @@ func WithSkillRunForceSaveArtifacts(enable bool) Option {
 func WithSkillRunRequireSkillLoaded(enable bool) Option {
 	return func(opts *Options) {
 		opts.skillRunRequireSkillLoaded = enable
+	}
+}
+
+// WithSkillRunStager overrides how skill_run materializes skills into
+// the execution workspace.
+func WithSkillRunStager(stager toolskill.SkillStager) Option {
+	return func(opts *Options) {
+		opts.skillRunStager = stager
 	}
 }
 

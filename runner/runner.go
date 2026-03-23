@@ -382,6 +382,8 @@ func (r *runner) Run(
 		agent.WithInvocationMessage(message),
 		agent.WithInvocationAgent(ag),
 		agent.WithInvocationRunOptions(ro),
+		agent.WithInvocationStructuredOutput(ro.StructuredOutput),
+		agent.WithInvocationStructuredOutputType(ro.StructuredOutputType),
 		agent.WithInvocationMemoryService(r.memoryService),
 		agent.WithInvocationArtifactService(r.artifactService),
 		agent.WithInvocationEventFilterKey(eventFilterKey),
@@ -686,6 +688,7 @@ type eventLoopContext struct {
 	emittedAssistantChoiceSignatures           map[string]struct{}
 	visibleCompletionResponseIDs               map[string]struct{}
 	visibleCompletionChoiceSignatures          map[string]struct{}
+	sawTerminalError                           bool
 	streamFilter                               graph.StreamModeFilter
 	// emittedAssistantResponseIDs tracks response IDs that already produced a
 	// non-partial assistant message event during this run.
@@ -1202,6 +1205,7 @@ func (r *runner) captureCompletionFallback(
 	// The last non-partial response wins so the completion event reflects
 	// the terminal outcome seen by the runner.
 	loop.finalError = cloneResponseError(agentEvent.Response.Error)
+	loop.sawTerminalError = agentEvent.IsTerminalError()
 }
 
 func mergeCompletionFallbackStateDelta(
@@ -1307,6 +1311,13 @@ func (r *runner) emitRunnerCompletion(ctx context.Context, loop *eventLoopContex
 			IsPartial: false,
 		},
 	)
+	if loop.finalError != nil &&
+		!loop.sawTerminalError &&
+		runnerCompletionEvent.Response != nil {
+		runnerCompletionEvent.Response.Error = cloneResponseError(
+			loop.finalError,
+		)
+	}
 
 	agent.InjectIntoEvent(loop.invocation, runnerCompletionEvent)
 	runnerCompletionEvent = r.applyEventPlugins(
