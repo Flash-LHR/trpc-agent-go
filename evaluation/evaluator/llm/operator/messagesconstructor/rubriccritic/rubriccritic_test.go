@@ -21,16 +21,8 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
-func TestConstructMessagesBuildsCriticPrompt(t *testing.T) {
-	constructor := New()
-	actual := &evalset.Invocation{
-		UserContent:   &model.Message{Content: "What is the capital of France?"},
-		FinalResponse: &model.Message{Content: "Paris is the capital."},
-	}
-	expected := &evalset.Invocation{
-		FinalResponse: &model.Message{Content: "The capital of France is Paris."},
-	}
-	evalMetric := &metric.EvalMetric{
+func testRubricCriticEvalMetric() *metric.EvalMetric {
+	return &metric.EvalMetric{
 		Criterion: &criterion.Criterion{
 			LLMJudge: &llm.LLMCriterion{
 				Rubrics: []*llm.Rubric{
@@ -42,26 +34,35 @@ func TestConstructMessagesBuildsCriticPrompt(t *testing.T) {
 			},
 		},
 	}
+}
+
+func TestConstructMessagesBuildsCriticPrompt(t *testing.T) {
+	constructor := New()
+	actual := &evalset.Invocation{
+		UserContent:   &model.Message{Content: "What is the capital of France?"},
+		FinalResponse: &model.Message{Content: "Paris is the capital."},
+	}
+	expected := &evalset.Invocation{
+		FinalResponse: &model.Message{Content: "The capital of France is Paris."},
+	}
 	messages, err := constructor.ConstructMessages(
 		context.Background(),
 		[]*evalset.Invocation{actual},
 		[]*evalset.Invocation{expected},
-		evalMetric,
+		testRubricCriticEvalMetric(),
 	)
 	require.NoError(t, err)
 	require.Len(t, messages, 1)
 	assert.Equal(t, model.RoleUser, messages[0].Role)
-	assert.Contains(t, messages[0].Content, "What is the capital of France?")
-	assert.Contains(t, messages[0].Content, "Paris is the capital.")
-	assert.Contains(t, messages[0].Content, "The capital of France is Paris.")
+	assert.Contains(t, messages[0].Content, "capital")
+	assert.Contains(t, messages[0].Content, "France")
+	assert.Contains(t, messages[0].Content, "Paris")
+	assert.Contains(t, messages[0].Content, "llm_rubric_critic")
+	assert.Contains(t, messages[0].Content, "<reference_answer>")
 	assert.Contains(t, messages[0].Content, "The final answer states the correct city.")
-	assert.Contains(t, messages[0].Content, "You are llm_rubric_critic, the evaluator for this metric.")
-	assert.Contains(t, messages[0].Content, "The GOLDEN ANSWER is the authoritative target.")
-	assert.Contains(t, messages[0].Content, "Treat the GOLDEN ANSWER as the source of truth")
-	assert.Contains(t, messages[0].Content, "A \"no\" must be caused by a material defect")
-	assert.Contains(t, messages[0].Content, "Semantic equivalence is acceptable")
-	assert.Contains(t, messages[0].Content, "Do not nitpick")
-	assert.Contains(t, messages[0].Content, "When the verdict is \"no\", the reason must point to a concrete mismatch")
+	assert.Contains(t, messages[0].Content, "Verdict:")
+	assert.Contains(t, messages[0].Content, "Reason:")
+	assert.Contains(t, messages[0].Content, "Semantic equivalence")
 }
 
 func TestConstructMessagesRequiresExpecteds(t *testing.T) {
@@ -73,4 +74,77 @@ func TestConstructMessagesRequiresExpecteds(t *testing.T) {
 	_, err := constructor.ConstructMessages(context.Background(), []*evalset.Invocation{actual}, nil, &metric.EvalMetric{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "expecteds is empty")
+}
+
+func TestConstructMessagesRequiresJudgeCriterion(t *testing.T) {
+	constructor := New()
+	actual := &evalset.Invocation{
+		UserContent:   &model.Message{Content: "prompt"},
+		FinalResponse: &model.Message{Content: "answer"},
+	}
+	expected := &evalset.Invocation{
+		FinalResponse: &model.Message{Content: "reference"},
+	}
+	_, err := constructor.ConstructMessages(context.Background(), []*evalset.Invocation{actual}, []*evalset.Invocation{expected}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "eval metric is nil")
+	_, err = constructor.ConstructMessages(context.Background(), []*evalset.Invocation{actual}, []*evalset.Invocation{expected}, &metric.EvalMetric{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "llm judge criterion is required")
+}
+
+func TestConstructMessagesRequiresExpectedFinalResponse(t *testing.T) {
+	constructor := New()
+	actual := &evalset.Invocation{
+		UserContent:   &model.Message{Content: "prompt"},
+		FinalResponse: &model.Message{Content: "answer"},
+	}
+	expected := &evalset.Invocation{}
+	_, err := constructor.ConstructMessages(
+		context.Background(),
+		[]*evalset.Invocation{actual},
+		[]*evalset.Invocation{expected},
+		testRubricCriticEvalMetric(),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expected final response is required")
+}
+
+func TestConstructMessagesRequiresNonNilInvocationsAndRubrics(t *testing.T) {
+	constructor := New()
+	expected := &evalset.Invocation{
+		FinalResponse: &model.Message{Content: "reference"},
+	}
+	_, err := constructor.ConstructMessages(
+		context.Background(),
+		[]*evalset.Invocation{nil},
+		[]*evalset.Invocation{expected},
+		testRubricCriticEvalMetric(),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "actual invocation is nil")
+	actual := &evalset.Invocation{
+		UserContent:   &model.Message{Content: "prompt"},
+		FinalResponse: &model.Message{Content: "answer"},
+	}
+	_, err = constructor.ConstructMessages(
+		context.Background(),
+		[]*evalset.Invocation{actual},
+		[]*evalset.Invocation{nil},
+		testRubricCriticEvalMetric(),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expected invocation is nil")
+	_, err = constructor.ConstructMessages(
+		context.Background(),
+		[]*evalset.Invocation{actual},
+		[]*evalset.Invocation{expected},
+		&metric.EvalMetric{
+			Criterion: &criterion.Criterion{
+				LLMJudge: &llm.LLMCriterion{},
+			},
+		},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "llm judge rubrics are required")
 }

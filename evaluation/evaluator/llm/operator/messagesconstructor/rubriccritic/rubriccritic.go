@@ -163,8 +163,26 @@ func (e *rubricCriticMessagesConstructor) ConstructMessages(ctx context.Context,
 	if len(expecteds) == 0 {
 		return nil, fmt.Errorf("expecteds is empty")
 	}
+	if evalMetric == nil {
+		return nil, fmt.Errorf("eval metric is nil")
+	}
+	if evalMetric.Criterion == nil || evalMetric.Criterion.LLMJudge == nil {
+		return nil, fmt.Errorf("llm judge criterion is required")
+	}
+	if effectiveRubricCount(evalMetric) == 0 {
+		return nil, fmt.Errorf("llm judge rubrics are required")
+	}
 	actual := actuals[len(actuals)-1]
 	expected := expecteds[len(expecteds)-1]
+	if actual == nil {
+		return nil, fmt.Errorf("actual invocation is nil")
+	}
+	if expected == nil {
+		return nil, fmt.Errorf("expected invocation is nil")
+	}
+	if expected.FinalResponse == nil {
+		return nil, fmt.Errorf("expected final response is required for llm_rubric_critic")
+	}
 	data := rubricCriticPromptData{
 		UserInput:        content.ExtractTextFromContent(actual.UserContent),
 		FinalResponse:    content.ExtractTextFromContent(actual.FinalResponse),
@@ -188,4 +206,18 @@ type rubricCriticPromptData struct {
 	FinalResponse    string
 	ExpectedResponse string
 	Rubrics          string
+}
+
+func effectiveRubricCount(evalMetric *metric.EvalMetric) int {
+	if evalMetric == nil || evalMetric.Criterion == nil || evalMetric.Criterion.LLMJudge == nil {
+		return 0
+	}
+	count := 0
+	for _, rubric := range evalMetric.Criterion.LLMJudge.Rubrics {
+		if rubric == nil || rubric.Content == nil {
+			continue
+		}
+		count++
+	}
+	return count
 }
