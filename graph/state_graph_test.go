@@ -3107,6 +3107,20 @@ func TestNewToolsNodeFunc_RefreshToolSetsOnRun(t *testing.T) {
 	require.Equal(t, 2, ts.calls)
 }
 
+func TestAddToolsNode_DoesNotReplayOptionsExtraTimes(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	calls := 0
+	sg.AddToolsNode(
+		"tools",
+		nil,
+		func(node *Node) {
+			calls++
+			node.refreshToolSetsOnRun = false
+		},
+	)
+	require.Equal(t, 2, calls)
+}
+
 func TestStateGraph_StaticInterruptNodes_SetFlags(t *testing.T) {
 	const (
 		nodeA = "a"

@@ -77,6 +77,24 @@ func TestTerminalNodeIDs_ReturnsEmptyForPureCycle(t *testing.T) {
 	assert.Empty(t, terminals)
 }
 
+func TestTerminalNodeIDs_IgnoresUnreachableNodes(t *testing.T) {
+	terminals := TerminalNodeIDs(&structure.Snapshot{
+		EntryNodeID: "root",
+		Nodes: []structure.Node{
+			{NodeID: "root", Kind: structure.NodeKindAgent, Name: "root"},
+			{NodeID: "root/loop", Kind: structure.NodeKindFunction, Name: "loop"},
+			{NodeID: "root/loop_back", Kind: structure.NodeKindFunction, Name: "loop_back"},
+			{NodeID: "root/tail", Kind: structure.NodeKindFunction, Name: "tail"},
+		},
+		Edges: []structure.Edge{
+			{FromNodeID: "root", ToNodeID: "root/loop"},
+			{FromNodeID: "root/loop", ToNodeID: "root/loop_back"},
+			{FromNodeID: "root/loop_back", ToNodeID: "root/loop"},
+		},
+	})
+	assert.Empty(t, terminals)
+}
+
 func TestRootOnly_KeepsEntryNodeAndEntrySurfaces(t *testing.T) {
 	text := "root"
 	snapshot := RootOnly(&structure.Snapshot{

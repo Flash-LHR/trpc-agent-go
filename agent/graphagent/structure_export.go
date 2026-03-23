@@ -68,27 +68,16 @@ func (ga *GraphAgent) Export(
 				ToNodeID:   toNodeID,
 			})
 		}
-		if conditionalEdge, ok := ga.graph.ConditionalEdge(node.ID); ok && conditionalEdge != nil {
-			targets := make([]string, 0, len(conditionalEdge.PathMap)+len(node.EndTargets()))
-			for _, target := range conditionalEdge.PathMap {
-				if target == "" || target == graph.End {
-					continue
-				}
-				targets = append(targets, target)
+		targets := collectConditionalTargets(ga.graph, node)
+		for _, target := range targets {
+			toNodeID, ok := nodePaths[target]
+			if !ok {
+				continue
 			}
-			targets = append(targets, node.EndTargets()...)
-			sort.Strings(targets)
-			targets = uniqueTargets(targets)
-			for _, target := range targets {
-				toNodeID, ok := nodePaths[target]
-				if !ok {
-					continue
-				}
-				snapshot.Edges = append(snapshot.Edges, structure.Edge{
-					FromNodeID: nodePath,
-					ToNodeID:   toNodeID,
-				})
-			}
+			snapshot.Edges = append(snapshot.Edges, structure.Edge{
+				FromNodeID: nodePath,
+				ToNodeID:   toNodeID,
+			})
 		}
 		snapshot.Surfaces = append(snapshot.Surfaces, exportGraphNodeSurfaces(ctx, node, nodePath)...)
 		if node.Type != graph.NodeTypeAgent {
@@ -207,6 +196,20 @@ func toolRefsFromTools(tools []tool.Tool) []structure.ToolRef {
 
 func stringPtr(value string) *string {
 	return &value
+}
+
+func collectConditionalTargets(g *graph.Graph, node *graph.Node) []string {
+	targets := append([]string(nil), node.EndTargets()...)
+	if conditionalEdge, ok := g.ConditionalEdge(node.ID); ok && conditionalEdge != nil {
+		for _, target := range conditionalEdge.PathMap {
+			if target == "" || target == graph.End {
+				continue
+			}
+			targets = append(targets, target)
+		}
+	}
+	sort.Strings(targets)
+	return uniqueTargets(targets)
 }
 
 func uniqueTargets(targets []string) []string {

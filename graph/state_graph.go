@@ -596,7 +596,7 @@ func (sg *StateGraph) AddLLMNode(
 	runner := &llmRunner{
 		llmModel:             llmModel,
 		instruction:          instruction,
-		tools:                tools,
+		tools:                cloneToolsMap(tools),
 		refreshToolSetsOnRun: node.refreshToolSetsOnRun,
 		nodeID:               id,
 		generationConfig:     model.GenerationConfig{Stream: true},
@@ -689,22 +689,14 @@ func (sg *StateGraph) AddToolsNode(
 	opts ...Option,
 ) *StateGraph {
 	toolOpts := append([]Option{WithNodeType(NodeTypeTool)}, opts...)
-	node := &Node{}
-	for _, opt := range toolOpts {
-		opt(node)
-	}
 	resolvedTools := cloneToolsMap(tools)
-	if !node.refreshToolSetsOnRun && len(node.toolSets) > 0 {
-		resolvedTools = mergeToolsWithToolSets(context.Background(), resolvedTools, node.toolSets)
-		toolOpts = append(toolOpts, func(node *Node) {
-			node.toolSets = nil
-		})
-	}
-	toolOpts = append(toolOpts, func(node *Node) {
-		node.baseTools = cloneToolsMap(resolvedTools)
-	})
-	toolsNodeFunc := NewToolsNodeFunc(resolvedTools, toolOpts...)
+	toolsNodeFunc, baseTools := newToolsNodeRuntime(resolvedTools, toolOpts...)
 	sg.AddNode(id, toolsNodeFunc, toolOpts...)
+	node, ok := sg.graph.Node(id)
+	if !ok || node == nil {
+		return sg
+	}
+	node.baseTools = baseTools
 	return sg
 }
 
@@ -2091,6 +2083,14 @@ func runModel(
 // NewToolsNodeFunc creates a NodeFunc that uses the tools package directly.
 // This implements tools node functionality using the tools package interface.
 func NewToolsNodeFunc(tools map[string]tool.Tool, opts ...Option) NodeFunc {
+	nodeFunc, _ := newToolsNodeRuntime(tools, opts...)
+	return nodeFunc
+}
+
+func newToolsNodeRuntime(
+	tools map[string]tool.Tool,
+	opts ...Option,
+) (NodeFunc, map[string]tool.Tool) {
 	node := &Node{}
 	for _, opt := range opts {
 		opt(node)
@@ -2208,7 +2208,7 @@ func NewToolsNodeFunc(tools map[string]tool.Tool, opts ...Option) NodeFunc {
 			workflow.Response = upd
 		}
 		return upd, nil
-	}
+	}, cloneToolsMap(staticTools)
 }
 
 // copyRuntimeStateFiltered creates a shallow copy of the parent state excluding

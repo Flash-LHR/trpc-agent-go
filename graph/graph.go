@@ -317,10 +317,15 @@ func (n *Node) EndTargets() []string {
 		return nil
 	}
 	targets := make([]string, 0, len(n.ends))
+	seen := make(map[string]struct{}, len(n.ends))
 	for _, target := range n.ends {
 		if target == "" || target == End {
 			continue
 		}
+		if _, ok := seen[target]; ok {
+			continue
+		}
+		seen[target] = struct{}{}
 		targets = append(targets, target)
 	}
 	sort.Strings(targets)
@@ -334,6 +339,9 @@ func (n *Node) Tools(ctx context.Context) []tool.Tool {
 	}
 	toolsByName := make(map[string]tool.Tool, len(n.baseTools))
 	for name, currentTool := range n.baseTools {
+		if currentTool == nil || currentTool.Declaration() == nil {
+			continue
+		}
 		toolsByName[name] = currentTool
 	}
 	if n.refreshToolSetsOnRun {

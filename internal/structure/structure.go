@@ -118,17 +118,29 @@ func TerminalNodeIDs(snapshot *structure.Snapshot) []string {
 		return nil
 	}
 	nodeIDs := make(map[string]struct{}, len(snapshot.Nodes))
+	adjacency := make(map[string][]string, len(snapshot.Edges))
 	outgoing := make(map[string]struct{}, len(snapshot.Edges))
 	for _, node := range snapshot.Nodes {
 		nodeIDs[node.NodeID] = struct{}{}
 	}
 	for _, edge := range snapshot.Edges {
-		if _, exists := nodeIDs[edge.FromNodeID]; exists {
-			outgoing[edge.FromNodeID] = struct{}{}
+		_, fromExists := nodeIDs[edge.FromNodeID]
+		_, toExists := nodeIDs[edge.ToNodeID]
+		if !fromExists || !toExists {
+			continue
 		}
+		adjacency[edge.FromNodeID] = append(adjacency[edge.FromNodeID], edge.ToNodeID)
+		outgoing[edge.FromNodeID] = struct{}{}
+	}
+	reachable := reachableNodeIDs(snapshot.EntryNodeID, nodeIDs, adjacency)
+	if len(reachable) == 0 {
+		return nil
 	}
 	terminals := make([]string, 0, len(snapshot.Nodes))
 	for _, node := range snapshot.Nodes {
+		if _, exists := reachable[node.NodeID]; !exists {
+			continue
+		}
 		if _, exists := outgoing[node.NodeID]; exists {
 			continue
 		}
@@ -179,4 +191,28 @@ func rebaseNodeID(nodeID string, oldRoot string, newRoot string) (string, error)
 		return "", fmt.Errorf("node id %q is outside root %q", nodeID, oldRoot)
 	}
 	return newRoot + strings.TrimPrefix(nodeID, oldRoot), nil
+}
+
+func reachableNodeIDs(
+	entryNodeID string,
+	nodeIDs map[string]struct{},
+	adjacency map[string][]string,
+) map[string]struct{} {
+	if _, ok := nodeIDs[entryNodeID]; !ok {
+		return nil
+	}
+	reachable := map[string]struct{}{entryNodeID: {}}
+	queue := []string{entryNodeID}
+	for len(queue) > 0 {
+		nodeID := queue[0]
+		queue = queue[1:]
+		for _, next := range adjacency[nodeID] {
+			if _, ok := reachable[next]; ok {
+				continue
+			}
+			reachable[next] = struct{}{}
+			queue = append(queue, next)
+		}
+	}
+	return reachable
 }

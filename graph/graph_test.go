@@ -18,7 +18,17 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
+
+type graphTestTool struct {
+	name string
+}
+
+func (t *graphTestTool) Declaration() *tool.Declaration {
+	return &tool.Declaration{Name: t.name}
+}
 
 func TestNew(t *testing.T) {
 	schema := NewStateSchema()
@@ -129,6 +139,30 @@ func TestAddConditionalEdge_PathMapValidation(t *testing.T) {
 	if err := g.addConditionalEdge(ce); err == nil {
 		t.Fatalf("expected error when path map points to missing node")
 	}
+}
+
+func TestNode_EndTargets_DeduplicatesConcreteTargets(t *testing.T) {
+	node := &Node{
+		ends: map[string]string{
+			"first":  "done",
+			"second": "done",
+			"retry":  "retry",
+			"end":    End,
+		},
+	}
+	assert.Equal(t, []string{"done", "retry"}, node.EndTargets())
+}
+
+func TestNode_Tools_SkipsNilBaseTools(t *testing.T) {
+	node := &Node{
+		baseTools: map[string]tool.Tool{
+			"valid": &graphTestTool{name: "valid"},
+			"nil":   nil,
+		},
+	}
+	tools := node.Tools(context.Background())
+	require.Len(t, tools, 1)
+	assert.Equal(t, "valid", tools[0].Declaration().Name)
 }
 
 func TestValidate_NoStaticReachabilityRequired(t *testing.T) {

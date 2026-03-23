@@ -338,6 +338,39 @@ func TestExport_GraphAgent_ConditionalEdgesIncludeEndsTargets(t *testing.T) {
 	})
 }
 
+func TestExport_GraphAgent_EndsTargetsExportWithoutConditionalEdge(t *testing.T) {
+	compiled := graph.NewStateGraph(graph.NewStateSchema()).
+		AddNode(
+			"route",
+			func(context.Context, graph.State) (any, error) { return nil, nil },
+			graph.WithEndsMap(map[string]string{
+				"approved": "done",
+				"retry":    "done",
+			}),
+		).
+		AddNode("done", func(context.Context, graph.State) (any, error) { return nil, nil }).
+		SetEntryPoint("route").
+		SetFinishPoint("done").
+		MustCompile()
+	ag, err := New("assistant", compiled)
+	require.NoError(t, err)
+	snapshot, err := structure.Export(context.Background(), ag)
+	require.NoError(t, err)
+	assertGraphSnapshotEqual(t, snapshot, &structure.Snapshot{
+		EntryNodeID: "assistant",
+		Nodes: []structure.Node{
+			{NodeID: "assistant", Kind: structure.NodeKindAgent, Name: "assistant"},
+			{NodeID: "assistant/done", Kind: structure.NodeKindFunction, Name: "done"},
+			{NodeID: "assistant/route", Kind: structure.NodeKindFunction, Name: "route"},
+		},
+		Edges: []structure.Edge{
+			{FromNodeID: "assistant", ToNodeID: "assistant/route"},
+			{FromNodeID: "assistant/route", ToNodeID: "assistant/done"},
+		},
+		Surfaces: []structure.Surface{},
+	})
+}
+
 func TestExport_GraphAgent_ComplexGraphCapturesFanOutJoinLoopAndConditionalTargets(t *testing.T) {
 	compiled := graph.NewStateGraph(graph.NewStateSchema()).
 		AddNode("start", func(context.Context, graph.State) (any, error) { return nil, nil }).
