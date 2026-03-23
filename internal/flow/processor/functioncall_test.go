@@ -3553,7 +3553,7 @@ func TestExecuteStreamableTool_RetryingNodeErrorDoesNotStopStream(t *testing.T) 
 
 	first := <-ch
 	require.NotNil(t, first)
-	require.Equal(t, model.ObjectTypeError, first.Object)
+	require.Equal(t, graph.ObjectTypeGraphNodeError, first.Object)
 	require.NotNil(t, first.Error)
 	require.Contains(t, first.StateDelta, graph.MetadataKeyNode)
 
@@ -3591,7 +3591,7 @@ func TestExecuteStreamableTool_RetryingToolResponseErrorDoesNotStopStream(t *tes
 
 	second := <-ch
 	require.NotNil(t, second)
-	require.Equal(t, model.ObjectTypeError, second.Object)
+	require.Equal(t, graph.ObjectTypeGraphNodeError, second.Object)
 	require.NotNil(t, second.Error)
 	require.Contains(t, second.StateDelta, graph.MetadataKeyNode)
 
