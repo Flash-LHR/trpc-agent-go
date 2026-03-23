@@ -1,0 +1,394 @@
+//
+// Tencent is pleased to support the open source community by making trpc-agent-go available.
+//
+// Copyright (C) 2025 Tencent.  All rights reserved.
+//
+// trpc-agent-go is licensed under the Apache License Version 2.0.
+//
+
+package structure
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/tool"
+)
+
+type testAgent struct {
+	name string
+}
+
+func (a *testAgent) Info() agent.Info { return agent.Info{Name: a.name} }
+
+func (a *testAgent) Run(
+	context.Context,
+	*agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event)
+	close(ch)
+	return ch, nil
+}
+
+func (a *testAgent) Tools() []tool.Tool { return nil }
+
+func (a *testAgent) SubAgents() []agent.Agent { return nil }
+
+func (a *testAgent) FindSubAgent(string) agent.Agent { return nil }
+
+type customExporterAgent struct {
+	*testAgent
+	snapshot *Snapshot
+	err      error
+}
+
+func (a *customExporterAgent) Export(
+	context.Context,
+	ChildExporter,
+) (*Snapshot, error) {
+	if a.err != nil {
+		return nil, a.err
+	}
+	return a.snapshot, nil
+}
+
+type valueExporterAgent struct {
+	name         string
+	child        agent.Agent
+	withSurface  bool
+	localNodeID  string
+	surfaceValue string
+}
+
+func (a valueExporterAgent) Info() agent.Info { return agent.Info{Name: a.name} }
+
+func (a valueExporterAgent) Run(
+	context.Context,
+	*agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event)
+	close(ch)
+	return ch, nil
+}
+
+func (a valueExporterAgent) Tools() []tool.Tool { return nil }
+
+func (a valueExporterAgent) SubAgents() []agent.Agent { return nil }
+
+func (a valueExporterAgent) FindSubAgent(string) agent.Agent { return nil }
+
+func (a valueExporterAgent) Export(
+	ctx context.Context,
+	exportChild ChildExporter,
+) (*Snapshot, error) {
+	rootNodeID := escapeNodeIDSegment(a.name)
+	if a.localNodeID != "" {
+		rootNodeID = a.localNodeID
+	}
+	snapshot := &Snapshot{
+		EntryNodeID: rootNodeID,
+		Nodes: []Node{
+			{NodeID: rootNodeID, Kind: NodeKindAgent, Name: a.name},
+		},
+	}
+	if a.withSurface {
+		text := a.surfaceValue
+		snapshot.Surfaces = append(snapshot.Surfaces, Surface{
+			NodeID: rootNodeID,
+			Type:   SurfaceTypeInstruction,
+			Value:  SurfaceValue{Text: &text},
+		})
+	}
+	if a.child == nil {
+		return snapshot, nil
+	}
+	childSnapshot, err := exportChild(ctx, a.child)
+	if err != nil {
+		return nil, err
+	}
+	mountPath := joinNodeIDForTest(rootNodeID, a.child.Info().Name)
+	rebased, err := rebaseSnapshotForTest(childSnapshot, mountPath)
+	if err != nil {
+		return nil, err
+	}
+	snapshot.Nodes = append(snapshot.Nodes, rebased.Nodes...)
+	snapshot.Edges = append(snapshot.Edges, rebased.Edges...)
+	snapshot.Surfaces = append(snapshot.Surfaces, rebased.Surfaces...)
+	snapshot.Edges = append(snapshot.Edges, Edge{
+		FromNodeID: rootNodeID,
+		ToNodeID:   rebased.EntryNodeID,
+	})
+	return snapshot, nil
+}
+
+func TestExport_NilAgent_ReturnsError(t *testing.T) {
+	_, err := Export(context.Background(), nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errNilAgent)
+}
+
+func TestExport_CustomExporter_UsesExporter(t *testing.T) {
+	raw := &Snapshot{
+		EntryNodeID: "root",
+		Nodes: []Node{
+			{NodeID: "root", Kind: NodeKindAgent, Name: "root"},
+		},
+	}
+	snapshot, err := Export(context.Background(), &customExporterAgent{
+		testAgent: &testAgent{name: "root"},
+		snapshot:  raw,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "root", snapshot.EntryNodeID)
+	assert.Len(t, snapshot.Nodes, 1)
+	assert.NotEmpty(t, snapshot.StructureID)
+}
+
+func TestExport_CustomAgent_FallsBackToOpaqueLeaf(t *testing.T) {
+	snapshot, err := Export(context.Background(), &testAgent{name: "root"})
+	require.NoError(t, err)
+	require.Len(t, snapshot.Nodes, 1)
+	assert.Equal(t, "root", snapshot.EntryNodeID)
+	assert.Equal(t, NodeKindAgent, snapshot.Nodes[0].Kind)
+	assert.Equal(t, "root", snapshot.Nodes[0].NodeID)
+}
+
+func TestExport_NormalizesAndSortsSnapshot(t *testing.T) {
+	text := "instruction"
+	snapshot, err := Export(context.Background(), &customExporterAgent{
+		testAgent: &testAgent{name: "root"},
+		snapshot: &Snapshot{
+			EntryNodeID: "root",
+			Nodes: []Node{
+				{NodeID: "b", Kind: NodeKindFunction, Name: "b"},
+				{NodeID: "root", Kind: NodeKindAgent, Name: "root"},
+				{NodeID: "b", Kind: NodeKindFunction, Name: "b"},
+				{NodeID: "a", Kind: NodeKindFunction, Name: "a"},
+			},
+			Edges: []Edge{
+				{FromNodeID: "b", ToNodeID: "a"},
+				{FromNodeID: "b", ToNodeID: "a"},
+				{FromNodeID: "root", ToNodeID: "b"},
+			},
+			Surfaces: []Surface{
+				{
+					NodeID: "root",
+					Type:   SurfaceTypeTool,
+					Value: SurfaceValue{
+						Tools: []ToolRef{{ID: "b"}, {ID: "a"}, {ID: "a"}},
+					},
+				},
+				{
+					NodeID: "root",
+					Type:   SurfaceTypeSkill,
+					Value: SurfaceValue{
+						Skills: []SkillRef{
+							{ID: "writer", Description: "Write responses."},
+							{ID: "planner", Description: "Plan tasks."},
+							{ID: "planner", Description: "Plan tasks."},
+						},
+					},
+				},
+				{
+					NodeID: "root",
+					Type:   SurfaceTypeInstruction,
+					Value:  SurfaceValue{Text: &text},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, snapshot.Nodes, 3)
+	assert.Equal(t, []Node{
+		{NodeID: "a", Kind: NodeKindFunction, Name: "a"},
+		{NodeID: "b", Kind: NodeKindFunction, Name: "b"},
+		{NodeID: "root", Kind: NodeKindAgent, Name: "root"},
+	}, snapshot.Nodes)
+	assert.Equal(t, []Edge{
+		{FromNodeID: "b", ToNodeID: "a"},
+		{FromNodeID: "root", ToNodeID: "b"},
+	}, snapshot.Edges)
+	require.Len(t, snapshot.Surfaces, 3)
+	assert.Equal(t, "root#instruction", snapshot.Surfaces[0].SurfaceID)
+	assert.Equal(t, "root#skill", snapshot.Surfaces[1].SurfaceID)
+	assert.Equal(t, []SkillRef{
+		{ID: "planner", Description: "Plan tasks."},
+		{ID: "writer", Description: "Write responses."},
+	}, snapshot.Surfaces[1].Value.Skills)
+	assert.Equal(t, "root#tool", snapshot.Surfaces[2].SurfaceID)
+	assert.Equal(t, []ToolRef{{ID: "a"}, {ID: "b"}}, snapshot.Surfaces[2].Value.Tools)
+}
+
+func TestExport_RejectsMissingEntryNode(t *testing.T) {
+	_, err := Export(context.Background(), &customExporterAgent{
+		testAgent: &testAgent{name: "root"},
+		snapshot: &Snapshot{
+			EntryNodeID: "missing",
+			Nodes: []Node{
+				{NodeID: "root", Kind: NodeKindAgent, Name: "root"},
+			},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "entry node")
+}
+
+func TestExport_RejectsMissingEdgeEndpoint(t *testing.T) {
+	_, err := Export(context.Background(), &customExporterAgent{
+		testAgent: &testAgent{name: "root"},
+		snapshot: &Snapshot{
+			EntryNodeID: "root",
+			Nodes: []Node{
+				{NodeID: "root", Kind: NodeKindAgent, Name: "root"},
+			},
+			Edges: []Edge{
+				{FromNodeID: "root", ToNodeID: "missing"},
+			},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "edge to node")
+}
+
+func TestExport_RejectsMissingSurfaceNode(t *testing.T) {
+	_, err := Export(context.Background(), &customExporterAgent{
+		testAgent: &testAgent{name: "root"},
+		snapshot: &Snapshot{
+			EntryNodeID: "root",
+			Nodes: []Node{
+				{NodeID: "root", Kind: NodeKindAgent, Name: "root"},
+			},
+			Surfaces: []Surface{
+				{NodeID: "missing", Type: SurfaceTypeInstruction},
+			},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "surface node")
+}
+
+func TestExport_RejectsDuplicateSurfaceTypeOnSameNode(t *testing.T) {
+	_, err := Export(context.Background(), &customExporterAgent{
+		testAgent: &testAgent{name: "root"},
+		snapshot: &Snapshot{
+			EntryNodeID: "root",
+			Nodes: []Node{
+				{NodeID: "root", Kind: NodeKindAgent, Name: "root"},
+			},
+			Surfaces: []Surface{
+				{NodeID: "root", Type: SurfaceTypeInstruction},
+				{NodeID: "root", Type: SurfaceTypeInstruction},
+			},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate surface type")
+}
+
+func TestExport_RejectsInvalidSurfaceUnionValue(t *testing.T) {
+	text := "instruction"
+	_, err := Export(context.Background(), &customExporterAgent{
+		testAgent: &testAgent{name: "root"},
+		snapshot: &Snapshot{
+			EntryNodeID: "root",
+			Nodes: []Node{
+				{NodeID: "root", Kind: NodeKindAgent, Name: "root"},
+			},
+			Surfaces: []Surface{
+				{
+					NodeID: "root",
+					Type:   SurfaceTypeInstruction,
+					Value: SurfaceValue{
+						Text:  &text,
+						Model: &ModelRef{Name: "gpt"},
+					},
+				},
+			},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid surface")
+}
+
+func TestExport_ValueAgentsDoNotTriggerFalseRecursionFallback(t *testing.T) {
+	child := valueExporterAgent{
+		name:         "same",
+		withSurface:  true,
+		surfaceValue: "child",
+	}
+	parent := valueExporterAgent{
+		name:         "same",
+		child:        child,
+		withSurface:  true,
+		surfaceValue: "parent",
+	}
+	snapshot, err := Export(context.Background(), parent)
+	require.NoError(t, err)
+	assert.Contains(t, snapshot.Nodes, Node{
+		NodeID: "same/same",
+		Kind:   NodeKindAgent,
+		Name:   "same",
+	})
+	assert.Contains(t, snapshot.Surfaces, Surface{
+		SurfaceID: "same/same#instruction",
+		NodeID:    "same/same",
+		Type:      SurfaceTypeInstruction,
+		Value:     SurfaceValue{Text: stringPtr("child")},
+	})
+}
+
+func TestExport_PropagatesExporterError(t *testing.T) {
+	want := errors.New("boom")
+	_, err := Export(context.Background(), &customExporterAgent{
+		testAgent: &testAgent{name: "root"},
+		err:       want,
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, want)
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
+func joinNodeIDForTest(parent string, localName string) string {
+	return parent + "/" + escapeNodeIDSegment(localName)
+}
+
+func rebaseSnapshotForTest(snapshot *Snapshot, newRootNodeID string) (*Snapshot, error) {
+	rebased := &Snapshot{
+		EntryNodeID: newRootNodeID,
+		Nodes:       make([]Node, 0, len(snapshot.Nodes)),
+		Edges:       make([]Edge, 0, len(snapshot.Edges)),
+		Surfaces:    make([]Surface, 0, len(snapshot.Surfaces)),
+	}
+	for _, node := range snapshot.Nodes {
+		node.NodeID = rebaseNodeIDForTest(node.NodeID, snapshot.EntryNodeID, newRootNodeID)
+		rebased.Nodes = append(rebased.Nodes, node)
+	}
+	for _, edge := range snapshot.Edges {
+		rebased.Edges = append(rebased.Edges, Edge{
+			FromNodeID: rebaseNodeIDForTest(edge.FromNodeID, snapshot.EntryNodeID, newRootNodeID),
+			ToNodeID:   rebaseNodeIDForTest(edge.ToNodeID, snapshot.EntryNodeID, newRootNodeID),
+		})
+	}
+	for _, surface := range snapshot.Surfaces {
+		surface.NodeID = rebaseNodeIDForTest(surface.NodeID, snapshot.EntryNodeID, newRootNodeID)
+		rebased.Surfaces = append(rebased.Surfaces, surface)
+	}
+	return rebased, nil
+}
+
+func rebaseNodeIDForTest(nodeID string, oldRoot string, newRoot string) string {
+	if nodeID == oldRoot {
+		return newRoot
+	}
+	return newRoot + strings.TrimPrefix(nodeID, oldRoot)
+}

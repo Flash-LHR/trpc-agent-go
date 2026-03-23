@@ -590,6 +590,9 @@ func (sg *StateGraph) AddLLMNode(
 	for _, opt := range opts {
 		opt(node)
 	}
+	node.instruction = instruction
+	node.llmModel = llmModel
+	node.baseTools = cloneToolsMap(tools)
 	runner := &llmRunner{
 		llmModel:             llmModel,
 		instruction:          instruction,
@@ -605,6 +608,7 @@ func (sg *StateGraph) AddLLMNode(
 			runner.toolSets = append(runner.toolSets, node.toolSets...)
 		} else {
 			runner.tools = mergeToolsWithToolSets(context.Background(), runner.tools, node.toolSets)
+			node.baseTools = cloneToolsMap(runner.tools)
 		}
 	}
 	if node.llmGenerationConfig != nil {
@@ -685,7 +689,21 @@ func (sg *StateGraph) AddToolsNode(
 	opts ...Option,
 ) *StateGraph {
 	toolOpts := append([]Option{WithNodeType(NodeTypeTool)}, opts...)
-	toolsNodeFunc := NewToolsNodeFunc(tools, toolOpts...)
+	node := &Node{}
+	for _, opt := range toolOpts {
+		opt(node)
+	}
+	resolvedTools := cloneToolsMap(tools)
+	if !node.refreshToolSetsOnRun && len(node.toolSets) > 0 {
+		resolvedTools = mergeToolsWithToolSets(context.Background(), resolvedTools, node.toolSets)
+		toolOpts = append(toolOpts, func(node *Node) {
+			node.toolSets = nil
+		})
+	}
+	toolOpts = append(toolOpts, func(node *Node) {
+		node.baseTools = cloneToolsMap(resolvedTools)
+	})
+	toolsNodeFunc := NewToolsNodeFunc(resolvedTools, toolOpts...)
 	sg.AddNode(id, toolsNodeFunc, toolOpts...)
 	return sg
 }
@@ -1103,6 +1121,17 @@ func mergeToolsWithToolSets(
 		}
 	}
 	return out
+}
+
+func cloneToolsMap(tools map[string]tool.Tool) map[string]tool.Tool {
+	if len(tools) == 0 {
+		return nil
+	}
+	cloned := make(map[string]tool.Tool, len(tools))
+	for name, currentTool := range tools {
+		cloned[name] = currentTool
+	}
+	return cloned
 }
 
 // WithLLMToolSets sets the tool sets for the LLM node function.
