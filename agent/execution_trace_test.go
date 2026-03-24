@@ -9,6 +9,7 @@
 package agent
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -123,4 +124,52 @@ func TestNextExecutionTracePredecessors_UsesNestedChildInvocationTerminals(t *te
 	)
 	FinishExecutionTraceStep(leaf, leafStepID, &atrace.Snapshot{Text: "leaf output"}, nil)
 	assert.Equal(t, []string{leafStepID}, NextExecutionTracePredecessors(middle))
+}
+
+func TestWithExecutionTraceEnabled_SetsRunOptions(t *testing.T) {
+	var opts RunOptions
+	WithExecutionTraceEnabled(true)(&opts)
+	assert.True(t, opts.ExecutionTraceEnabled)
+	WithExecutionTraceEnabled(false)(&opts)
+	assert.False(t, opts.ExecutionTraceEnabled)
+}
+
+func TestExecutionTraceHelpers_HandleNilAndDisabledInvocation(t *testing.T) {
+	var nilInv *Invocation
+	assert.Empty(t, InvocationTraceNodeID(nilInv))
+	assert.Empty(t, StartExecutionTraceStep(nilInv, "assistant", nil, nil))
+	FinishExecutionTraceStep(nilInv, "step-1", nil, nil)
+	assert.Nil(t, NextExecutionTracePredecessors(nilInv))
+	assert.Nil(t, BuildExecutionTrace(nilInv, atrace.TraceStatusCompleted))
+	nilInv.ensureTraceCaptureMetadata()
+	disabled := NewInvocation(
+		WithInvocationAgent(&mockAgent{name: "assistant"}),
+		WithInvocationMessage(model.NewUserMessage("hello")),
+	)
+	assert.False(t, executionTraceEnabled(disabled))
+	assert.Empty(t, StartExecutionTraceStep(disabled, "assistant", nil, nil))
+	assert.Empty(t, StartExecutionTraceStep(disabled, "", nil, nil))
+	FinishExecutionTraceStep(disabled, "step-1", nil, nil)
+	FinishExecutionTraceStep(disabled, "", nil, nil)
+	assert.Nil(t, NextExecutionTracePredecessors(disabled))
+	assert.Nil(t, BuildExecutionTrace(disabled, atrace.TraceStatusCompleted))
+}
+
+func TestExecutionTraceHelpers_RecordStepErrorAndUtilityBranches(t *testing.T) {
+	inv := &Invocation{
+		InvocationID: "inv-1",
+		AgentName:    "assistant",
+		RunOptions:   RunOptions{ExecutionTraceEnabled: true},
+	}
+	stepID := StartExecutionTraceStep(inv, InvocationTraceNodeID(inv), &atrace.Snapshot{Text: "input"}, []string{"entry"})
+	require.NotEmpty(t, stepID)
+	FinishExecutionTraceStep(inv, stepID, &atrace.Snapshot{Text: "output"}, errors.New("boom"))
+	executionTrace := BuildExecutionTrace(inv, atrace.TraceStatusFailed)
+	require.NotNil(t, executionTrace)
+	require.Len(t, executionTrace.Steps, 1)
+	assert.Equal(t, "boom", executionTrace.Steps[0].Error)
+	assert.Equal(t, []string{"entry"}, executionTrace.Steps[0].PredecessorStepIDs)
+	assert.Nil(t, cloneStringSlice(nil))
+	assert.Equal(t, "_", escapeTraceLocalName(""))
+	assert.Equal(t, "team~1worker~0", escapeTraceLocalName("team/worker~"))
 }

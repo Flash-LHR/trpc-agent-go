@@ -139,3 +139,46 @@ func TestCapture_PredecessorsForInvocation_UsesNestedChildTerminals(t *testing.T
 		capture.PredecessorsForInvocation("parallel-inv", []string{"entry-step"}),
 	)
 }
+
+func TestCapture_CoversNilGuardsAndMetadataFallbacks(t *testing.T) {
+	var nilCapture *Capture
+	assert.Nil(t, nilCapture.Build(atrace.TraceStatusCompleted, time.Time{}))
+	assert.Nil(t, nilCapture.TerminalStepIDs("inv"))
+	assert.Equal(t, []string{"entry"}, nilCapture.PredecessorsForInvocation("inv", []string{"entry"}))
+	assert.Empty(t, nilCapture.StartStep(StartStepInput{InvocationID: "inv"}))
+	nilCapture.FinishStep("step-1", nil, "", time.Time{})
+	nilCapture.SetRootAgentName("assistant")
+	nilCapture.SetSessionID("session-1")
+	nilCapture.RegisterInvocation("parent", "child")
+	capture := New("", "root-inv", "", time.Time{})
+	require.False(t, capture.startedAt.IsZero())
+	capture.SetRootAgentName("assistant")
+	capture.SetRootAgentName("ignored")
+	assert.Equal(t, "assistant", capture.rootAgentName)
+	capture.SetSessionID("session-1")
+	capture.SetSessionID("ignored")
+	assert.Equal(t, "session-1", capture.sessionID)
+	capture.RegisterInvocation("parent-inv", "child-inv")
+	capture.RegisterInvocation("", "ignored")
+	require.Contains(t, capture.childInvocationsByParent["parent-inv"], "child-inv")
+	stepID := capture.StartStep(StartStepInput{
+		InvocationID:       "child-inv",
+		ParentInvocationID: "parent-inv",
+		AgentName:          "assistant",
+		NodeID:             "assistant/node",
+	})
+	require.NotEmpty(t, stepID)
+	capture.FinishStep("missing", nil, "", time.Time{})
+	capture.FinishStep(stepID, nil, "boom", time.Time{})
+	trace := capture.Build(atrace.TraceStatusFailed, time.Time{})
+	require.NotNil(t, trace)
+	require.Len(t, trace.Steps, 1)
+	assert.Equal(t, "boom", trace.Steps[0].Error)
+	assert.NotZero(t, trace.EndedAt)
+	assert.Nil(t, capture.TerminalStepIDs("missing"))
+	assert.Equal(t, []string{"entry"}, capture.PredecessorsForInvocation("missing", []string{"entry"}))
+	assert.Nil(t, capture.effectiveTerminalStepIDsLocked("", map[string]struct{}{}))
+	assert.Nil(t, capture.effectiveTerminalStepIDsLocked("child-inv", map[string]struct{}{"child-inv": {}}))
+	assert.Nil(t, capture.effectiveTerminalStepIDsLocked("missing", map[string]struct{}{}))
+	assert.Nil(t, cloneSnapshot(nil))
+}

@@ -235,6 +235,13 @@ func TestTransferResponseProc_FallsBackToMountedSwarmTraceRootWhenSessionLacksSt
 	require.Equal(t, "workflow/swarm/beta", target.gotTraceNodeID)
 }
 
+func TestTransferTargetTraceNodeID_NilAndParentFallbackBranches(t *testing.T) {
+	require.Empty(t, transferTargetTraceNodeID(nil, &mockAgent{name: "beta"}))
+	require.Empty(t, transferTargetTraceNodeID(&agent.Invocation{}, nil))
+	require.Empty(t, parentTraceNodeID(""))
+	require.Empty(t, parentTraceNodeID("swarm"))
+}
+
 type deadlineAgent struct {
 	name        string
 	gotDeadline bool

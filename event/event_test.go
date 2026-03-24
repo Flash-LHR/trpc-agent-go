@@ -189,6 +189,11 @@ func TestEvent_MarshalOmitsExecutionTrace(t *testing.T) {
 	require.NotContains(t, string(data), "rootAgentName")
 }
 
+func TestRedactedEventForLogging_NilAndSnapshotBranches(t *testing.T) {
+	require.Equal(t, Event{}, redactedEventForLogging(nil))
+	require.Nil(t, cloneExecutionTraceSnapshot(nil))
+}
+
 func TestEmitEventWithTimeout(t *testing.T) {
 	type args struct {
 		ctx     context.Context
