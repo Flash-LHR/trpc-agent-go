@@ -2147,6 +2147,34 @@ func TestFlow_GenerateContentSeq_IterModelAssignsGeneratedIDForStreamingResponse
 	require.Equal(t, responses[0].ID, responses[1].ID)
 }
 
+func TestNormalizeResponseIDs_NilSequence(t *testing.T) {
+	require.Nil(t, normalizeResponseIDs(nil))
+}
+
+func TestNormalizeResponseIDs_PassesThroughNilResponse(t *testing.T) {
+	seq := normalizeResponseIDs(func(yield func(*model.Response) bool) {
+		yield(nil)
+		yield(&model.Response{Object: model.ObjectTypeChatCompletion, Done: true, IsPartial: true})
+		yield(&model.Response{Object: model.ObjectTypeChatCompletion, Done: true})
+	})
+	require.NotNil(t, seq)
+	var responses []*model.Response
+	seq(func(resp *model.Response) bool {
+		responses = append(responses, resp)
+		return true
+	})
+	require.Len(t, responses, 3)
+	require.Nil(t, responses[0])
+	require.NotEmpty(t, responses[1].ID)
+	require.Equal(t, responses[1].ID, responses[2].ID)
+}
+
+func TestNormalizeResponseID_PreservesResponseWhenCurrentIDIsNil(t *testing.T) {
+	resp := &model.Response{ID: "resp-1"}
+	require.Same(t, resp, normalizeResponseID(resp, nil))
+	require.Nil(t, normalizeResponseID(nil, new(string)))
+}
+
 func TestFlow_GenerateContentSeq_IterModelError(t *testing.T) {
 	f := New(nil, nil, Options{})
 	iterModel := &mockIterModel{
