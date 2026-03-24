@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/agent/trace"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
@@ -174,6 +175,18 @@ func TestEvent_Marshal_And_Unmarshal(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Empty(t, nullEvt)
+}
+
+func TestEvent_MarshalOmitsExecutionTrace(t *testing.T) {
+	evt := New("inv-1", "author", WithResponse(&model.Response{Done: true}))
+	evt.ExecutionTrace = &trace.Trace{
+		RootAgentName:    "assistant",
+		RootInvocationID: "inv-1",
+	}
+	data, err := json.Marshal(evt)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "ExecutionTrace")
+	require.NotContains(t, string(data), "rootAgentName")
 }
 
 func TestEmitEventWithTimeout(t *testing.T) {

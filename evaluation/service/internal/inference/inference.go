@@ -18,11 +18,18 @@ import (
 	"strings"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/agent/trace"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/evalset"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 )
+
+// Result contains all inference artifacts for one eval case.
+type Result struct {
+	Invocations     []*evalset.Invocation
+	ExecutionTraces []*trace.Trace
+}
 
 // Inference executes the agent against the provided invocations.
 func Inference(
@@ -32,7 +39,7 @@ func Inference(
 	initialSession *evalset.SessionInput,
 	sessionID string,
 	runOptions []agent.RunOption,
-) ([]*evalset.Invocation, error) {
+) (*Result, error) {
 	if len(invocations) == 0 {
 		return nil, errors.New("invocations are empty")
 	}
@@ -41,14 +48,22 @@ func Inference(
 	}
 	// Accumulate each invocation response.
 	responseInvocations := make([]*evalset.Invocation, 0, len(invocations))
+	executionTraces := make([]*trace.Trace, 0, len(invocations))
 	for _, invocation := range invocations {
-		responseInvocation, err := inferenceInvocation(ctx, runner, sessionID, initialSession, invocation, runOptions)
-		if err != nil {
-			return nil, err
-		}
+		responseInvocation, executionTrace, err := inferenceInvocation(ctx, runner, sessionID, initialSession, invocation, runOptions)
 		responseInvocations = append(responseInvocations, responseInvocation)
+		executionTraces = append(executionTraces, executionTrace)
+		if err != nil {
+			return &Result{
+				Invocations:     responseInvocations,
+				ExecutionTraces: executionTraces,
+			}, err
+		}
 	}
-	return responseInvocations, nil
+	return &Result{
+		Invocations:     responseInvocations,
+		ExecutionTraces: executionTraces,
+	}, nil
 }
 
 // inferenceInvocation executes the agent for a single invocation.
@@ -59,9 +74,9 @@ func inferenceInvocation(
 	initialSession *evalset.SessionInput,
 	invocation *evalset.Invocation,
 	runOptions []agent.RunOption,
-) (*evalset.Invocation, error) {
+) (*evalset.Invocation, *trace.Trace, error) {
 	if invocation.UserContent == nil {
-		return nil, fmt.Errorf("invocation user content is nil for eval case invocation %q", invocation.InvocationID)
+		return nil, nil, fmt.Errorf("invocation user content is nil for eval case invocation %q", invocation.InvocationID)
 	}
 	mergedOpts := make([]agent.RunOption, 0, 1+len(runOptions))
 	mergedOpts = append(mergedOpts, runOptions...)
@@ -76,36 +91,48 @@ func inferenceInvocation(
 		mergedOpts...,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("runner run: %w", err)
+		return nil, nil, fmt.Errorf("runner run: %w", err)
 	}
 	// Capture the invocation ID, final response, tool uses, and tool responses.
 	var (
-		invocationID  string
-		finalResponse *model.Message
-		tools         = make([]*evalset.Tool, 0)
-		toolIDIdx     = make(map[string]int)
+		invocationID   string
+		finalResponse  *model.Message
+		executionTrace *trace.Trace
+		eventErr       error
+		tools          = make([]*evalset.Tool, 0)
+		toolIDIdx      = make(map[string]int)
 	)
 	for event := range events {
 		if event == nil {
 			continue
 		}
-		if event.Error != nil {
-			return nil, fmt.Errorf("event: %v", event.Error)
-		}
-		// Capture the invocation ID.
-		if invocationID == "" && event.InvocationID != "" {
+		if event.IsRunnerCompletion() {
+			if event.InvocationID != "" {
+				invocationID = event.InvocationID
+			}
+			if event.ExecutionTrace != nil {
+				executionTrace = event.ExecutionTrace
+			}
+		} else if invocationID == "" && event.InvocationID != "" {
 			invocationID = event.InvocationID
 		}
-		// Capture the final response.
-		if event.IsFinalResponse() {
+		// Preserve the final response even when the completion event also carries an error.
+		if event.IsFinalResponse() && event.Response != nil && len(event.Response.Choices) > 0 {
 			finalResponse = &event.Response.Choices[0].Message
+		}
+		if event.Error != nil {
+			eventErr = errors.Join(eventErr, fmt.Errorf("event: %v", event.Error))
+			continue
+		}
+		if event.IsFinalResponse() {
 			continue
 		}
 		// Capture tool call uses.
 		if event.IsToolCallResponse() {
 			toolcalls, err := convertTools(event)
 			if err != nil {
-				return nil, fmt.Errorf("convert tool call response: %w", err)
+				eventErr = errors.Join(eventErr, fmt.Errorf("convert tool call response: %w", err))
+				continue
 			}
 			for _, toolcall := range toolcalls {
 				tools = append(tools, toolcall)
@@ -116,16 +143,21 @@ func inferenceInvocation(
 		if event.IsToolResultResponse() {
 			err := mergeToolResultResponse(event, toolIDIdx, tools)
 			if err != nil {
-				return nil, fmt.Errorf("convert tool result response: %w", err)
+				eventErr = errors.Join(eventErr, fmt.Errorf("convert tool result response: %w", err))
+				continue
 			}
 		}
 	}
-	return &evalset.Invocation{
+	result := &evalset.Invocation{
 		InvocationID:  invocationID,
 		UserContent:   invocation.UserContent,
 		FinalResponse: finalResponse,
 		Tools:         tools,
-	}, nil
+	}
+	if eventErr != nil {
+		return result, executionTrace, eventErr
+	}
+	return result, executionTrace, nil
 }
 
 // convertTools converts the tool call to tools.

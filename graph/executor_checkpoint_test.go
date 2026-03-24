@@ -2132,6 +2132,7 @@ func TestExecutor_HandleCommandRouting_SetsStepMark(t *testing.T) {
 		nil,
 		ec,
 		taskID,
+		"",
 		targetNode,
 		step,
 	)
@@ -2183,6 +2184,7 @@ func TestExecutor_ProcessConditionalResult_SetsStepMark(t *testing.T) {
 		condEdge,
 		resultKey,
 		step,
+		fmt.Sprintf("%s-%d", fromNode, step),
 	)
 	require.NoError(t, err)
 

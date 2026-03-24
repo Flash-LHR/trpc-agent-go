@@ -57,6 +57,8 @@ const (
 	StateKeyAgentCallbacks = "agent_callbacks"
 	// StateKeyCurrentNodeID is the key for storing the current node ID in the state.
 	StateKeyCurrentNodeID = "current_node_id"
+	// StateKeyCurrentTraceStepID is the key for storing the current trace step ID in the state.
+	StateKeyCurrentTraceStepID = "current_trace_step_id"
 	// StateKeyParentAgent is the key for storing the parent GraphAgent that owns sub-agents.
 	StateKeyParentAgent = "parent_agent"
 )

@@ -18,6 +18,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	istructure "trpc.group/trpc-go/trpc-agent-go/internal/structure"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
 	agenttool "trpc.group/trpc-go/trpc-agent-go/tool/agent"
@@ -67,6 +68,8 @@ const (
 	// SwarmTeamNameKey is the session state key for storing the Swarm team name.
 	// This is used to identify if a session belongs to a Swarm team.
 	SwarmTeamNameKey = "swarm_team_name"
+	// swarmTraceNodeIDKey stores the mounted swarm root node id for sibling transfers.
+	swarmTraceNodeIDKey = "swarm_trace_node_id"
 )
 
 var (
@@ -195,7 +198,13 @@ func (t *Team) runCoordinator(
 	if t.coordinator == nil {
 		return nil, errors.New("coordinator is nil")
 	}
-	return t.coordinator.Run(ctx, invocation)
+	child := invocation.Clone(
+		agent.WithInvocationAgent(t.coordinator),
+		agent.WithInvocationTraceNodeID(istructure.JoinNodeID(agent.InvocationTraceNodeID(invocation), "coordinator")),
+		agent.WithInvocationEntryPredecessorStepIDs(agent.NextExecutionTracePredecessors(invocation)),
+	)
+	childCtx := agent.NewInvocationContext(ctx, child)
+	return t.coordinator.Run(childCtx, child)
 }
 
 func (t *Team) runSwarm(
@@ -206,6 +215,9 @@ func (t *Team) runSwarm(
 	// Only do this if cross-request transfer is enabled.
 	if t.crossRequestTransfer && invocation.Session != nil {
 		invocation.Session.SetState(SwarmTeamNameKey, []byte(t.name))
+		if traceNodeID := agent.InvocationTraceNodeID(invocation); traceNodeID != "" {
+			invocation.Session.SetState(swarmTraceNodeIDKey, []byte(traceNodeID))
+		}
 	}
 
 	var startAgent agent.Agent
@@ -227,9 +239,25 @@ func (t *Team) runSwarm(
 	}
 
 	ensureSwarmRuntime(invocation, t.swarm)
-
+	memberPathAllocator := istructure.NewPathAllocator(agent.InvocationTraceNodeID(invocation))
+	var memberNodeID string
+	startAgentName := startAgent.Info().Name
+	t.mu.RLock()
+	for _, member := range t.members {
+		nextNodeID := memberPathAllocator.Next(member.Info().Name)
+		if member != nil && member.Info().Name == startAgentName {
+			memberNodeID = nextNodeID
+			break
+		}
+	}
+	t.mu.RUnlock()
+	if memberNodeID == "" {
+		memberNodeID = istructure.JoinNodeID(agent.InvocationTraceNodeID(invocation), startAgent.Info().Name)
+	}
 	child := invocation.Clone(
 		agent.WithInvocationAgent(startAgent),
+		agent.WithInvocationTraceNodeID(memberNodeID),
+		agent.WithInvocationEntryPredecessorStepIDs(agent.NextExecutionTracePredecessors(invocation)),
 	)
 	childCtx := agent.NewInvocationContext(ctx, child)
 
