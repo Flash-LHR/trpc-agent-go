@@ -211,6 +211,30 @@ func TestTransferResponseProc_UsesMountedSwarmTraceRootForSiblingTransfer(t *tes
 	require.Equal(t, "workflow/swarm/beta", target.gotTraceNodeID)
 }
 
+func TestTransferResponseProc_FallsBackToMountedSwarmTraceRootWhenSessionLacksStoredTraceRoot(t *testing.T) {
+	target := &mockAgent{name: "beta", emit: true}
+	parent := &parentAgent{child: target}
+	inv := &agent.Invocation{
+		Agent:        parent,
+		AgentName:    "alpha",
+		InvocationID: "inv-old-nested-swarm",
+		Session: &session.Session{
+			State: session.StateMap{
+				swarmTeamNameKey: []byte("swarm"),
+			},
+		},
+		TransferInfo: &agent.TransferInfo{TargetAgentName: "beta", Message: "hi"},
+	}
+	agent.WithInvocationTraceNodeID("workflow/swarm/alpha")(inv)
+	rsp := &model.Response{ID: "r-old-nested-swarm"}
+	out := make(chan *event.Event, 10)
+	NewTransferResponseProcessor(true).ProcessResponse(context.Background(), inv, &model.Request{}, rsp, out)
+	close(out)
+	for range out {
+	}
+	require.Equal(t, "workflow/swarm/beta", target.gotTraceNodeID)
+}
+
 type deadlineAgent struct {
 	name        string
 	gotDeadline bool

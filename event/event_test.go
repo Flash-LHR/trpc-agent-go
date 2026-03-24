@@ -309,6 +309,27 @@ func TestEmitEventWithTimeout_TraceEnabled_BlockingSend(t *testing.T) {
 	require.NoError(t, EmitEventWithTimeout(ctx, ch2, evt, time.Second))
 }
 
+func TestSnapshotEvent_RedactsExecutionTrace(t *testing.T) {
+	log.SetTraceEnabled(true)
+	t.Cleanup(func() { log.SetTraceEnabled(false) })
+
+	evt := New("invocationID", "author")
+	evt.ExecutionTrace = &trace.Trace{
+		RootAgentName: "assistant",
+		Steps: []trace.Step{
+			{
+				Input:  &trace.Snapshot{Text: "secret input"},
+				Output: &trace.Snapshot{Text: "secret output"},
+			},
+		},
+	}
+	snapshot := snapshotEvent(evt)
+	require.NotEmpty(t, snapshot)
+	require.NotContains(t, snapshot, "secret input")
+	require.NotContains(t, snapshot, "secret output")
+	require.Contains(t, snapshot, "ExecutionTrace:<nil>")
+}
+
 func TestTryEmitReadyEvent(t *testing.T) {
 	evt := New("invocationID", "author")
 	t.Run("ready send", func(t *testing.T) {

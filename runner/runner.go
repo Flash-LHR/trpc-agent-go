@@ -1384,6 +1384,9 @@ func (r *runner) emitRunnerCompletion(ctx context.Context, loop *eventLoopContex
 
 func resolveExecutionTraceStatus(loop *eventLoopContext, ctxErr error) trace.TraceStatus {
 	if loop != nil && loop.finalError != nil {
+		if loop.finalError.Type == agent.ErrorTypeStopAgentError {
+			return trace.TraceStatusCompleted
+		}
 		return trace.TraceStatusFailed
 	}
 	_, isWaitNoticeTimeout := agent.AsWaitNoticeTimeoutError(ctxErr)

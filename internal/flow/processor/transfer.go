@@ -12,6 +12,7 @@ package processor
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -284,10 +285,24 @@ func transferTargetTraceNodeID(invocation *agent.Invocation, targetAgent agent.A
 			return istructure.JoinNodeID(string(traceRootBytes), targetAgent.Info().Name)
 		}
 		if teamNameBytes, ok := invocation.Session.GetState(swarmTeamNameKey); ok && len(teamNameBytes) > 0 {
-			return istructure.JoinNodeID(string(teamNameBytes), targetAgent.Info().Name)
+			if mountedRoot := parentTraceNodeID(agent.InvocationTraceNodeID(invocation)); mountedRoot != "" {
+				return istructure.JoinNodeID(mountedRoot, targetAgent.Info().Name)
+			}
+			return istructure.JoinNodeID(istructure.JoinNodeID("", string(teamNameBytes)), targetAgent.Info().Name)
 		}
 	}
 	return istructure.JoinNodeID(agent.InvocationTraceNodeID(invocation), targetAgent.Info().Name)
+}
+
+func parentTraceNodeID(nodeID string) string {
+	if nodeID == "" {
+		return ""
+	}
+	lastSlash := strings.LastIndex(nodeID, "/")
+	if lastSlash <= 0 {
+		return ""
+	}
+	return nodeID[:lastSlash]
 }
 
 func swarmActiveAgentKey(teamName string) string {

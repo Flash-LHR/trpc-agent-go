@@ -284,6 +284,10 @@ func TestInference_ReturnsPartialResultAndTraceOnEventError(t *testing.T) {
 	assert.Same(t, executionTrace, result.ExecutionTraces[0])
 	assert.Equal(t, "generated-inv", result.Invocations[0].InvocationID)
 	assert.NotNil(t, result.Invocations[0].FinalResponse)
+	var responseErr *model.ResponseError
+	require.ErrorAs(t, err, &responseErr)
+	require.NotNil(t, responseErr)
+	assert.Equal(t, "boom", responseErr.Message)
 	if result.Invocations[0].FinalResponse == nil {
 		return
 	}
@@ -345,6 +349,42 @@ func TestInference_PrefersRunnerCompletionInvocationID(t *testing.T) {
 	assert.Same(t, executionTrace, result.ExecutionTraces[0])
 }
 
+func TestInference_PrefersRootFinalResponseOverChildFinalResponse(t *testing.T) {
+	executionTrace := &trace.Trace{RootInvocationID: "root-1", RootAgentName: "assistant-1"}
+	r := &fakeRunner{
+		events: []*event.Event{
+			{
+				InvocationID: "root-inv",
+				Response: &model.Response{
+					Done:    true,
+					Choices: []model.Choice{{Message: model.Message{Role: model.RoleAssistant, Content: "root answer"}}},
+				},
+			},
+			{
+				InvocationID: "child-inv",
+				Response: &model.Response{
+					Done:    true,
+					Choices: []model.Choice{{Message: model.Message{Role: model.RoleAssistant, Content: "child answer"}}},
+				},
+			},
+			makeRunnerCompletionEvent("root-inv", executionTrace),
+		},
+	}
+	input := []*evalset.Invocation{
+		{
+			InvocationID: "input-1",
+			UserContent:  &model.Message{Role: model.RoleUser, Content: "question-1"},
+		},
+	}
+	session := &evalset.SessionInput{UserID: "user-1"}
+	result, err := Inference(context.Background(), r, input, session, "session-1", nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, result.Invocations, 1)
+	require.NotNil(t, result.Invocations[0].FinalResponse)
+	assert.Equal(t, "root answer", result.Invocations[0].FinalResponse.Content)
+}
+
 func TestInference_PreservesInvocationAlignmentWhenRunnerRunFailsMidway(t *testing.T) {
 	baseRunner := &fakeRunner{
 		eventRuns: [][]*event.Event{
@@ -370,12 +410,10 @@ func TestInference_PreservesInvocationAlignmentWhenRunnerRunFailsMidway(t *testi
 	result, err := Inference(context.Background(), r, input, session, "session-1", nil)
 	require.Error(t, err)
 	require.NotNil(t, result)
-	require.Len(t, result.Invocations, 2)
-	require.Len(t, result.ExecutionTraces, 2)
+	require.Len(t, result.Invocations, 1)
+	require.Len(t, result.ExecutionTraces, 1)
 	require.NotNil(t, result.Invocations[0])
-	assert.Nil(t, result.Invocations[1])
 	assert.Nil(t, result.ExecutionTraces[0])
-	assert.Nil(t, result.ExecutionTraces[1])
 }
 
 func TestInferenceInvocationAppendsSessionRuntimeState(t *testing.T) {

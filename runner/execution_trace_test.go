@@ -68,6 +68,13 @@ func TestRunnerCompletion_AttachesExecutionTraceWhenEnabled(t *testing.T) {
 	assert.Equal(t, atrace.TraceStatusCompleted, completion.ExecutionTrace.Status)
 }
 
+func TestResolveExecutionTraceStatus_TreatsStopAgentAsCompleted(t *testing.T) {
+	status := resolveExecutionTraceStatus(&eventLoopContext{
+		finalError: &model.ResponseError{Type: agent.ErrorTypeStopAgentError},
+	}, nil)
+	assert.Equal(t, atrace.TraceStatusCompleted, status)
+}
+
 func TestRunnerCompletion_DoesNotPersistExecutionTraceIntoSessionEvents(t *testing.T) {
 	sessionSvc := sessioninmemory.NewSessionService()
 	r := NewRunner("app", &noOpAgent{name: "assistant"}, WithSessionService(sessionSvc))

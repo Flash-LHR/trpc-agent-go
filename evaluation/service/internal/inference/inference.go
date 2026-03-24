@@ -51,6 +51,12 @@ func Inference(
 	executionTraces := make([]*trace.Trace, 0, len(invocations))
 	for _, invocation := range invocations {
 		responseInvocation, executionTrace, err := inferenceInvocation(ctx, runner, sessionID, initialSession, invocation, runOptions)
+		if err != nil && responseInvocation == nil && executionTrace == nil {
+			return &Result{
+				Invocations:     responseInvocations,
+				ExecutionTraces: executionTraces,
+			}, err
+		}
 		responseInvocations = append(responseInvocations, responseInvocation)
 		executionTraces = append(executionTraces, executionTrace)
 		if err != nil {
@@ -97,6 +103,8 @@ func inferenceInvocation(
 	var (
 		invocationID   string
 		finalResponse  *model.Message
+		finalByInvID   = make(map[string]*model.Message)
+		fallbackFinal  *model.Message
 		executionTrace *trace.Trace
 		eventErr       error
 		tools          = make([]*evalset.Tool, 0)
@@ -116,12 +124,17 @@ func inferenceInvocation(
 		} else if invocationID == "" && event.InvocationID != "" {
 			invocationID = event.InvocationID
 		}
-		// Preserve the final response even when the completion event also carries an error.
-		if event.IsFinalResponse() && event.Response != nil && len(event.Response.Choices) > 0 {
-			finalResponse = &event.Response.Choices[0].Message
+		if message := eventFinalResponse(event); message != nil {
+			if event.IsRunnerCompletion() {
+				finalResponse = message
+			} else if event.InvocationID != "" {
+				finalByInvID[event.InvocationID] = message
+			} else {
+				fallbackFinal = message
+			}
 		}
 		if event.Error != nil {
-			eventErr = errors.Join(eventErr, fmt.Errorf("event: %v", event.Error))
+			eventErr = errors.Join(eventErr, fmt.Errorf("event: %w", event.Error))
 			continue
 		}
 		if event.IsFinalResponse() {
@@ -148,6 +161,12 @@ func inferenceInvocation(
 			}
 		}
 	}
+	if finalResponse == nil && invocationID != "" {
+		finalResponse = finalByInvID[invocationID]
+	}
+	if finalResponse == nil {
+		finalResponse = fallbackFinal
+	}
 	result := &evalset.Invocation{
 		InvocationID:  invocationID,
 		UserContent:   invocation.UserContent,
@@ -158,6 +177,14 @@ func inferenceInvocation(
 		return result, executionTrace, eventErr
 	}
 	return result, executionTrace, nil
+}
+
+func eventFinalResponse(evt *event.Event) *model.Message {
+	if evt == nil || !evt.IsFinalResponse() || evt.Response == nil || len(evt.Response.Choices) == 0 {
+		return nil
+	}
+	message := evt.Response.Choices[0].Message
+	return &message
 }
 
 // convertTools converts the tool call to tools.

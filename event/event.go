@@ -341,7 +341,16 @@ func snapshotEvent(e *Event) string {
 	if !log.IsTraceEnabled() {
 		return ""
 	}
-	return fmt.Sprintf("%+v", *e)
+	return fmt.Sprintf("%+v", redactedEventForLogging(e))
+}
+
+func redactedEventForLogging(e *Event) Event {
+	if e == nil {
+		return Event{}
+	}
+	redacted := *e
+	redacted.ExecutionTrace = nil
+	return redacted
 }
 
 func tryEmitReadyEvent(ctx context.Context, ch chan<- *Event, e *Event) (bool, error) {
@@ -355,11 +364,12 @@ func tryEmitReadyEvent(ctx context.Context, ch chan<- *Event, e *Event) (bool, e
 		return true, nil
 	case <-ctx.Done():
 		err := ctx.Err()
+		redactedEvent := redactedEventForLogging(e)
 		log.WarnfContext(
 			ctx,
 			"EmitEventWithTimeout: context error: %v, event: %+v",
 			err,
-			*e,
+			redactedEvent,
 		)
 		return true, err
 	default:
@@ -379,11 +389,12 @@ func EmitEventWithTimeout(ctx context.Context, ch chan<- *Event,
 	// the send and the ctx.Done() cases are ready, which could otherwise
 	// result in emitting an event after cancellation.
 	if err := ctx.Err(); err != nil {
+		redactedEvent := redactedEventForLogging(e)
 		log.WarnfContext(
 			ctx,
 			"EmitEventWithTimeout: context error: %v, event: %+v",
 			err,
-			*e,
+			redactedEvent,
 		)
 		return err
 	}
@@ -402,11 +413,12 @@ func EmitEventWithTimeout(ctx context.Context, ch chan<- *Event,
 			log.TracefContext(ctx, "EmitEventWithTimeout: event sent, event: %s", eventStr)
 		case <-ctx.Done():
 			err := ctx.Err()
+			redactedEvent := redactedEventForLogging(e)
 			log.WarnfContext(
 				ctx,
 				"EmitEventWithTimeout: context error: %v, event: %+v",
 				err,
-				*e,
+				redactedEvent,
 			)
 			return err
 		}
@@ -426,18 +438,20 @@ func EmitEventWithTimeout(ctx context.Context, ch chan<- *Event,
 		log.TracefContext(ctx, "EmitEventWithTimeout: event sent, event: %s", eventStr)
 	case <-ctx.Done():
 		err := ctx.Err()
+		redactedEvent := redactedEventForLogging(e)
 		log.WarnfContext(
 			ctx,
 			"EmitEventWithTimeout: context error: %v, event: %+v",
 			err,
-			*e,
+			redactedEvent,
 		)
 		return err
 	case <-timer.C:
+		redactedEvent := redactedEventForLogging(e)
 		log.WarnfContext(
 			ctx,
 			"EmitEventWithTimeout: timeout, event: %+v",
-			*e,
+			redactedEvent,
 		)
 		return DefaultEmitTimeoutErr
 	}
