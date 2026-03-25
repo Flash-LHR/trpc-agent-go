@@ -12,9 +12,14 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
 )
 
-const defaultRiskThreshold = 80
+const (
+	defaultRiskThreshold    = 80
+	reviewerUserIDPrefix    = "approval-reviewer-user:"
+	reviewerSessionIDPrefix = "approval-reviewer-session:"
+)
 
 // Option configures the built-in guardian reviewer.
 type Option func(*options)
@@ -34,14 +39,10 @@ type options struct {
 
 func newOptions(opts ...Option) *options {
 	options := &options{
-		systemPrompt:  defaultSystemPromptTemplateText,
-		riskThreshold: defaultRiskThreshold,
-		userIDSupplier: func(ctx context.Context, req *Request) (string, error) {
-			return uuid.New().String(), nil
-		},
-		sessionIDSupplier: func(ctx context.Context, req *Request) (string, error) {
-			return uuid.New().String(), nil
-		},
+		systemPrompt:      defaultSystemPromptTemplateText,
+		riskThreshold:     defaultRiskThreshold,
+		userIDSupplier:    defaultUserIDSupplier,
+		sessionIDSupplier: defaultSessionIDSupplier,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -77,4 +78,20 @@ func WithSessionIDSupplier(supplier SessionIDSupplier) Option {
 	return func(opts *options) {
 		opts.sessionIDSupplier = supplier
 	}
+}
+
+func defaultUserIDSupplier(ctx context.Context, req *Request) (string, error) {
+	invocation, ok := agent.InvocationFromContext(ctx)
+	if ok && invocation != nil && invocation.Session != nil && invocation.Session.UserID != "" {
+		return reviewerUserIDPrefix + invocation.Session.UserID, nil
+	}
+	return uuid.New().String(), nil
+}
+
+func defaultSessionIDSupplier(ctx context.Context, req *Request) (string, error) {
+	invocation, ok := agent.InvocationFromContext(ctx)
+	if ok && invocation != nil && invocation.Session != nil && invocation.Session.ID != "" {
+		return reviewerSessionIDPrefix + invocation.Session.ID, nil
+	}
+	return uuid.New().String(), nil
 }

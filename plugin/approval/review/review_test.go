@@ -17,6 +17,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
 type fakeRunner struct {
@@ -127,7 +128,41 @@ func TestReview_UsesSuppliersAndStructuredOutput(t *testing.T) {
 	assert.Equal(t, "Scoped and user-authorized.", decision.Reason)
 }
 
-func TestReview_DefaultUserIDSupplierUsesGeneratedID(t *testing.T) {
+func TestReview_DefaultSuppliersUsePrefixedParentSessionIdentity(t *testing.T) {
+	fake := &fakeRunner{
+		runFn: func(
+			ctx context.Context,
+			userID string,
+			sessionID string,
+			message model.Message,
+			runOpts ...agent.RunOption,
+		) (<-chan *event.Event, error) {
+			require.Equal(t, reviewerUserIDPrefix+"parent-user", userID)
+			require.Equal(t, reviewerSessionIDPrefix+"parent-session", sessionID)
+			ch := make(chan *event.Event, 1)
+			ch <- &event.Event{
+				Response:         &model.Response{},
+				StructuredOutput: &decisionPayload{Approved: false, RiskScore: 95, Reason: "Too risky."},
+			}
+			close(ch)
+			return ch, nil
+		},
+	}
+	reviewer, err := New(fake)
+	require.NoError(t, err)
+	ctx := agent.NewInvocationContext(context.Background(), &agent.Invocation{
+		Session: session.NewSession("approval-demo", "parent-user", "parent-session"),
+	})
+	decision, err := reviewer.Review(ctx, &Request{
+		Action: Action{ToolName: "shell", Arguments: jsonRaw(`{"command":"rm -rf /"}`)},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.False(t, decision.Approved)
+	assert.Equal(t, 95, decision.RiskScore)
+}
+
+func TestReview_DefaultSuppliersGenerateIDsWithoutInvocationSession(t *testing.T) {
 	fake := &fakeRunner{
 		runFn: func(
 			ctx context.Context,
@@ -137,8 +172,9 @@ func TestReview_DefaultUserIDSupplierUsesGeneratedID(t *testing.T) {
 			runOpts ...agent.RunOption,
 		) (<-chan *event.Event, error) {
 			require.NotEmpty(t, userID)
-			require.NotEqual(t, "parent-user", userID)
+			require.NotEqual(t, reviewerUserIDPrefix+"parent-user", userID)
 			require.NotEmpty(t, sessionID)
+			require.NotEqual(t, reviewerSessionIDPrefix+"parent-session", sessionID)
 			ch := make(chan *event.Event, 1)
 			ch <- &event.Event{
 				Response:         &model.Response{},
