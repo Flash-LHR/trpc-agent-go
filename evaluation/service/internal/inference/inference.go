@@ -83,7 +83,7 @@ func InferenceWithConversationScenario(
 	initialSession *evalset.SessionInput,
 	sessionID string,
 	runOptions []agent.RunOption,
-) (responseInvocations []*evalset.Invocation, err error) {
+) (result *Result, err error) {
 	if simulator == nil {
 		return nil, errors.New("user simulator is nil")
 	}
@@ -111,7 +111,10 @@ func InferenceWithConversationScenario(
 			err = errors.Join(err, fmt.Errorf("close user simulator conversation: %w", closeErr))
 		}
 	}()
-	responseInvocations = make([]*evalset.Invocation, 0)
+	result = &Result{
+		Invocations:     make([]*evalset.Invocation, 0),
+		ExecutionTraces: make([]*trace.Trace, 0),
+	}
 	var lastTargetResponse *model.Message
 	for {
 		decision, nextErr := conversation.Next(ctx, &usersimulation.TurnRequest{LastTargetResponse: lastTargetResponse})
@@ -122,7 +125,7 @@ func InferenceWithConversationScenario(
 			return nil, errors.New("simulate next turn: decision is nil")
 		}
 		if decision.Stop {
-			return responseInvocations, nil
+			return result, nil
 		}
 		if decision.Message == nil {
 			return nil, errors.New("simulate next turn: message is nil")
@@ -134,7 +137,7 @@ func InferenceWithConversationScenario(
 		if userMessage.Role != model.RoleUser {
 			return nil, fmt.Errorf("simulate next turn: invalid message role %q", userMessage.Role)
 		}
-		responseInvocation, _, nextErr := inferenceInvocation(ctx, r, sessionID, initialSession, &evalset.Invocation{
+		responseInvocation, executionTrace, nextErr := inferenceInvocation(ctx, r, sessionID, initialSession, &evalset.Invocation{
 			UserContent: &userMessage,
 		}, runOptions)
 		if nextErr != nil {
@@ -143,7 +146,8 @@ func InferenceWithConversationScenario(
 		if responseInvocation.FinalResponse == nil {
 			return nil, errors.New("target final response is nil")
 		}
-		responseInvocations = append(responseInvocations, responseInvocation)
+		result.Invocations = append(result.Invocations, responseInvocation)
+		result.ExecutionTraces = append(result.ExecutionTraces, executionTrace)
 		lastTargetResponse = responseInvocation.FinalResponse
 	}
 }

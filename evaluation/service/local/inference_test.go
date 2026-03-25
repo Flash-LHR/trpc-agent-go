@@ -998,6 +998,7 @@ func TestInferenceEvalCaseConversationScenarioRejectsTraceMode(t *testing.T) {
 }
 
 func TestInferenceEvalCaseConversationScenarioSuccess(t *testing.T) {
+	executionTrace := &trace.Trace{RootAgentName: "assistant", RootInvocationID: "generated-inv"}
 	conversation := &scenarioTestConversation{
 		decisions: []*usersimulation.Decision{
 			{Message: &model.Message{Role: model.RoleUser, Content: "Please book tomorrow morning."}},
@@ -1006,7 +1007,17 @@ func TestInferenceEvalCaseConversationScenarioSuccess(t *testing.T) {
 	}
 	simulator := &scenarioTestSimulator{conversation: conversation}
 	svc := &local{
-		runner:            &fakeRunner{events: []*event.Event{makeFinalEvent("Booked.")}},
+		runner: &fakeRunner{events: []*event.Event{
+			makeFinalEvent("Booked."),
+			{
+				InvocationID:   "generated-invocation",
+				ExecutionTrace: executionTrace,
+				Response: &model.Response{
+					Object: model.ObjectTypeRunnerCompletion,
+					Done:   true,
+				},
+			},
+		}},
 		sessionIDSupplier: func(ctx context.Context) string { return "session-scenario" },
 		userSimulator:     simulator,
 	}
@@ -1021,6 +1032,9 @@ func TestInferenceEvalCaseConversationScenarioSuccess(t *testing.T) {
 	)
 	assert.Equal(t, status.EvalStatusPassed, result.Status)
 	assert.Len(t, result.Inferences, 1)
+	if assert.Len(t, result.ExecutionTraces, 1) {
+		assert.Same(t, executionTrace, result.ExecutionTraces[0])
+	}
 	assert.True(t, conversation.closed)
 	if assert.NotNil(t, simulator.startReq) {
 		assert.Equal(t, "case-1", simulator.startReq.EvalCaseID)

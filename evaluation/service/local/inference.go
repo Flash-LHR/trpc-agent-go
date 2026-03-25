@@ -456,7 +456,7 @@ func (s *local) inferScenarioConversation(
 	}
 	switch evalCase.ConversationScenario.Driver {
 	case "", evalset.ConversationScenarioDriverActual:
-		inferences, err := inference.InferenceWithConversationScenario(
+		inferenceResult, err := inference.InferenceWithConversationScenario(
 			ctx,
 			s.runner,
 			opts.UserSimulator,
@@ -470,24 +470,24 @@ func (s *local) inferScenarioConversation(
 			return nil, nil, err
 		}
 		if !evalCase.ExpectedRunnerEnabled {
-			return &inference.Result{Invocations: inferences}, nil, nil
+			return inferenceResult, nil, nil
 		}
 		expectedInferences, err := s.inferExpectedInferences(
 			ctx,
 			evalCase,
-			userInputOnlyInvocationsForEval(inferences),
+			userInputOnlyInvocationsForEval(inferenceResult.Invocations),
 			expectedRunnerSessionID(sessionID),
 			opts,
 		)
 		if err != nil {
-			return &inference.Result{Invocations: inferences}, nil, err
+			return inferenceResult, nil, err
 		}
-		return &inference.Result{Invocations: inferences}, expectedInferences, nil
+		return inferenceResult, expectedInferences, nil
 	case evalset.ConversationScenarioDriverExpected:
 		if opts.ExpectedRunner == nil {
 			return nil, nil, errors.New("expected runner is nil")
 		}
-		expectedInferences, err := inference.InferenceWithConversationScenario(
+		expectedInferenceResult, err := inference.InferenceWithConversationScenario(
 			ctx,
 			opts.ExpectedRunner,
 			opts.UserSimulator,
@@ -503,15 +503,15 @@ func (s *local) inferScenarioConversation(
 		inferenceResult, err := inference.Inference(
 			ctx,
 			s.runner,
-			userInputOnlyInvocationsForEval(expectedInferences),
+			userInputOnlyInvocationsForEval(expectedInferenceResult.Invocations),
 			evalCase.SessionInput,
 			sessionID,
 			runOptions,
 		)
 		if err != nil {
-			return inferenceResult, expectedInferences, err
+			return inferenceResult, expectedInferenceResult.Invocations, err
 		}
-		return inferenceResult, expectedInferences, nil
+		return inferenceResult, expectedInferenceResult.Invocations, nil
 	default:
 		return nil, nil, fmt.Errorf("invalid conversationScenario driver %q", evalCase.ConversationScenario.Driver)
 	}

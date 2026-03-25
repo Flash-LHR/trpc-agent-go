@@ -72,10 +72,11 @@ type scenarioRunCall struct {
 }
 
 type scenarioRunner struct {
-	responses     []string
-	runErr        error
-	suppressFinal bool
-	calls         []scenarioRunCall
+	responses       []string
+	executionTraces []*trace.Trace
+	runErr          error
+	suppressFinal   bool
+	calls           []scenarioRunCall
 }
 
 func (s *scenarioRunner) Run(ctx context.Context, userID string, sessionID string, message model.Message, runOpts ...agent.RunOption) (<-chan *event.Event, error) {
@@ -92,7 +93,14 @@ func (s *scenarioRunner) Run(ctx context.Context, userID string, sessionID strin
 		message:                 message,
 		injectedContextMessages: opts.InjectedContextMessages,
 	})
-	ch := make(chan *event.Event, 1)
+	eventCount := 0
+	if !s.suppressFinal {
+		eventCount++
+	}
+	if len(s.executionTraces) != 0 {
+		eventCount++
+	}
+	ch := make(chan *event.Event, eventCount)
 	if !s.suppressFinal {
 		content := ""
 		if len(s.responses) != 0 {
@@ -108,6 +116,18 @@ func (s *scenarioRunner) Run(ctx context.Context, userID string, sessionID strin
 						Message: model.Message{Role: model.RoleAssistant, Content: content},
 					},
 				},
+			},
+		}
+	}
+	if len(s.executionTraces) != 0 {
+		executionTrace := s.executionTraces[0]
+		s.executionTraces = s.executionTraces[1:]
+		ch <- &event.Event{
+			InvocationID:   fmt.Sprintf("generated-%d", len(s.calls)),
+			ExecutionTrace: executionTrace,
+			Response: &model.Response{
+				Object: model.ObjectTypeRunnerCompletion,
+				Done:   true,
 			},
 		}
 	}
@@ -707,6 +727,8 @@ func TestInferencePerInvocationErrors(t *testing.T) {
 func TestInferenceWithConversationScenarioSuccess(t *testing.T) {
 	systemMessage := model.NewSystemMessage("You are a helper.")
 	initialSession := &evalset.SessionInput{UserID: "target-user", State: map[string]any{"region": "cn"}}
+	trace1 := &trace.Trace{RootInvocationID: "generated-1"}
+	trace2 := &trace.Trace{RootInvocationID: "generated-2"}
 	conv := &stubScenarioConversation{
 		decisions: []*usersimulation.Decision{
 			{Message: &model.Message{Role: model.RoleUser, Content: "First user turn."}},
@@ -715,8 +737,11 @@ func TestInferenceWithConversationScenarioSuccess(t *testing.T) {
 		},
 	}
 	simulator := &stubScenarioSimulator{conversation: conv}
-	runner := &scenarioRunner{responses: []string{"Assistant reply 1.", "Assistant reply 2."}}
-	results, err := InferenceWithConversationScenario(
+	runner := &scenarioRunner{
+		responses:       []string{"Assistant reply 1.", "Assistant reply 2."},
+		executionTraces: []*trace.Trace{trace1, trace2},
+	}
+	result, err := InferenceWithConversationScenario(
 		context.Background(),
 		runner,
 		simulator,
@@ -727,7 +752,11 @@ func TestInferenceWithConversationScenarioSuccess(t *testing.T) {
 		[]agent.RunOption{agent.WithInjectedContextMessages([]model.Message{systemMessage})},
 	)
 	assert.NoError(t, err)
-	assert.Len(t, results, 2)
+	require.NotNil(t, result)
+	assert.Len(t, result.Invocations, 2)
+	require.Len(t, result.ExecutionTraces, 2)
+	assert.Same(t, trace1, result.ExecutionTraces[0])
+	assert.Same(t, trace2, result.ExecutionTraces[1])
 	if assert.Len(t, runner.calls, 2) {
 		assert.Equal(t, "target-user", runner.calls[0].userID)
 		assert.Equal(t, "session-1", runner.calls[0].sessionID)
@@ -750,17 +779,17 @@ func TestInferenceWithConversationScenarioSuccess(t *testing.T) {
 			assert.Equal(t, "Assistant reply 2.", conv.requests[2].LastTargetResponse.Content)
 		}
 	}
-	if assert.NotNil(t, results[0].UserContent) {
-		assert.Equal(t, "First user turn.", results[0].UserContent.Content)
+	if assert.NotNil(t, result.Invocations[0].UserContent) {
+		assert.Equal(t, "First user turn.", result.Invocations[0].UserContent.Content)
 	}
-	if assert.NotNil(t, results[1].UserContent) {
-		assert.Equal(t, "Second user turn.", results[1].UserContent.Content)
+	if assert.NotNil(t, result.Invocations[1].UserContent) {
+		assert.Equal(t, "Second user turn.", result.Invocations[1].UserContent.Content)
 	}
-	if assert.NotNil(t, results[0].FinalResponse) {
-		assert.Equal(t, "Assistant reply 1.", results[0].FinalResponse.Content)
+	if assert.NotNil(t, result.Invocations[0].FinalResponse) {
+		assert.Equal(t, "Assistant reply 1.", result.Invocations[0].FinalResponse.Content)
 	}
-	if assert.NotNil(t, results[1].FinalResponse) {
-		assert.Equal(t, "Assistant reply 2.", results[1].FinalResponse.Content)
+	if assert.NotNil(t, result.Invocations[1].FinalResponse) {
+		assert.Equal(t, "Assistant reply 2.", result.Invocations[1].FinalResponse.Content)
 	}
 }
 

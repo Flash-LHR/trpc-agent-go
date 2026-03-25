@@ -29,9 +29,10 @@ type runnerCall struct {
 }
 
 type fakeSimRunner struct {
-	responses []string
-	err       error
-	calls     []runnerCall
+	responses     []string
+	err           error
+	suppressFinal bool
+	calls         []runnerCall
 }
 
 func (f *fakeSimRunner) Run(ctx context.Context, userID string, sessionID string, message model.Message, runOpts ...agent.RunOption) (<-chan *event.Event, error) {
@@ -55,15 +56,17 @@ func (f *fakeSimRunner) Run(ctx context.Context, userID string, sessionID string
 		f.responses = f.responses[1:]
 	}
 	ch := make(chan *event.Event, 1)
-	ch <- &event.Event{
-		Response: &model.Response{
-			Done: true,
-			Choices: []model.Choice{
-				{
-					Message: model.Message{Role: model.RoleAssistant, Content: content},
+	if !f.suppressFinal {
+		ch <- &event.Event{
+			Response: &model.Response{
+				Done: true,
+				Choices: []model.Choice{
+					{
+						Message: model.Message{Role: model.RoleAssistant, Content: content},
+					},
 				},
 			},
-		},
+		}
 	}
 	close(ch)
 	return ch, nil
@@ -344,6 +347,28 @@ func TestCollectFinalResponseContentReturnsResponseError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Empty(t, content)
 	assert.Contains(t, err.Error(), "boom")
+}
+
+func TestCollectFinalResponseContentRequiresFinalResponse(t *testing.T) {
+	ch := make(chan *event.Event)
+	close(ch)
+	content, err := collectFinalResponseContent(ch)
+	assert.Error(t, err)
+	assert.Empty(t, content)
+	assert.Contains(t, err.Error(), "final response is missing")
+}
+
+func TestDefaultConversationRequiresNonEmptyFinalResponseContent(t *testing.T) {
+	sim, err := New(&fakeSimRunner{suppressFinal: true})
+	assert.NoError(t, err)
+	conv, err := sim.Start(context.Background(), makeStartRequest())
+	assert.NoError(t, err)
+	decision, err := conv.Next(context.Background(), &TurnRequest{
+		LastTargetResponse: &model.Message{Role: model.RoleAssistant, Content: "reply"},
+	})
+	assert.Error(t, err)
+	assert.Nil(t, decision)
+	assert.Contains(t, err.Error(), "final response is missing")
 }
 
 func TestDefaultConversationRunnerError(t *testing.T) {

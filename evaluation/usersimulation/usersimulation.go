@@ -220,6 +220,7 @@ func (c *conversation) generateWithRunner(ctx context.Context, lastTargetRespons
 
 func collectFinalResponseContent(events <-chan *event.Event) (string, error) {
 	finalContent := ""
+	hasFinalResponse := false
 	for evt := range events {
 		if evt == nil {
 			continue
@@ -234,8 +235,15 @@ func collectFinalResponseContent(events <-chan *event.Event) (string, error) {
 			if evt.Response == nil || len(evt.Response.Choices) == 0 {
 				return "", errors.New("final response has no choices")
 			}
+			hasFinalResponse = true
 			finalContent = evt.Response.Choices[0].Message.Content
 		}
+	}
+	if !hasFinalResponse {
+		return "", errors.New("final response is missing")
+	}
+	if strings.TrimSpace(finalContent) == "" {
+		return "", errors.New("final response content is empty")
 	}
 	return finalContent, nil
 }
