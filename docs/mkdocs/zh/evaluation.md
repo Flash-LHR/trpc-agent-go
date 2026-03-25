@@ -554,14 +554,14 @@ type EvalCase struct {
 	ContextMessages       []*model.Message      // ContextMessages 是上下文消息，可选
 	Conversation          []*Invocation         // Conversation 是静态多轮交互序列，默认模式下与 ConversationScenario 二选一
 	ConversationScenario  *ConversationScenario // ConversationScenario 是动态用户模拟场景，默认模式下与 Conversation 二选一
-	ActualConversation    []*Invocation         // ActualConversation 是 Trace 模式下的实际输出轨迹，Trace 模式必填
+	ActualConversation    []*Invocation         // ActualConversation 是 Trace 模式下的实际输出轨迹，可选
 	SessionInput          *SessionInput         // SessionInput 是会话初始化信息，必填
 	CreationTimestamp     *epochtime.EpochTime  // CreationTimestamp 是创建时间戳，可选
 }
 
 // ConversationScenario 表示动态用户模拟场景
 type ConversationScenario struct {
-	Driver                string // Driver 指定由 actual 或 expected runner 驱动对话轨迹，可选，默认 actual
+	Driver                ConversationScenarioDriver // Driver 指定由 actual 或 expected runner 驱动对话轨迹，可选，默认 actual
 	StartingPrompt        string // StartingPrompt 是固定首轮输入，可选
 	ConversationPlan      string // ConversationPlan 是用户目标与结束条件描述，必填
 	StopSignal            string // StopSignal 是模拟用户输出该内容时结束对话的标记，可选

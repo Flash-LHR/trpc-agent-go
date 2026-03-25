@@ -1091,6 +1091,7 @@ func TestInferenceEvalCaseConversationScenarioExpectedDriverUsesExpectedRunner(t
 	}
 	evalCase := makeScenarioEvalCase("app", "case-1")
 	evalCase.ConversationScenario.Driver = evalset.ConversationScenarioDriverExpected
+	evalCase.ExpectedRunnerEnabled = true
 	result := svc.inferenceEvalCase(
 		context.Background(),
 		&service.InferenceRequest{AppName: "app", EvalSetID: "set"},
@@ -1132,4 +1133,43 @@ func TestInferenceEvalCaseConversationScenarioExpectedDriverUsesExpectedRunner(t
 	actualSessionIDs := append([]string(nil), actualRunner.sessionIDs...)
 	actualRunner.mu.Unlock()
 	assert.Equal(t, []string{"session-scenario", "session-scenario"}, actualSessionIDs)
+}
+
+func TestInferenceEvalCaseConversationScenarioExpectedDriverWithoutExpectedRunnerEnabledDoesNotExposeExpecteds(t *testing.T) {
+	conversation := &scenarioTestConversation{
+		decisions: []*usersimulation.Decision{
+			{Message: &model.Message{Role: model.RoleUser, Content: "Please book tomorrow morning."}},
+			{Message: &model.Message{Role: model.RoleUser, Content: "I prefer a window seat."}},
+			{Stop: true},
+		},
+	}
+	simulator := &scenarioTestSimulator{conversation: conversation}
+	actualRunner := &fakeRunner{events: []*event.Event{makeFinalEvent("actual")}}
+	expectedRunner := &fakeRunner{events: []*event.Event{makeFinalEvent("expected")}}
+	svc := &local{
+		runner:            actualRunner,
+		expectedRunner:    expectedRunner,
+		sessionIDSupplier: func(ctx context.Context) string { return "session-scenario" },
+		userSimulator:     simulator,
+	}
+	evalCase := makeScenarioEvalCase("app", "case-1")
+	evalCase.ConversationScenario.Driver = evalset.ConversationScenarioDriverExpected
+	evalCase.ExpectedRunnerEnabled = false
+	result := svc.inferenceEvalCase(
+		context.Background(),
+		&service.InferenceRequest{AppName: "app", EvalSetID: "set"},
+		evalCase,
+		&service.Options{
+			SessionIDSupplier: func(ctx context.Context) string { return "session-scenario" },
+			ExpectedRunner:    expectedRunner,
+			UserSimulator:     simulator,
+		},
+	)
+	assert.Equal(t, status.EvalStatusPassed, result.Status)
+	assert.Len(t, result.Inferences, 2)
+	assert.Nil(t, result.ExpectedInferences)
+	expectedRunner.mu.Lock()
+	expectedCalls := len(expectedRunner.calls)
+	expectedRunner.mu.Unlock()
+	assert.Equal(t, 2, expectedCalls)
 }

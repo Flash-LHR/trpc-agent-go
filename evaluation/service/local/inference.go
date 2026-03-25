@@ -511,6 +511,9 @@ func (s *local) inferScenarioConversation(
 		if err != nil {
 			return inferenceResult, expectedInferenceResult.Invocations, err
 		}
+		if !evalCase.ExpectedRunnerEnabled {
+			return inferenceResult, nil, nil
+		}
 		return inferenceResult, expectedInferenceResult.Invocations, nil
 	default:
 		return nil, nil, fmt.Errorf("invalid conversationScenario driver %q", evalCase.ConversationScenario.Driver)
