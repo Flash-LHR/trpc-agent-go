@@ -2760,7 +2760,9 @@ func (e *Executor) initializeNodeContext(
 		t.PredecessorStepIDs,
 	)
 	e.recordTraceStepID(execCtx, t.TaskID, traceStepID)
-	stateCopy[StateKeyCurrentTraceStepID] = traceStepID
+	if traceStepID != "" {
+		stateCopy[currentTraceStepIDStateKey] = traceStepID
+	}
 
 	// Merge callbacks: global callbacks run first, then per-node callbacks.
 	mergedCallbacks := e.getMergedCallbacks(stateCopy, t.NodeID)

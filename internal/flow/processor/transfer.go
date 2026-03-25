@@ -25,7 +25,7 @@ import (
 const (
 	swarmTeamNameKey          = "swarm_team_name"
 	swarmActiveAgentKeyPrefix = "swarm_active_agent:"
-	swarmTraceNodeIDKey       = "swarm_trace_node_id"
+	swarmTraceNodeIDKey       = "__swarm_trace_node_id__"
 )
 
 // TransferResponseProcessor handles agent transfer operations after LLM responses.

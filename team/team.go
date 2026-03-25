@@ -68,9 +68,9 @@ const (
 	// SwarmTeamNameKey is the session state key for storing the Swarm team name.
 	// This is used to identify if a session belongs to a Swarm team.
 	SwarmTeamNameKey = "swarm_team_name"
-	// swarmTraceNodeIDKey stores the mounted swarm root node id for sibling transfers.
-	swarmTraceNodeIDKey = "swarm_trace_node_id"
 )
+
+const swarmTraceNodeIDKey = "__swarm_trace_node_id__"
 
 var (
 	errEmptyTeamName  = errors.New("team name is empty")
@@ -209,8 +209,11 @@ func (t *Team) runSwarm(
 	// Only do this if cross-request transfer is enabled.
 	if t.crossRequestTransfer && invocation.Session != nil {
 		invocation.Session.SetState(SwarmTeamNameKey, []byte(t.name))
-		if traceNodeID := agent.InvocationTraceNodeID(invocation); traceNodeID != "" {
-			invocation.Session.SetState(swarmTraceNodeIDKey, []byte(traceNodeID))
+		if invocation.RunOptions.ExecutionTraceEnabled {
+			traceNodeID := agent.InvocationTraceNodeID(invocation)
+			if traceNodeID != "" {
+				invocation.Session.SetState(swarmTraceNodeIDKey, []byte(traceNodeID))
+			}
 		}
 	}
 

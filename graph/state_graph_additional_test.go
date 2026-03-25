@@ -3250,7 +3250,7 @@ func TestBuildAgentInvocationWithStateAndScope_PrefersCurrentTraceStepPredecesso
 	target := &stubAgent{name: "child"}
 	inv := buildAgentInvocationWithStateAndScope(
 		ctx,
-		State{StateKeyCurrentTraceStepID: firstStepID},
+		State{currentTraceStepIDStateKey: firstStepID},
 		State{},
 		target,
 		"delegate",

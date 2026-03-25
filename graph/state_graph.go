@@ -3411,7 +3411,7 @@ func currentTraceStepPredecessors(state State) []string {
 	if state == nil {
 		return nil
 	}
-	if stepID, ok := GetStateValue[string](state, StateKeyCurrentTraceStepID); ok && stepID != "" {
+	if stepID, ok := GetStateValue[string](state, currentTraceStepIDStateKey); ok && stepID != "" {
 		return []string{stepID}
 	}
 	return nil

@@ -799,6 +799,36 @@ func TestTeam_RunSwarm_CrossRequestTransfer_StoresMountedTraceRoot(t *testing.T)
 	require.Equal(t, []byte("workflow/swarm"), traceNodeIDBytes)
 }
 
+func TestTeam_RunSwarm_CrossRequestTransfer_DoesNotOverwriteBusinessTraceKeyWhenTraceDisabled(t *testing.T) {
+	a := &testSwarmMember{name: testMemberNameOne}
+	b := &testSwarmMember{name: testMemberNameTwo}
+	tm, err := NewSwarm(
+		testTeamName,
+		testEntryName,
+		[]agent.Agent{a, b},
+		WithCrossRequestTransfer(true),
+	)
+	require.NoError(t, err)
+	sess := session.NewSession(testAppName, testUserID, testSessionID)
+	sess.SetState("swarm_trace_node_id", []byte("business"))
+	inv := agent.NewInvocation(
+		agent.WithInvocationAgent(tm),
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationMessage(model.NewUserMessage(testUserMessage)),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+	ch, err := tm.Run(ctx, inv)
+	require.NoError(t, err)
+	for range ch {
+	}
+	traceNodeIDBytes, ok := sess.GetState(swarmTraceNodeIDKey)
+	require.False(t, ok)
+	require.Nil(t, traceNodeIDBytes)
+	legacyTraceNodeIDBytes, ok := sess.GetState("swarm_trace_node_id")
+	require.True(t, ok)
+	require.Equal(t, []byte("business"), legacyTraceNodeIDBytes)
+}
+
 func TestTeam_RunSwarm_CrossRequestTransfer_MissingActiveAgentFallsBackToEntry(t *testing.T) {
 	a := &testSwarmMember{name: testMemberNameOne}
 	b := &testSwarmMember{name: testMemberNameTwo}
