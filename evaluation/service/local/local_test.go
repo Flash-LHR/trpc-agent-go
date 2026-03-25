@@ -2460,6 +2460,7 @@ func TestLocalEvaluateConversationScenarioExpectedRunnerEnabledUsesActualUserSeq
 		conversation: &scenarioTestConversation{
 			decisions: []*usersimulation.Decision{
 				{Message: &model.Message{Role: model.RoleUser, Content: "Please book tomorrow morning."}},
+				{Message: &model.Message{Role: model.RoleUser, Content: "Use a refundable option and stay near line 2."}},
 				{Stop: true},
 			},
 		},
@@ -2479,12 +2480,12 @@ func TestLocalEvaluateConversationScenarioExpectedRunnerEnabledUsesActualUserSeq
 	assert.NoError(t, err)
 	assert.Len(t, inferenceResults, 1)
 	if assert.Len(t, inferenceResults, 1) {
-		assert.Len(t, inferenceResults[0].ExpectedInferences, 1)
+		assert.Len(t, inferenceResults[0].ExpectedInferences, 2)
 	}
 	expectedRunner.mu.Lock()
 	callsAfterInference := len(expectedRunner.calls)
 	expectedRunner.mu.Unlock()
-	assert.Equal(t, 1, callsAfterInference)
+	assert.Equal(t, 2, callsAfterInference)
 
 	runResult, err := svc.Evaluate(ctx, &service.EvaluateRequest{
 		AppName:          appName,
@@ -2497,13 +2498,17 @@ func TestLocalEvaluateConversationScenarioExpectedRunnerEnabledUsesActualUserSeq
 	assert.NoError(t, err)
 	assert.NotNil(t, runResult)
 
-	if assert.Len(t, fakeEval.receivedActuals, 1) {
+	if assert.Len(t, fakeEval.receivedActuals, 2) {
 		assert.Equal(t, "Please book tomorrow morning.", fakeEval.receivedActuals[0].UserContent.Content)
+		assert.Equal(t, "Use a refundable option and stay near line 2.", fakeEval.receivedActuals[1].UserContent.Content)
 		assert.Equal(t, "actual", fakeEval.receivedActuals[0].FinalResponse.Content)
+		assert.Equal(t, "actual", fakeEval.receivedActuals[1].FinalResponse.Content)
 	}
-	if assert.Len(t, fakeEval.receivedExpecteds, 1) {
+	if assert.Len(t, fakeEval.receivedExpecteds, 2) {
 		assert.Equal(t, "Please book tomorrow morning.", fakeEval.receivedExpecteds[0].UserContent.Content)
+		assert.Equal(t, "Use a refundable option and stay near line 2.", fakeEval.receivedExpecteds[1].UserContent.Content)
 		assert.Equal(t, "expected", fakeEval.receivedExpecteds[0].FinalResponse.Content)
+		assert.Equal(t, "expected", fakeEval.receivedExpecteds[1].FinalResponse.Content)
 	}
 	expectedRunner.mu.Lock()
 	expectedCalls := len(expectedRunner.calls)
@@ -2511,18 +2516,28 @@ func TestLocalEvaluateConversationScenarioExpectedRunnerEnabledUsesActualUserSeq
 	if expectedCalls > 0 {
 		expectedSessionID = expectedRunner.sessionIDs[0]
 	}
+	expectedMessages := append([]model.Message(nil), expectedRunner.calls...)
 	expectedRunner.mu.Unlock()
-	assert.Equal(t, 1, expectedCalls)
+	assert.Equal(t, 2, expectedCalls)
 	assert.Equal(t, "session-expected", expectedSessionID)
+	if assert.Len(t, expectedMessages, 2) {
+		assert.Equal(t, "Please book tomorrow morning.", expectedMessages[0].Content)
+		assert.Equal(t, "Use a refundable option and stay near line 2.", expectedMessages[1].Content)
+	}
 	actualRunner.mu.Lock()
 	actualCalls := len(actualRunner.calls)
 	actualSessionID := ""
 	if actualCalls > 0 {
 		actualSessionID = actualRunner.sessionIDs[0]
 	}
+	actualMessages := append([]model.Message(nil), actualRunner.calls...)
 	actualRunner.mu.Unlock()
-	assert.Equal(t, 1, actualCalls)
+	assert.Equal(t, 2, actualCalls)
 	assert.Equal(t, "session", actualSessionID)
+	if assert.Len(t, actualMessages, 2) {
+		assert.Equal(t, "Please book tomorrow morning.", actualMessages[0].Content)
+		assert.Equal(t, "Use a refundable option and stay near line 2.", actualMessages[1].Content)
+	}
 }
 
 func TestLocalEvaluateConversationScenarioExpectedDriverReusesPrecomputedExpecteds(t *testing.T) {
@@ -2554,6 +2569,7 @@ func TestLocalEvaluateConversationScenarioExpectedDriverReusesPrecomputedExpecte
 			OverallStatus: status.EvalStatusPassed,
 			PerInvocationResults: []*evaluator.PerInvocationResult{
 				{Score: 1, Status: status.EvalStatusPassed},
+				{Score: 1, Status: status.EvalStatusPassed},
 			},
 		},
 	}
@@ -2565,6 +2581,7 @@ func TestLocalEvaluateConversationScenarioExpectedDriverReusesPrecomputedExpecte
 		conversation: &scenarioTestConversation{
 			decisions: []*usersimulation.Decision{
 				{Message: &model.Message{Role: model.RoleUser, Content: "Please book tomorrow morning."}},
+				{Message: &model.Message{Role: model.RoleUser, Content: "Use a refundable option and stay near line 2."}},
 				{Stop: true},
 			},
 		},
@@ -2585,8 +2602,13 @@ func TestLocalEvaluateConversationScenarioExpectedDriverReusesPrecomputedExpecte
 	assert.Len(t, inferenceResults, 1)
 	expectedRunner.mu.Lock()
 	callsAfterInference := len(expectedRunner.calls)
+	expectedMessagesAfterInference := append([]model.Message(nil), expectedRunner.calls...)
 	expectedRunner.mu.Unlock()
-	assert.Equal(t, 1, callsAfterInference)
+	assert.Equal(t, 2, callsAfterInference)
+	if assert.Len(t, expectedMessagesAfterInference, 2) {
+		assert.Equal(t, "Please book tomorrow morning.", expectedMessagesAfterInference[0].Content)
+		assert.Equal(t, "Use a refundable option and stay near line 2.", expectedMessagesAfterInference[1].Content)
+	}
 
 	runResult, err := svc.Evaluate(ctx, &service.EvaluateRequest{
 		AppName:          appName,
@@ -2599,13 +2621,17 @@ func TestLocalEvaluateConversationScenarioExpectedDriverReusesPrecomputedExpecte
 	assert.NoError(t, err)
 	assert.NotNil(t, runResult)
 
-	if assert.Len(t, fakeEval.receivedActuals, 1) {
+	if assert.Len(t, fakeEval.receivedActuals, 2) {
 		assert.Equal(t, "Please book tomorrow morning.", fakeEval.receivedActuals[0].UserContent.Content)
+		assert.Equal(t, "Use a refundable option and stay near line 2.", fakeEval.receivedActuals[1].UserContent.Content)
 		assert.Equal(t, "actual", fakeEval.receivedActuals[0].FinalResponse.Content)
+		assert.Equal(t, "actual", fakeEval.receivedActuals[1].FinalResponse.Content)
 	}
-	if assert.Len(t, fakeEval.receivedExpecteds, 1) {
+	if assert.Len(t, fakeEval.receivedExpecteds, 2) {
 		assert.Equal(t, "Please book tomorrow morning.", fakeEval.receivedExpecteds[0].UserContent.Content)
+		assert.Equal(t, "Use a refundable option and stay near line 2.", fakeEval.receivedExpecteds[1].UserContent.Content)
 		assert.Equal(t, "expected", fakeEval.receivedExpecteds[0].FinalResponse.Content)
+		assert.Equal(t, "expected", fakeEval.receivedExpecteds[1].FinalResponse.Content)
 	}
 	expectedRunner.mu.Lock()
 	callsAfterEvaluate := len(expectedRunner.calls)
@@ -2614,7 +2640,7 @@ func TestLocalEvaluateConversationScenarioExpectedDriverReusesPrecomputedExpecte
 		expectedSessionID = expectedRunner.sessionIDs[0]
 	}
 	expectedRunner.mu.Unlock()
-	assert.Equal(t, 1, callsAfterEvaluate)
+	assert.Equal(t, 2, callsAfterEvaluate)
 	assert.Equal(t, "session-expected", expectedSessionID)
 	actualRunner.mu.Lock()
 	actualCalls := len(actualRunner.calls)
@@ -2622,9 +2648,14 @@ func TestLocalEvaluateConversationScenarioExpectedDriverReusesPrecomputedExpecte
 	if actualCalls > 0 {
 		actualSessionID = actualRunner.sessionIDs[0]
 	}
+	actualMessages := append([]model.Message(nil), actualRunner.calls...)
 	actualRunner.mu.Unlock()
-	assert.Equal(t, 1, actualCalls)
+	assert.Equal(t, 2, actualCalls)
 	assert.Equal(t, "session", actualSessionID)
+	if assert.Len(t, actualMessages, 2) {
+		assert.Equal(t, "Please book tomorrow morning.", actualMessages[0].Content)
+		assert.Equal(t, "Use a refundable option and stay near line 2.", actualMessages[1].Content)
+	}
 }
 
 func TestLocalInferenceExpectedRunnerEnabledWithoutExpectedRunnerMarksCaseFailed(t *testing.T) {
