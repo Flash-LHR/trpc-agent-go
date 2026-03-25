@@ -159,6 +159,12 @@ func TestDefaultSimulatorStartValidation(t *testing.T) {
 	conv, err = sim.Start(context.Background(), req)
 	assert.Error(t, err)
 	assert.Nil(t, conv)
+	req = makeStartRequest()
+	req.Scenario.StopSignal = "   "
+	req.Scenario.MaxAllowedInvocations = intPtr(0)
+	conv, err = sim.Start(context.Background(), req)
+	assert.Error(t, err)
+	assert.Nil(t, conv)
 	sim, err = New(&fakeSimRunner{}, WithUserIDSupplier(func(ctx context.Context) string { return "" }))
 	assert.NoError(t, err)
 	conv, err = sim.Start(context.Background(), makeStartRequest())
@@ -269,6 +275,31 @@ func TestConversationUsesCustomSystemPromptBuilderWithEffectiveScenario(t *testi
 		assert.Len(t, runner.calls[0].injectedContextMessages, 1)
 		assert.Equal(t, "custom system prompt", runner.calls[0].injectedContextMessages[0].Content)
 	}
+}
+
+func TestConversationUsesCustomSystemPromptBuilderWithResolvedDefaultDriver(t *testing.T) {
+	runner := &fakeSimRunner{responses: []string{"I need your destination."}}
+	receivedScenario := (*evalset.ConversationScenario)(nil)
+	sim, err := New(
+		runner,
+		WithSystemPromptBuilder(func(ctx context.Context, scenario *evalset.ConversationScenario) string {
+			assert.NotNil(t, ctx)
+			receivedScenario = scenario
+			return "custom system prompt"
+		}),
+	)
+	assert.NoError(t, err)
+	req := makeStartRequest()
+	req.Scenario.Driver = ""
+	conv, err := sim.Start(context.Background(), req)
+	assert.NoError(t, err)
+	assert.NotNil(t, receivedScenario)
+	assert.Equal(t, evalset.ConversationScenarioDriverActual, receivedScenario.Driver)
+	decision, err := conv.Next(context.Background(), &TurnRequest{
+		LastTargetResponse: &model.Message{Role: model.RoleAssistant, Content: "What route do you want?"},
+	})
+	assert.NoError(t, err)
+	assert.False(t, decision.Stop)
 }
 
 func TestDefaultConversationWithoutStartingPromptGeneratesFirstTurnFromPlan(t *testing.T) {

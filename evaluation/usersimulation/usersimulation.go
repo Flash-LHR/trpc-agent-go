@@ -119,9 +119,9 @@ func (s *userSimulator) Start(ctx context.Context, req *StartRequest) (Conversat
 	if strings.TrimSpace(req.Scenario.ConversationPlan) == "" {
 		return nil, errors.New("conversation plan is empty")
 	}
-	stopSignal := req.Scenario.StopSignal
+	stopSignal := strings.TrimSpace(req.Scenario.StopSignal)
 	if s.options.stopSignal != nil {
-		stopSignal = *s.options.stopSignal
+		stopSignal = strings.TrimSpace(*s.options.stopSignal)
 	}
 	maxAllowedInvocations := 0
 	if req.Scenario.MaxAllowedInvocations != nil {
@@ -349,12 +349,16 @@ func buildEffectiveScenario(
 	if scenario == nil {
 		return nil
 	}
+	driver := scenario.Driver
+	if driver == "" {
+		driver = evalset.ConversationScenarioDriverActual
+	}
 	effectiveMaxAllowedInvocations := maxAllowedInvocations
 	return &evalset.ConversationScenario{
-		Driver:                scenario.Driver,
+		Driver:                driver,
 		StartingPrompt:        scenario.StartingPrompt,
 		ConversationPlan:      scenario.ConversationPlan,
-		StopSignal:            stopSignal,
+		StopSignal:            strings.TrimSpace(stopSignal),
 		MaxAllowedInvocations: &effectiveMaxAllowedInvocations,
 	}
 }

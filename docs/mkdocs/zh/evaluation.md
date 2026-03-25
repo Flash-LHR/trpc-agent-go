@@ -2679,7 +2679,7 @@ Trace 模式用于评估既有轨迹，可以将一次真实运行采集到的 I
 
 有些评估任务里，希望使用动态的预期输出，而非静态内容。例如，参考答案需要由一套参考 Runner 基于输入样本实时生成。此时可以为 EvalCase 开启 `expectedRunnerEnabled`，并在创建 AgentEvaluator 时注入 ExpectedRunner，由推理阶段预生成 expecteds。
 
-当 `expectedRunnerEnabled=true` 时，标准评测流程会在推理阶段使用 ExpectedRunner 对同一组 `userContent` 按轮推理生成 expecteds，并将结果写入 `InferenceResult.ExpectedInferences`。默认模式下 `userContent` 来自 `conversation` 或 `conversationScenario` 生成出的实际轨迹，Trace 模式下 `userContent` 来自 `actualConversation`，若未配置则回退为 `conversation`。评估阶段会直接复用这组 expecteds 与 actuals 按轮对齐后交给 Evaluator。此时 EvalSet 中的预期输出字段可以省略，只需保留每轮 `userContent`。
+当 `expectedRunnerEnabled=true` 时，标准评测流程会在推理阶段使用 ExpectedRunner 对同一组 `userContent` 按轮推理生成 expecteds，并将结果写入 `InferenceResult.ExpectedInferences`。默认模式下如果使用静态 `conversation`，`userContent` 直接来自该对话；如果使用 `conversationScenario`，则取决于 `driver`：当 `driver=expected` 时，由 ExpectedRunner 先驱动整段 transcript，再由 target runner 回放这组生成出的 `userContent`；否则 `userContent` 来自 `conversationScenario` 生成出的实际轨迹。Trace 模式下 `userContent` 来自 `actualConversation`，若未配置则回退为 `conversation`。评估阶段会直接复用这组 expecteds 与 actuals 按轮对齐后交给 Evaluator。此时 EvalSet 中的预期输出字段可以省略，只需保留每轮 `userContent`。
 
 配置文件示例如下：
 
