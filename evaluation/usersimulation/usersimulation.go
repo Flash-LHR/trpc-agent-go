@@ -220,32 +220,74 @@ func (c *conversation) generateWithRunner(ctx context.Context, lastTargetRespons
 
 func collectFinalResponseContent(events <-chan *event.Event) (string, error) {
 	finalContent := ""
+	invocationID := ""
+	finalByInvID := make(map[string]string)
+	fallbackFinal := ""
+	eventErr := error(nil)
 	hasFinalResponse := false
 	for evt := range events {
 		if evt == nil {
 			continue
 		}
+		if evt.IsRunnerCompletion() {
+			if evt.InvocationID != "" {
+				invocationID = evt.InvocationID
+			}
+		} else if invocationID == "" && evt.InvocationID != "" {
+			invocationID = evt.InvocationID
+		}
+		content, ok, err := eventFinalResponseContent(evt)
+		if err != nil {
+			eventErr = errors.Join(eventErr, err)
+		} else if ok {
+			hasFinalResponse = true
+			if evt.IsRunnerCompletion() {
+				finalContent = content
+			} else if evt.InvocationID != "" {
+				finalByInvID[evt.InvocationID] = content
+			} else {
+				fallbackFinal = content
+			}
+		}
 		if evt.Error != nil {
-			return "", fmt.Errorf("event: %v", evt.Error)
+			eventErr = errors.Join(eventErr, fmt.Errorf("event: %w", evt.Error))
 		}
 		if evt.Response != nil && evt.Response.Error != nil {
-			return "", fmt.Errorf("response error: %v", evt.Response.Error)
-		}
-		if evt.IsFinalResponse() {
-			if evt.Response == nil || len(evt.Response.Choices) == 0 {
-				return "", errors.New("final response has no choices")
-			}
-			hasFinalResponse = true
-			finalContent = evt.Response.Choices[0].Message.Content
+			eventErr = errors.Join(eventErr, fmt.Errorf("response error: %w", evt.Response.Error))
 		}
 	}
+	if finalContent == "" && invocationID != "" {
+		finalContent = finalByInvID[invocationID]
+	}
+	if finalContent == "" {
+		finalContent = fallbackFinal
+	}
 	if !hasFinalResponse {
+		if eventErr != nil {
+			return "", errors.Join(errors.New("final response is missing"), eventErr)
+		}
 		return "", errors.New("final response is missing")
 	}
 	if strings.TrimSpace(finalContent) == "" {
+		if eventErr != nil {
+			return "", errors.Join(errors.New("final response content is empty"), eventErr)
+		}
 		return "", errors.New("final response content is empty")
 	}
+	if eventErr != nil {
+		return "", eventErr
+	}
 	return finalContent, nil
+}
+
+func eventFinalResponseContent(evt *event.Event) (string, bool, error) {
+	if evt == nil || !evt.IsFinalResponse() {
+		return "", false, nil
+	}
+	if evt.Response == nil || len(evt.Response.Choices) == 0 {
+		return "", false, errors.New("final response has no choices")
+	}
+	return evt.Response.Choices[0].Message.Content, true, nil
 }
 
 func buildScenarioContextMessages(

@@ -84,6 +84,9 @@ func InferenceWithConversationScenario(
 	sessionID string,
 	runOptions []agent.RunOption,
 ) (result *Result, err error) {
+	if r == nil {
+		return nil, errors.New("runner is nil")
+	}
 	if simulator == nil {
 		return nil, errors.New("user simulator is nil")
 	}

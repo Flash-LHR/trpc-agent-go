@@ -797,7 +797,10 @@ func TestInferenceWithConversationScenarioValidation(t *testing.T) {
 	initialSession := &evalset.SessionInput{UserID: "target-user"}
 	scenario := &evalset.ConversationScenario{ConversationPlan: "Continue until done."}
 	systemMessage := model.NewSystemMessage("system")
-	_, err := InferenceWithConversationScenario(context.Background(), &scenarioRunner{}, nil, "case", scenario, initialSession, "session", nil)
+	_, err := InferenceWithConversationScenario(context.Background(), nil, &stubScenarioSimulator{}, "case", scenario, initialSession, "session", nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "runner is nil")
+	_, err = InferenceWithConversationScenario(context.Background(), &scenarioRunner{}, nil, "case", scenario, initialSession, "session", nil)
 	assert.Error(t, err)
 	_, err = InferenceWithConversationScenario(context.Background(), &scenarioRunner{}, &stubScenarioSimulator{}, "case", nil, initialSession, "session", nil)
 	assert.Error(t, err)

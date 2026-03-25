@@ -1173,3 +1173,37 @@ func TestInferenceEvalCaseConversationScenarioExpectedDriverWithoutExpectedRunne
 	expectedRunner.mu.Unlock()
 	assert.Equal(t, 2, expectedCalls)
 }
+
+func TestInferenceEvalCaseConversationScenarioExpectedDriverFailureWithoutExpectedRunnerEnabledDoesNotExposeExpecteds(t *testing.T) {
+	conversation := &scenarioTestConversation{
+		decisions: []*usersimulation.Decision{
+			{Message: &model.Message{Role: model.RoleUser, Content: "Please book tomorrow morning."}},
+			{Stop: true},
+		},
+	}
+	simulator := &scenarioTestSimulator{conversation: conversation}
+	actualRunner := &fakeRunner{err: errors.New("actual failed")}
+	expectedRunner := &fakeRunner{events: []*event.Event{makeFinalEvent("expected")}}
+	svc := &local{
+		runner:            actualRunner,
+		expectedRunner:    expectedRunner,
+		sessionIDSupplier: func(ctx context.Context) string { return "session-scenario" },
+		userSimulator:     simulator,
+	}
+	evalCase := makeScenarioEvalCase("app", "case-1")
+	evalCase.ConversationScenario.Driver = evalset.ConversationScenarioDriverExpected
+	evalCase.ExpectedRunnerEnabled = false
+	result := svc.inferenceEvalCase(
+		context.Background(),
+		&service.InferenceRequest{AppName: "app", EvalSetID: "set"},
+		evalCase,
+		&service.Options{
+			SessionIDSupplier: func(ctx context.Context) string { return "session-scenario" },
+			ExpectedRunner:    expectedRunner,
+			UserSimulator:     simulator,
+		},
+	)
+	assert.Equal(t, status.EvalStatusFailed, result.Status)
+	assert.Contains(t, result.ErrorMessage, "actual failed")
+	assert.Nil(t, result.ExpectedInferences)
+}

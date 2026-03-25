@@ -30,6 +30,7 @@ type runnerCall struct {
 
 type fakeSimRunner struct {
 	responses     []string
+	events        []*event.Event
 	err           error
 	suppressFinal bool
 	calls         []runnerCall
@@ -50,12 +51,23 @@ func (f *fakeSimRunner) Run(ctx context.Context, userID string, sessionID string
 		injectedContextMessages: opts.InjectedContextMessages,
 		runtimeState:            opts.RuntimeState,
 	})
+	bufferSize := 1
+	if len(f.events) > 0 {
+		bufferSize = len(f.events)
+	}
+	ch := make(chan *event.Event, bufferSize)
+	if len(f.events) > 0 {
+		for _, evt := range f.events {
+			ch <- evt
+		}
+		close(ch)
+		return ch, nil
+	}
 	content := ""
 	if len(f.responses) != 0 {
 		content = f.responses[0]
 		f.responses = f.responses[1:]
 	}
-	ch := make(chan *event.Event, 1)
 	if !f.suppressFinal {
 		ch <- &event.Event{
 			Response: &model.Response{
@@ -349,6 +361,70 @@ func TestCollectFinalResponseContentReturnsResponseError(t *testing.T) {
 	assert.Contains(t, err.Error(), "boom")
 }
 
+func TestCollectFinalResponseContentUsesRunnerCompletionResponse(t *testing.T) {
+	ch := make(chan *event.Event, 2)
+	ch <- &event.Event{
+		InvocationID: "child",
+		Response: &model.Response{
+			Done: true,
+			Choices: []model.Choice{
+				{
+					Message: model.Message{Role: model.RoleAssistant, Content: "child output"},
+				},
+			},
+		},
+	}
+	ch <- &event.Event{
+		InvocationID: "root",
+		Response: &model.Response{
+			Done:   true,
+			Object: model.ObjectTypeRunnerCompletion,
+			Choices: []model.Choice{
+				{
+					Message: model.Message{Role: model.RoleAssistant, Content: "root output"},
+				},
+			},
+		},
+	}
+	close(ch)
+	content, err := collectFinalResponseContent(ch)
+	assert.NoError(t, err)
+	assert.Equal(t, "root output", content)
+}
+
+func TestCollectFinalResponseContentFallsBackToRootInvocationAfterError(t *testing.T) {
+	ch := make(chan *event.Event, 3)
+	ch <- &event.Event{
+		InvocationID: "root",
+		Response: &model.Response{
+			Error: &model.ResponseError{Message: "boom"},
+		},
+	}
+	ch <- &event.Event{
+		InvocationID: "root",
+		Response: &model.Response{
+			Done: true,
+			Choices: []model.Choice{
+				{
+					Message: model.Message{Role: model.RoleAssistant, Content: "root output"},
+				},
+			},
+		},
+	}
+	ch <- &event.Event{
+		InvocationID: "root",
+		Response: &model.Response{
+			Done:   true,
+			Object: model.ObjectTypeRunnerCompletion,
+		},
+	}
+	close(ch)
+	content, err := collectFinalResponseContent(ch)
+	assert.Error(t, err)
+	assert.Empty(t, content)
+	assert.Contains(t, err.Error(), "boom")
+}
+
 func TestCollectFinalResponseContentRequiresFinalResponse(t *testing.T) {
 	ch := make(chan *event.Event)
 	close(ch)
@@ -369,6 +445,47 @@ func TestDefaultConversationRequiresNonEmptyFinalResponseContent(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, decision)
 	assert.Contains(t, err.Error(), "final response is missing")
+}
+
+func TestDefaultConversationUsesRootRunnerCompletionContent(t *testing.T) {
+	sim, err := New(&fakeSimRunner{
+		events: []*event.Event{
+			{
+				InvocationID: "child",
+				Response: &model.Response{
+					Done: true,
+					Choices: []model.Choice{
+						{
+							Message: model.Message{Role: model.RoleAssistant, Content: "child output"},
+						},
+					},
+				},
+			},
+			{
+				InvocationID: "root",
+				Response: &model.Response{
+					Done:   true,
+					Object: model.ObjectTypeRunnerCompletion,
+					Choices: []model.Choice{
+						{
+							Message: model.Message{Role: model.RoleAssistant, Content: "root output"},
+						},
+					},
+				},
+			},
+		},
+	})
+	assert.NoError(t, err)
+	conv, err := sim.Start(context.Background(), makeStartRequest())
+	assert.NoError(t, err)
+	decision, err := conv.Next(context.Background(), &TurnRequest{
+		LastTargetResponse: &model.Message{Role: model.RoleAssistant, Content: "reply"},
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, decision)
+	if assert.NotNil(t, decision.Message) {
+		assert.Equal(t, "root output", decision.Message.Content)
+	}
 }
 
 func TestDefaultConversationRunnerError(t *testing.T) {
