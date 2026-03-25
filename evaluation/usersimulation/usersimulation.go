@@ -298,6 +298,7 @@ func buildEffectiveScenario(
 	}
 	effectiveMaxAllowedInvocations := maxAllowedInvocations
 	return &evalset.ConversationScenario{
+		Driver:                scenario.Driver,
 		StartingPrompt:        scenario.StartingPrompt,
 		ConversationPlan:      scenario.ConversationPlan,
 		StopSignal:            stopSignal,
@@ -309,5 +310,5 @@ func containsStopSignal(content string, stopSignal string) bool {
 	if stopSignal == "" {
 		return false
 	}
-	return strings.Contains(strings.ToLower(content), strings.ToLower(stopSignal))
+	return strings.EqualFold(strings.TrimSpace(content), strings.TrimSpace(stopSignal))
 }

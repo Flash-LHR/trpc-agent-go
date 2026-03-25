@@ -211,6 +211,7 @@ func TestConversationUsesCustomUserIDAndSessionIDSuppliers(t *testing.T) {
 func TestConversationUsesCustomSystemPromptBuilderWithEffectiveScenario(t *testing.T) {
 	runner := &fakeSimRunner{responses: []string{"I need your destination."}}
 	req := makeStartRequest()
+	req.Scenario.Driver = evalset.ConversationScenarioDriverExpected
 	req.Scenario.StartingPrompt = "Help me book a train ticket."
 	receivedScenario := (*evalset.ConversationScenario)(nil)
 	sim, err := New(
@@ -227,6 +228,7 @@ func TestConversationUsesCustomSystemPromptBuilderWithEffectiveScenario(t *testi
 	conv, err := sim.Start(context.Background(), req)
 	assert.NoError(t, err)
 	assert.NotNil(t, receivedScenario)
+	assert.Equal(t, evalset.ConversationScenarioDriverExpected, receivedScenario.Driver)
 	assert.Equal(t, req.Scenario.StartingPrompt, receivedScenario.StartingPrompt)
 	assert.Equal(t, req.Scenario.ConversationPlan, receivedScenario.ConversationPlan)
 	assert.Equal(t, "</override>", receivedScenario.StopSignal)
@@ -267,7 +269,7 @@ func TestDefaultConversationWithoutStartingPromptGeneratesFirstTurnFromPlan(t *t
 }
 
 func TestDefaultConversationStopSignalAndMaxAllowedInvocations(t *testing.T) {
-	stopRunner := &fakeSimRunner{responses: []string{"</finished>"}}
+	stopRunner := &fakeSimRunner{responses: []string{" \n</finished>\t "}}
 	stopSim, err := New(stopRunner)
 	assert.NoError(t, err)
 	stopConv, err := stopSim.Start(context.Background(), makeStartRequest())
@@ -278,6 +280,19 @@ func TestDefaultConversationStopSignalAndMaxAllowedInvocations(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, stopDecision.Stop)
 	assert.Nil(t, stopDecision.Message)
+	substringRunner := &fakeSimRunner{responses: []string{"The stop signal is </finished>."}}
+	substringSim, err := New(substringRunner)
+	assert.NoError(t, err)
+	substringConv, err := substringSim.Start(context.Background(), makeStartRequest())
+	assert.NoError(t, err)
+	substringDecision, err := substringConv.Next(context.Background(), &TurnRequest{
+		LastTargetResponse: &model.Message{Role: model.RoleAssistant, Content: "Please continue."},
+	})
+	assert.NoError(t, err)
+	assert.False(t, substringDecision.Stop)
+	if assert.NotNil(t, substringDecision.Message) {
+		assert.Equal(t, "The stop signal is </finished>.", substringDecision.Message.Content)
+	}
 	maxRunner := &fakeSimRunner{responses: []string{"Please search trains for tomorrow."}}
 	maxSim, err := New(maxRunner)
 	assert.NoError(t, err)
