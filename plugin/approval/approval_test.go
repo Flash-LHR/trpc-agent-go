@@ -437,10 +437,32 @@ func (errorTokenCounter) CountTokensRange(
 
 func TestCountTokens_ReturnsZeroOnCounterError(t *testing.T) {
 	p := &Plugin{tokenCounter: errorTokenCounter{}}
-	require.Zero(t, p.countTokens(approvalreview.TranscriptEntry{
+	require.Equal(t, defaultMessageTranscriptBudget+1, p.countTokens(approvalreview.TranscriptEntry{
 		Role:    model.RoleUser,
 		Content: "hello",
 	}))
+}
+
+func TestBuildTranscript_TokenCounterErrorFailsClosed(t *testing.T) {
+	p := &Plugin{tokenCounter: errorTokenCounter{}}
+	invocation := invocationWithEvents(t, []event.Event{
+		responseEvent(
+			"inv-1",
+			"author",
+			"app",
+			model.Message{Role: model.RoleUser, Content: "Please inspect the workspace."},
+		),
+		responseEvent(
+			"inv-1",
+			"author",
+			"app",
+			model.Message{Role: model.RoleAssistant, Content: "I will inspect it."},
+		),
+	})
+	transcript := p.buildTranscript(invocation)
+	require.Len(t, transcript, 1)
+	require.Equal(t, model.RoleAssistant, transcript[0].Role)
+	require.Equal(t, omissionNote, transcript[0].Content)
 }
 
 func registeredToolCallbacks(t *testing.T, p *Plugin) *tool.Callbacks {

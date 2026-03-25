@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -288,6 +289,27 @@ func TestReview_RunnerRunErrorFails(t *testing.T) {
 	require.Contains(t, reviewErr.Error(), "runner run")
 }
 
+func TestReview_NilEventChannelFails(t *testing.T) {
+	reviewer, err := New(&fakeRunner{
+		runFn: func(
+			ctx context.Context,
+			userID string,
+			sessionID string,
+			message model.Message,
+			runOpts ...agent.RunOption,
+		) (<-chan *event.Event, error) {
+			return nil, nil
+		},
+	})
+	require.NoError(t, err)
+	decision, reviewErr := reviewer.Review(context.Background(), &Request{
+		Action: Action{ToolName: "shell"},
+	})
+	require.Error(t, reviewErr)
+	require.Nil(t, decision)
+	require.Contains(t, reviewErr.Error(), "runner returned nil event channel")
+}
+
 func TestReview_MissingStructuredOutputFailsClosed(t *testing.T) {
 	fake := &fakeRunner{
 		runFn: func(
@@ -348,17 +370,39 @@ func TestCollectDecisionPayload_SupportsValuePayloadAndRejectsUnexpectedType(t *
 	valueCh <- nil
 	valueCh <- &event.Event{StructuredOutput: decisionPayload{Approved: true, RiskScore: 12, RiskLevel: "low", Reason: "Allowed."}}
 	close(valueCh)
-	payload, err := collectDecisionPayload(valueCh)
+	payload, err := collectDecisionPayload(context.Background(), valueCh)
 	require.NoError(t, err)
 	require.NotNil(t, payload)
 	assert.True(t, payload.Approved)
 	unexpectedCh := make(chan *event.Event, 1)
 	unexpectedCh <- &event.Event{StructuredOutput: "bad"}
 	close(unexpectedCh)
-	payload, err = collectDecisionPayload(unexpectedCh)
+	payload, err = collectDecisionPayload(context.Background(), unexpectedCh)
 	require.Error(t, err)
 	require.Nil(t, payload)
 	require.Contains(t, err.Error(), "unexpected structured output type")
+}
+
+func TestCollectDecisionPayload_FailsOnNilChannelAndCanceledContext(t *testing.T) {
+	payload, err := collectDecisionPayload(context.Background(), nil)
+	require.Error(t, err)
+	require.Nil(t, payload)
+	require.Contains(t, err.Error(), "runner returned nil event channel")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	neverClosed := make(chan *event.Event)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		payload, err = collectDecisionPayload(ctx, neverClosed)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		require.FailNow(t, "collectDecisionPayload did not return after context cancellation")
+	}
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, payload)
 }
 
 func TestReview_InvalidSystemPromptTemplateFails(t *testing.T) {

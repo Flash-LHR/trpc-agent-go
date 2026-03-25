@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/plugin/approval/review"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -75,10 +76,13 @@ func (p *Plugin) buildTranscript(invocation *agent.Invocation) []review.Transcri
 
 func (p *Plugin) collectTranscriptEntries(invocation *agent.Invocation) []transcriptRecord {
 	filterKey := invocation.GetEventFilterKey()
+	invocation.Session.EventMu.RLock()
+	events := append([]event.Event(nil), invocation.Session.Events...)
+	invocation.Session.EventMu.RUnlock()
 	entries := make([]transcriptRecord, 0)
 	nextIndex := 0
-	for i := range invocation.Session.Events {
-		evt := invocation.Session.Events[i]
+	for i := range events {
+		evt := events[i]
 		if !evt.Filter(filterKey) {
 			continue
 		}
@@ -188,7 +192,7 @@ func (p *Plugin) countTokens(entry review.TranscriptEntry) int {
 		Content: entry.Content,
 	})
 	if err != nil || tokens < 0 {
-		return 0
+		return defaultMessageTranscriptBudget + 1
 	}
 	return tokens
 }

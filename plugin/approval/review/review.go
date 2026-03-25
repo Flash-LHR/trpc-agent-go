@@ -135,7 +135,7 @@ func (r *guardianReviewer) Review(ctx context.Context, req *Request) (*Decision,
 	if err != nil {
 		return nil, fmt.Errorf("reviewing approval request: runner run: %w", err)
 	}
-	payload, err := collectDecisionPayload(eventCh)
+	payload, err := collectDecisionPayload(ctx, eventCh)
 	if err != nil {
 		return nil, fmt.Errorf("reviewing approval request: collect decision: %w", err)
 	}
@@ -147,24 +147,34 @@ func (r *guardianReviewer) Review(ctx context.Context, req *Request) (*Decision,
 	}, nil
 }
 
-func collectDecisionPayload(events <-chan *event.Event) (*decisionPayload, error) {
+func collectDecisionPayload(ctx context.Context, events <-chan *event.Event) (*decisionPayload, error) {
+	if events == nil {
+		return nil, fmt.Errorf("runner returned nil event channel")
+	}
 	var payload *decisionPayload
-	for evt := range events {
-		if evt == nil || evt.StructuredOutput == nil {
-			continue
-		}
-		switch value := evt.StructuredOutput.(type) {
-		case *decisionPayload:
-			payload = value
-		case decisionPayload:
-			copied := value
-			payload = &copied
-		default:
-			return nil, fmt.Errorf("unexpected structured output type %T", evt.StructuredOutput)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case evt, ok := <-events:
+			if !ok {
+				if payload == nil {
+					return nil, fmt.Errorf("missing structured output")
+				}
+				return payload, nil
+			}
+			if evt == nil || evt.StructuredOutput == nil {
+				continue
+			}
+			switch value := evt.StructuredOutput.(type) {
+			case *decisionPayload:
+				payload = value
+			case decisionPayload:
+				copied := value
+				payload = &copied
+			default:
+				return nil, fmt.Errorf("unexpected structured output type %T", evt.StructuredOutput)
+			}
 		}
 	}
-	if payload == nil {
-		return nil, fmt.Errorf("missing structured output")
-	}
-	return payload, nil
 }
