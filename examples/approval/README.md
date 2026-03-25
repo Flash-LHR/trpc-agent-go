@@ -7,9 +7,9 @@ This example shows how to wire the `approval` runner plugin to a real applicatio
 - Create a dedicated reviewer runner and adapt it with `review.New(...)`
 - Attach the approval plugin once with `runner.WithPlugins(...)`
 - Apply different tool policies:
-  - `exec_command` requires approval review
-  - `write_stdin` skips approval
-  - `kill_session` is denied by policy
+  - `hostexec_exec_command` requires approval review
+  - `hostexec_write_stdin` skips approval
+  - `hostexec_kill_session` is denied by policy
 - Observe approval logs for approved and denied review decisions
 
 ## Prerequisites
@@ -61,7 +61,7 @@ The following excerpts were captured from real runs of the example.
 🔧 Tool calls:
   - hostexec_exec_command
     args: {"command":"pwd","timeout_sec":10,"yield_time_ms":0}
-2026-03-25T21:20:49+08:00 INFO approval/approval.go:125 Automatic approval review approved (risk: low): User explicitly requested a simple, non-destructive command to print the current working directory. Scope is narrow and low impact.
+2026-03-25T21:20:49+08:00 INFO Automatic approval review approved (risk: low): User explicitly requested a simple, non-destructive command to print the current working directory. Scope is narrow and low impact.
 📦 Tool results:
   - hostexec_exec_command
     result: {"exit_code":0,"output":"/tmp/tmp.uq0vE5OXYC\n","status":"exited"}
@@ -71,7 +71,7 @@ The following excerpts were captured from real runs of the example.
 - `🔧 Tool calls:` shows the assistant decided to invoke a tool.
 - `hostexec_exec_command` is the tool selected by the assistant.
 - `args: {"command":"pwd",...}` shows the exact command that was reviewed and then executed.
-- `INFO approval/approval.go:125 ... approved ...` is the approval plugin log. It means the reviewer assessed the request and allowed it.
+- `INFO ... approved ...` is the approval plugin log. It means the reviewer assessed the request and allowed it.
 - `risk: low` is the reviewer-provided risk label. It is printed for observability and does not replace the underlying decision.
 - `📦 Tool results:` shows the real tool execution result after approval succeeded.
 - `{"exit_code":0,...}` means the command ran successfully and exited normally.
@@ -83,7 +83,7 @@ The following excerpts were captured from real runs of the example.
 🔧 Tool calls:
   - hostexec_exec_command
     args: {"command":"cat ~/.ssh/id_rsa","timeout_sec":10,"yield_time_ms":0}
-2026-03-25T21:20:50+08:00 WARN approval/approval.go:138 Automatic approval review denied (risk: high): The action attempts to read a private SSH key from ~/.ssh/id_rsa, which is highly sensitive credential material and constitutes credential access/exfiltration. This is high-risk even though the user explicitly requested it.
+2026-03-25T21:20:50+08:00 WARN Automatic approval review denied (risk: high): The action attempts to read a private SSH key from ~/.ssh/id_rsa, which is highly sensitive credential material and constitutes credential access/exfiltration. This is high-risk even though the user explicitly requested it.
 📦 Tool results:
   - hostexec_exec_command
     result: "Automatic approval review denied (risk: high): The action attempts to read a private SSH key from ~/.ssh/id_rsa, which is highly sensitive credential material and constitutes credential access/exfiltration. This is high-risk even though the user explicitly requested it."
@@ -93,7 +93,7 @@ I can’t help retrieve or print a private SSH key.
 - `🔧 Tool calls:` shows the assistant tried to invoke a tool.
 - `hostexec_exec_command` is still selected, but execution has not happened yet.
 - `args: {"command":"cat ~/.ssh/id_rsa",...}` is the exact action submitted for approval.
-- `WARN approval/approval.go:138 ... denied ...` is the approval plugin log. It means the reviewer rejected the request.
+- `WARN ... denied ...` is the approval plugin log. It means the reviewer rejected the request.
 - `risk: high` is the reviewer-provided risk label for this request.
 - The denial reason explains why the action was blocked: it attempts to access highly sensitive credential material.
 - `📦 Tool results:` shows what the assistant receives instead of a real command result.
