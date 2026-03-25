@@ -571,7 +571,7 @@ func (s *local) inferExpectedInferences(
 	if len(seedMessages) > 0 {
 		mergedRunOptions = append(mergedRunOptions, agent.WithInjectedContextMessages(seedMessages))
 	}
-	expecteds, err := inference.Inference(
+	expectedInferenceResult, err := inference.Inference(
 		ctx,
 		opts.ExpectedRunner,
 		inputs,
@@ -582,7 +582,7 @@ func (s *local) inferExpectedInferences(
 	if err != nil {
 		return nil, fmt.Errorf("run expected runner: %w", err)
 	}
-	return expecteds, nil
+	return expectedInferenceResult.Invocations, nil
 }
 
 func attachContextMessages(invocations []*evalset.Invocation, contextMessages []*model.Message) {

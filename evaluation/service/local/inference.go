@@ -270,7 +270,15 @@ func (s *local) inferenceEvalCase(ctx context.Context, req *service.InferenceReq
 		return newFailedInferenceResult(result, err)
 	}
 	if evalCase.EvalMode == evalset.EvalModeTrace {
-		result.Inferences, result.ExpectedInferences, err = s.inferTraceConversation(ctx, evalCase, sessionID, opts)
+		inferenceResult, expectedInferences, traceErr := s.inferTraceConversation(ctx, evalCase, sessionID, opts)
+		if inferenceResult != nil {
+			attachContextMessages(inferenceResult.Invocations, evalCase.ContextMessages)
+			result.Inferences = inferenceResult.Invocations
+			result.ExecutionTraces = inferenceResult.ExecutionTraces
+		}
+		attachContextMessages(expectedInferences, evalCase.ContextMessages)
+		result.ExpectedInferences = expectedInferences
+		err = traceErr
 		if err != nil {
 			err = fmt.Errorf("inference eval case (evalCaseID=%s, sessionID=%s): %w", evalCase.EvalID, sessionID, err)
 			return newFailedInferenceResult(result, err)
@@ -299,21 +307,24 @@ func (s *local) inferenceEvalCase(ctx context.Context, req *service.InferenceReq
 	if len(seedMessages) > 0 {
 		mergedRunOptions = append(mergedRunOptions, agent.WithInjectedContextMessages(seedMessages))
 	}
-	inferences, expectedInferences, err := s.inferCaseConversations(
+	inferenceResult, expectedInferences, err := s.inferCaseConversations(
 		ctx,
 		evalCase,
 		sessionID,
 		mergedRunOptions,
 		opts,
 	)
+	if inferenceResult != nil {
+		result.ExecutionTraces = inferenceResult.ExecutionTraces
+		attachContextMessages(inferenceResult.Invocations, evalCase.ContextMessages)
+		result.Inferences = inferenceResult.Invocations
+	}
+	attachContextMessages(expectedInferences, evalCase.ContextMessages)
+	result.ExpectedInferences = expectedInferences
 	if err != nil {
 		err = fmt.Errorf("inference eval case (evalCaseID=%s, sessionID=%s): %w", evalCase.EvalID, sessionID, err)
 		return newFailedInferenceResult(result, err)
 	}
-	attachContextMessages(inferences, evalCase.ContextMessages)
-	attachContextMessages(expectedInferences, evalCase.ContextMessages)
-	result.ExpectedInferences = expectedInferences
-	result.Inferences = inferences
 	result.Status = status.EvalStatusPassed
 	return result
 }
@@ -324,14 +335,14 @@ func (s *local) inferCaseConversations(
 	sessionID string,
 	runOptions []agent.RunOption,
 	opts *service.Options,
-) ([]*evalset.Invocation, []*evalset.Invocation, error) {
+) (*inference.Result, []*evalset.Invocation, error) {
 	var (
-		inferences         []*evalset.Invocation
+		inferenceResult    *inference.Result
 		expectedInferences []*evalset.Invocation
 		err                error
 	)
 	if evalCase.ConversationScenario != nil {
-		inferences, expectedInferences, err = s.inferScenarioConversation(
+		inferenceResult, expectedInferences, err = s.inferScenarioConversation(
 			ctx,
 			evalCase,
 			sessionID,
@@ -339,7 +350,7 @@ func (s *local) inferCaseConversations(
 			opts,
 		)
 	} else {
-		inferences, expectedInferences, err = s.inferStaticConversation(
+		inferenceResult, expectedInferences, err = s.inferStaticConversation(
 			ctx,
 			evalCase,
 			sessionID,
@@ -348,9 +359,9 @@ func (s *local) inferCaseConversations(
 		)
 	}
 	if err != nil {
-		return nil, nil, err
+		return inferenceResult, expectedInferences, err
 	}
-	return inferences, expectedInferences, nil
+	return inferenceResult, expectedInferences, nil
 }
 
 func (s *local) inferTraceConversation(
@@ -358,7 +369,7 @@ func (s *local) inferTraceConversation(
 	evalCase *evalset.EvalCase,
 	sessionID string,
 	opts *service.Options,
-) ([]*evalset.Invocation, []*evalset.Invocation, error) {
+) (*inference.Result, []*evalset.Invocation, error) {
 	if evalCase.ConversationScenario != nil {
 		return nil, nil, errors.New("conversationScenario is not supported in trace mode")
 	}
@@ -384,7 +395,7 @@ func (s *local) inferTraceConversation(
 		inferences = evalCase.Conversation
 	}
 	if !evalCase.ExpectedRunnerEnabled {
-		return inferences, nil, nil
+		return &inference.Result{Invocations: inferences}, nil, nil
 	}
 	expectedInferences, err := s.inferExpectedInferences(
 		ctx,
@@ -394,9 +405,9 @@ func (s *local) inferTraceConversation(
 		opts,
 	)
 	if err != nil {
-		return nil, nil, err
+		return &inference.Result{Invocations: inferences}, nil, err
 	}
-	return inferences, expectedInferences, nil
+	return &inference.Result{Invocations: inferences}, expectedInferences, nil
 }
 
 func (s *local) inferStaticConversation(
@@ -405,8 +416,8 @@ func (s *local) inferStaticConversation(
 	sessionID string,
 	runOptions []agent.RunOption,
 	opts *service.Options,
-) ([]*evalset.Invocation, []*evalset.Invocation, error) {
-	inferences, err := inference.Inference(
+) (*inference.Result, []*evalset.Invocation, error) {
+	inferenceResult, err := inference.Inference(
 		ctx,
 		s.runner,
 		evalCase.Conversation,
@@ -415,22 +426,22 @@ func (s *local) inferStaticConversation(
 		runOptions,
 	)
 	if err != nil {
-		return nil, nil, err
+		return inferenceResult, nil, err
 	}
 	if !evalCase.ExpectedRunnerEnabled {
-		return inferences, nil, nil
+		return inferenceResult, nil, nil
 	}
 	expectedInferences, err := s.inferExpectedInferences(
 		ctx,
 		evalCase,
-		userInputOnlyInvocationsForEval(inferences),
+		userInputOnlyInvocationsForEval(inferenceResult.Invocations),
 		expectedRunnerSessionID(sessionID),
 		opts,
 	)
 	if err != nil {
-		return nil, nil, err
+		return inferenceResult, nil, err
 	}
-	return inferences, expectedInferences, nil
+	return inferenceResult, expectedInferences, nil
 }
 
 func (s *local) inferScenarioConversation(
@@ -439,7 +450,7 @@ func (s *local) inferScenarioConversation(
 	sessionID string,
 	runOptions []agent.RunOption,
 	opts *service.Options,
-) ([]*evalset.Invocation, []*evalset.Invocation, error) {
+) (*inference.Result, []*evalset.Invocation, error) {
 	if opts.UserSimulator == nil {
 		return nil, nil, errors.New("user simulator is nil")
 	}
@@ -459,7 +470,7 @@ func (s *local) inferScenarioConversation(
 			return nil, nil, err
 		}
 		if !evalCase.ExpectedRunnerEnabled {
-			return inferences, nil, nil
+			return &inference.Result{Invocations: inferences}, nil, nil
 		}
 		expectedInferences, err := s.inferExpectedInferences(
 			ctx,
@@ -469,9 +480,9 @@ func (s *local) inferScenarioConversation(
 			opts,
 		)
 		if err != nil {
-			return nil, nil, err
+			return &inference.Result{Invocations: inferences}, nil, err
 		}
-		return inferences, expectedInferences, nil
+		return &inference.Result{Invocations: inferences}, expectedInferences, nil
 	case evalset.ConversationScenarioDriverExpected:
 		if opts.ExpectedRunner == nil {
 			return nil, nil, errors.New("expected runner is nil")
@@ -489,7 +500,7 @@ func (s *local) inferScenarioConversation(
 		if err != nil {
 			return nil, nil, err
 		}
-		inferences, err := inference.Inference(
+		inferenceResult, err := inference.Inference(
 			ctx,
 			s.runner,
 			userInputOnlyInvocationsForEval(expectedInferences),
@@ -498,9 +509,9 @@ func (s *local) inferScenarioConversation(
 			runOptions,
 		)
 		if err != nil {
-			return nil, nil, err
+			return inferenceResult, expectedInferences, err
 		}
-		return inferences, expectedInferences, nil
+		return inferenceResult, expectedInferences, nil
 	default:
 		return nil, nil, fmt.Errorf("invalid conversationScenario driver %q", evalCase.ConversationScenario.Driver)
 	}
