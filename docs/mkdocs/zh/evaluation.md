@@ -2475,6 +2475,7 @@ type InferenceResult struct {
 	EvalCaseID   string                // EvalCaseID 是用例标识
 	EvalMode     evalset.EvalMode      // EvalMode 是评估模式
 	Inferences   []*evalset.Invocation // Inferences 是推理阶段采集到的实际轨迹
+	ExpectedInferences []*evalset.Invocation // ExpectedInferences 是开启时在推理阶段预生成的预期轨迹
 	SessionID    string                // SessionID 是推理阶段会话标识
 	UserID       string                // UserID 是推理阶段用户标识
 	Status       status.EvalStatus     // Status 是推理状态

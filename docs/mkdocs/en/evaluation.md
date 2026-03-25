@@ -2471,6 +2471,7 @@ type InferenceResult struct {
 	EvalCaseID   string                // EvalCaseID is the case identifier.
 	EvalMode     evalset.EvalMode      // EvalMode is the evaluation mode.
 	Inferences   []*evalset.Invocation // Inferences are actual traces collected in inference.
+	ExpectedInferences []*evalset.Invocation // ExpectedInferences are pre-generated expected traces collected in inference when enabled.
 	SessionID    string                // SessionID is the inference session identifier.
 	UserID       string                // UserID is the inference user identifier.
 	Status       status.EvalStatus     // Status is the inference status.
