@@ -45,10 +45,11 @@ const (
 	// defaultBatchEndpoint is the default batch endpoint.
 	defaultBatchEndpoint = openai.BatchNewParamsEndpointV1ChatCompletions
 	//nolint:gosec
-	deepSeekAPIKeyName     string = "DEEPSEEK_API_KEY"
-	defaultDeepSeekBaseURL string = "https://api.deepseek.com"
-	deepSeekHostFragment   string = "deepseek.com"
-	deepSeekModelPrefix    string = "deepseek"
+	deepSeekAPIKeyName        string = "DEEPSEEK_API_KEY"
+	defaultDeepSeekBaseURL    string = "https://api.deepseek.com"
+	deepSeekHostFragment      string = "deepseek.com"
+	deepSeekChatModelName     string = "deepseek-chat"
+	deepSeekReasonerModelName string = "deepseek-reasoner"
 
 	//nolint:gosec
 	qwenAPIKeyName     string = "DASHSCOPE_API_KEY"
@@ -337,7 +338,12 @@ func inferVariant(name string, baseURL string) Variant {
 
 func isDeepSeekModelName(name string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(name))
-	return strings.HasPrefix(normalized, deepSeekModelPrefix)
+	switch normalized {
+	case deepSeekChatModelName, deepSeekReasonerModelName:
+		return true
+	default:
+		return false
+	}
 }
 
 func isDeepSeekBaseURL(raw string) bool {
@@ -387,12 +393,15 @@ func (m *Model) GenerateContent(
 	if err != nil {
 		return nil, err
 	}
+	// Execute callback synchronously before starting the goroutine
+	// to avoid a race where the runner and HTTP handler finish
+	// (closing the SSE writer) while the callback is still running.
+	if m.chatRequestCallback != nil {
+		m.chatRequestCallback(ctx, chatRequest)
+	}
 	responseChan := make(chan *model.Response, m.channelBufferSize)
 	go func() {
 		defer close(responseChan)
-		if m.chatRequestCallback != nil {
-			m.chatRequestCallback(ctx, chatRequest)
-		}
 		if request.Stream {
 			m.handleStreamingResponse(ctx, *chatRequest, responseChan, opts...)
 		} else {
