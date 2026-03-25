@@ -37,6 +37,9 @@ func newOptions(opt ...Option) *options {
 		systemPromptBuilder: buildDefaultSystemPrompt,
 	}
 	for _, o := range opt {
+		if o == nil {
+			continue
+		}
 		o(opts)
 	}
 	return opts

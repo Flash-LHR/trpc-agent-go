@@ -111,6 +111,14 @@ func TestNewValidation(t *testing.T) {
 	assert.Nil(t, sim)
 }
 
+func TestNewIgnoresNilOption(t *testing.T) {
+	assert.NotPanics(t, func() {
+		sim, err := New(&fakeSimRunner{}, nil)
+		assert.NoError(t, err)
+		assert.NotNil(t, sim)
+	})
+}
+
 func TestDefaultSimulatorStartValidation(t *testing.T) {
 	sim, err := New(&fakeSimRunner{})
 	assert.NoError(t, err)
@@ -328,13 +336,14 @@ func TestDefaultConversationClose(t *testing.T) {
 	assert.Nil(t, decision)
 }
 
-func TestCollectFinalResponseContentReturnsEventError(t *testing.T) {
+func TestCollectFinalResponseContentReturnsResponseError(t *testing.T) {
 	ch := make(chan *event.Event, 1)
 	ch <- &event.Event{Response: &model.Response{Error: &model.ResponseError{Message: "boom"}}}
 	close(ch)
 	content, err := collectFinalResponseContent(ch)
 	assert.Error(t, err)
 	assert.Empty(t, content)
+	assert.Contains(t, err.Error(), "boom")
 }
 
 func TestDefaultConversationRunnerError(t *testing.T) {

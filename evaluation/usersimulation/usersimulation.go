@@ -227,6 +227,9 @@ func collectFinalResponseContent(events <-chan *event.Event) (string, error) {
 		if evt.Error != nil {
 			return "", fmt.Errorf("event: %v", evt.Error)
 		}
+		if evt.Response != nil && evt.Response.Error != nil {
+			return "", fmt.Errorf("response error: %v", evt.Response.Error)
+		}
 		if evt.IsFinalResponse() {
 			if evt.Response == nil || len(evt.Response.Choices) == 0 {
 				return "", errors.New("final response has no choices")
