@@ -90,7 +90,12 @@ func normalizeSteps(executionTrace *atrace.Trace) ([]normalizedStep, map[string]
 	for _, step := range executionTrace.Steps {
 		predecessors := make([]string, 0, len(step.PredecessorStepIDs))
 		for _, predecessorStepID := range step.PredecessorStepIDs {
-			predecessors = append(predecessors, stepLabels[predecessorStepID])
+			label, ok := stepLabels[predecessorStepID]
+			if !ok {
+				predecessors = append(predecessors, "<missing:"+predecessorStepID+">")
+				continue
+			}
+			predecessors = append(predecessors, label)
 		}
 		sort.Strings(predecessors)
 		normalized = append(normalized, normalizedStep{
