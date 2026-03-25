@@ -2513,7 +2513,7 @@ The local implementation supports EvalCase-level concurrent inference. When enab
 
 #### Evaluation Phase
 
-The evaluation phase is handled by `Evaluate`. It takes `InferenceResult` as input, loads the corresponding EvalCase, and constructs actuals and expecteds. Expecteds come from EvalSet `conversation` by default. When an EvalCase enables `expectedRunnerEnabled`, the evaluation phase reuses the `ExpectedInferences` that were already generated during inference. It then executes evaluators according to `EvaluateConfig.EvalMetrics`.
+The evaluation phase is handled by `Evaluate`. It takes `InferenceResult` as input, loads the corresponding EvalCase, and constructs actuals and expecteds. By default, expecteds come from EvalSet `conversation`. If a case uses `conversationScenario` without enabling `expectedRunnerEnabled`, the evaluation phase builds placeholder expecteds from the actual trace that preserve only `userContent`. When an EvalCase enables `expectedRunnerEnabled`, the evaluation phase reuses the `ExpectedInferences` that were already generated during inference. It then executes evaluators according to `EvaluateConfig.EvalMetrics`.
 
 The local implementation looks up Evaluators by `MetricName` from Registry and calls `Evaluator.Evaluate`. This operates per EvalCase, with actuals and expecteds from the same case aligned by turn.
 
