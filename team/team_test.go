@@ -553,8 +553,13 @@ func TestTeam_Run_Coordinator(t *testing.T) {
 	ctx := agent.NewInvocationContext(context.Background(), inv)
 	ch, err := tm.Run(ctx, inv)
 	require.NoError(t, err)
-	for range ch {
+	events := make([]*event.Event, 0)
+	for evt := range ch {
+		events = append(events, evt)
 	}
+	require.Len(t, events, 1)
+	require.Equal(t, inv.InvocationID, events[0].InvocationID)
+	require.Empty(t, events[0].ParentInvocationID)
 	require.True(t, coordinator.ran)
 }
 

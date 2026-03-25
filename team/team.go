@@ -198,13 +198,7 @@ func (t *Team) runCoordinator(
 	if t.coordinator == nil {
 		return nil, errors.New("coordinator is nil")
 	}
-	child := invocation.Clone(
-		agent.WithInvocationAgent(t.coordinator),
-		agent.WithInvocationTraceNodeID(istructure.JoinNodeID(agent.InvocationTraceNodeID(invocation), "coordinator")),
-		agent.WithInvocationEntryPredecessorStepIDs(agent.NextExecutionTracePredecessors(invocation)),
-	)
-	childCtx := agent.NewInvocationContext(ctx, child)
-	return t.coordinator.Run(childCtx, child)
+	return t.coordinator.Run(ctx, invocation)
 }
 
 func (t *Team) runSwarm(

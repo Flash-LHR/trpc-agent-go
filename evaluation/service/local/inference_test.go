@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/trace"
@@ -269,9 +268,7 @@ func TestLocalInference_FailedCasePreservesExecutionTraceArtifacts(t *testing.T)
 		return
 	}
 	assert.Same(t, executionTrace, results[0].ExecutionTraces[0])
-	require.Len(t, results[0].Inferences, 1)
-	require.NotNil(t, results[0].Inferences[0])
-	assert.Equal(t, "generated-inv", results[0].Inferences[0].InvocationID)
+	assert.Nil(t, results[0].Inferences)
 }
 
 func TestLocalInferenceBeforeInferenceSetCanFilterEvalCaseIDs(t *testing.T) {
@@ -552,8 +549,7 @@ func TestLocalInferenceAfterInferenceCaseErrorMarksCaseFailed(t *testing.T) {
 		return
 	}
 	assert.Equal(t, status.EvalStatusFailed, results[0].Status)
-	require.Len(t, results[0].Inferences, 1)
-	require.NotNil(t, results[0].Inferences[0])
+	assert.Nil(t, results[0].Inferences)
 	assert.Contains(t, results[0].ErrorMessage, "after inference case failed")
 	assert.Contains(t, results[0].ErrorMessage, "run after inference case callbacks")
 }

@@ -368,5 +368,6 @@ func newInferenceResult(appName, evalSetID, sessionID string, evalCase *evalset.
 func newFailedInferenceResult(result *service.InferenceResult, err error) *service.InferenceResult {
 	result.Status = status.EvalStatusFailed
 	result.ErrorMessage = err.Error()
+	result.Inferences = nil
 	return result
 }
