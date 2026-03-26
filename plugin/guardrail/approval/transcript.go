@@ -260,6 +260,16 @@ func transcriptContent(msg model.Message) string {
 			return msg.Content
 		}
 		if len(msg.ContentParts) > 0 {
+			var builder strings.Builder
+			for _, part := range msg.ContentParts {
+				if part.Type != model.ContentTypeText || part.Text == nil {
+					continue
+				}
+				builder.WriteString(*part.Text)
+			}
+			if builder.Len() > 0 {
+				return builder.String()
+			}
 			return "[non-text content omitted]"
 		}
 	case model.RoleTool:

@@ -21,7 +21,7 @@ func TestTranscriptContent_CoversOptionalBranches(t *testing.T) {
 	text := "hello"
 	require.Equal(
 		t,
-		"[non-text content omitted]",
+		"hello",
 		transcriptContent(model.Message{
 			Role:         model.RoleAssistant,
 			ContentParts: []model.ContentPart{{Type: model.ContentTypeText, Text: &text}},
