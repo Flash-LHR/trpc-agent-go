@@ -281,6 +281,7 @@ func cloneStep(step trace.Step) trace.Step {
 		StartedAt:          step.StartedAt,
 		EndedAt:            step.EndedAt,
 		PredecessorStepIDs: slices.Clone(step.PredecessorStepIDs),
+		AppliedSurfaceIDs:  slices.Clone(step.AppliedSurfaceIDs),
 		Input:              cloneSnapshot(step.Input),
 		Output:             cloneSnapshot(step.Output),
 		Error:              step.Error,
