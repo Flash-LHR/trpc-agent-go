@@ -207,6 +207,65 @@ func TestReview_DefaultSuppliersGenerateIDsWithoutInvocationSession(t *testing.T
 	assert.Equal(t, 95, decision.RiskScore)
 }
 
+func TestReview_RuntimeRiskThresholdOverridesApprovedPayload(t *testing.T) {
+	fake := &fakeRunner{
+		runFn: func(
+			ctx context.Context,
+			userID string,
+			sessionID string,
+			message model.Message,
+			runOpts ...agent.RunOption,
+		) (<-chan *event.Event, error) {
+			ch := make(chan *event.Event, 1)
+			ch <- &event.Event{
+				Response:         &model.Response{},
+				StructuredOutput: &decisionPayload{Approved: true, RiskScore: 90, RiskLevel: "high", Reason: "Too risky."},
+			}
+			close(ch)
+			return ch, nil
+		},
+	}
+	reviewer, err := New(fake, WithRiskThreshold(80))
+	require.NoError(t, err)
+	decision, err := reviewer.Review(context.Background(), &Request{
+		Action: Action{ToolName: "shell", Arguments: jsonRaw(`{"command":"rm -rf /"}`)},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.False(t, decision.Approved)
+	assert.Equal(t, 90, decision.RiskScore)
+	assert.Equal(t, "high", decision.RiskLevel)
+	assert.Equal(t, "Too risky.", decision.Reason)
+}
+
+func TestReview_OutOfRangeRiskScoreFails(t *testing.T) {
+	fake := &fakeRunner{
+		runFn: func(
+			ctx context.Context,
+			userID string,
+			sessionID string,
+			message model.Message,
+			runOpts ...agent.RunOption,
+		) (<-chan *event.Event, error) {
+			ch := make(chan *event.Event, 1)
+			ch <- &event.Event{
+				Response:         &model.Response{},
+				StructuredOutput: &decisionPayload{Approved: true, RiskScore: 101, RiskLevel: "high", Reason: "Invalid score."},
+			}
+			close(ch)
+			return ch, nil
+		},
+	}
+	reviewer, err := New(fake)
+	require.NoError(t, err)
+	decision, err := reviewer.Review(context.Background(), &Request{
+		Action: Action{ToolName: "shell", Arguments: jsonRaw(`{"command":"pwd"}`)},
+	})
+	require.Error(t, err)
+	require.Nil(t, decision)
+	require.Contains(t, err.Error(), "risk score 101 out of range")
+}
+
 func TestReview_RejectsNilRequestAndEmptyToolName(t *testing.T) {
 	reviewer, err := New(&fakeRunner{})
 	require.NoError(t, err)

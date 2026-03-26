@@ -139,8 +139,11 @@ func (r *guardianReviewer) Review(ctx context.Context, req *Request) (*Decision,
 	if err != nil {
 		return nil, fmt.Errorf("reviewing approval request: collect decision: %w", err)
 	}
+	if payload.RiskScore < 0 || payload.RiskScore > 100 {
+		return nil, fmt.Errorf("reviewing approval request: risk score %d out of range", payload.RiskScore)
+	}
 	return &Decision{
-		Approved:  payload.Approved,
+		Approved:  payload.RiskScore < r.riskThreshold,
 		RiskScore: payload.RiskScore,
 		RiskLevel: payload.RiskLevel,
 		Reason:    payload.Reason,
