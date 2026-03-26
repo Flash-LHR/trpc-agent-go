@@ -521,13 +521,12 @@ threshold and scoring rules work like this:
 
 - `review.WithRiskThreshold(80)` sets the approval threshold. Valid values are
   `0-100`.
-- This threshold is injected into the built-in reviewer system prompt rather
-  than re-checked separately in the plugin.
+- The built-in reviewer enforces this threshold at runtime and also injects it
+  into its system prompt.
 - The reviewer returns a structured result with at least these fields:
 
 ```json
 {
-  "approved": true,
   "risk_score": 23,
   "risk_level": "low",
   "reason": "..."
@@ -535,13 +534,10 @@ threshold and scoring rules work like this:
 ```
 
 - `risk_score` is the reviewer model's `0-100` risk score.
-- `approved` is the reviewer’s final approval decision.
-- For the built-in reviewer, the prompt explicitly requires `approved=true`
-  only when `risk_score` is **strictly less than** the configured threshold.
-  Otherwise it must return `approved=false`.
-- The plugin ultimately decides whether to execute the tool from `approved`.
-  `risk_score`, `risk_level`, and `reason` are primarily used for logs and
-  explanations.
+- The built-in reviewer derives `approved` at runtime from `risk_score`.
+- For the built-in reviewer, `approved=true` only when `risk_score` is
+  **strictly less than** the configured threshold.
+- `risk_level` and `reason` are primarily used for logs and explanations.
 
 The built-in reviewer also uses fixed scoring guidance in its prompt. The main
 principles are:

@@ -61,7 +61,6 @@ type guardianReviewer struct {
 }
 
 type decisionPayload struct {
-	Approved  bool   `json:"approved"`
 	RiskScore int    `json:"risk_score"`
 	RiskLevel string `json:"risk_level"`
 	Reason    string `json:"reason"`

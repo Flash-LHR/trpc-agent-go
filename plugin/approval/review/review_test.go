@@ -112,7 +112,7 @@ func TestReview_UsesSuppliersAndStructuredOutput(t *testing.T) {
 			ch := make(chan *event.Event, 1)
 			ch <- &event.Event{
 				Response:         &model.Response{},
-				StructuredOutput: &decisionPayload{Approved: true, RiskScore: 42, RiskLevel: "low", Reason: "Scoped and user-authorized."},
+				StructuredOutput: &decisionPayload{RiskScore: 42, RiskLevel: "low", Reason: "Scoped and user-authorized."},
 			}
 			close(ch)
 			return ch, nil
@@ -154,7 +154,7 @@ func TestReview_DefaultSuppliersUsePrefixedParentSessionIdentity(t *testing.T) {
 			ch := make(chan *event.Event, 1)
 			ch <- &event.Event{
 				Response:         &model.Response{},
-				StructuredOutput: &decisionPayload{Approved: false, RiskScore: 95, Reason: "Too risky."},
+				StructuredOutput: &decisionPayload{RiskScore: 95, Reason: "Too risky."},
 			}
 			close(ch)
 			return ch, nil
@@ -190,7 +190,7 @@ func TestReview_DefaultSuppliersGenerateIDsWithoutInvocationSession(t *testing.T
 			ch := make(chan *event.Event, 1)
 			ch <- &event.Event{
 				Response:         &model.Response{},
-				StructuredOutput: &decisionPayload{Approved: false, RiskScore: 95, Reason: "Too risky."},
+				StructuredOutput: &decisionPayload{RiskScore: 95, Reason: "Too risky."},
 			}
 			close(ch)
 			return ch, nil
@@ -207,7 +207,7 @@ func TestReview_DefaultSuppliersGenerateIDsWithoutInvocationSession(t *testing.T
 	assert.Equal(t, 95, decision.RiskScore)
 }
 
-func TestReview_RuntimeRiskThresholdOverridesApprovedPayload(t *testing.T) {
+func TestReview_RuntimeRiskThresholdDeniesHighScores(t *testing.T) {
 	fake := &fakeRunner{
 		runFn: func(
 			ctx context.Context,
@@ -219,7 +219,7 @@ func TestReview_RuntimeRiskThresholdOverridesApprovedPayload(t *testing.T) {
 			ch := make(chan *event.Event, 1)
 			ch <- &event.Event{
 				Response:         &model.Response{},
-				StructuredOutput: &decisionPayload{Approved: true, RiskScore: 90, RiskLevel: "high", Reason: "Too risky."},
+				StructuredOutput: &decisionPayload{RiskScore: 90, RiskLevel: "high", Reason: "Too risky."},
 			}
 			close(ch)
 			return ch, nil
@@ -250,7 +250,7 @@ func TestReview_OutOfRangeRiskScoreFails(t *testing.T) {
 			ch := make(chan *event.Event, 1)
 			ch <- &event.Event{
 				Response:         &model.Response{},
-				StructuredOutput: &decisionPayload{Approved: true, RiskScore: 101, RiskLevel: "high", Reason: "Invalid score."},
+				StructuredOutput: &decisionPayload{RiskScore: 101, RiskLevel: "high", Reason: "Invalid score."},
 			}
 			close(ch)
 			return ch, nil
@@ -427,12 +427,12 @@ func TestReview_MissingStructuredOutputFails(t *testing.T) {
 func TestCollectDecisionPayload_SupportsValuePayloadAndRejectsUnexpectedType(t *testing.T) {
 	valueCh := make(chan *event.Event, 2)
 	valueCh <- nil
-	valueCh <- &event.Event{StructuredOutput: decisionPayload{Approved: true, RiskScore: 12, RiskLevel: "low", Reason: "Allowed."}}
+	valueCh <- &event.Event{StructuredOutput: decisionPayload{RiskScore: 12, RiskLevel: "low", Reason: "Allowed."}}
 	close(valueCh)
 	payload, err := collectDecisionPayload(context.Background(), valueCh)
 	require.NoError(t, err)
 	require.NotNil(t, payload)
-	assert.True(t, payload.Approved)
+	assert.Equal(t, 12, payload.RiskScore)
 	unexpectedCh := make(chan *event.Event, 1)
 	unexpectedCh <- &event.Event{StructuredOutput: "bad"}
 	close(unexpectedCh)

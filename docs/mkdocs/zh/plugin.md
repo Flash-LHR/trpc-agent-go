@@ -547,7 +547,6 @@ defer runnerInstance.Close()
 
 ```json
 {
-  "approved": true,
   "risk_score": 23,
   "risk_level": "low",
   "reason": "..."
@@ -555,9 +554,9 @@ defer runnerInstance.Close()
 ```
 
 - `risk_score` 是 reviewer 模型给出的 `0-100` 风险分数。
-- `approved` 是 reviewer 的最终审批结论。
-- 对于内置 reviewer，prompt 会明确要求：只有当 `risk_score` **严格小于** 当前阈值时，才返回 `approved=true`；否则返回 `approved=false`。
-- 插件最终根据 `approved` 决定是否执行工具；`risk_score`、`risk_level` 和 `reason` 主要用于日志与解释。
+- 对于内置 reviewer，运行时会根据 `risk_score` 推导最终的 `approved` 结果。
+- 对于内置 reviewer，只有当 `risk_score` **严格小于** 当前阈值时，才会得到 `approved=true`。
+- `risk_level` 和 `reason` 主要用于日志与解释。
 
 内置 reviewer 的默认打分依据也是固定写在 prompt 里的，核心原则包括：
 
