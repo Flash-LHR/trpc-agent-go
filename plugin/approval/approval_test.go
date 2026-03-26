@@ -399,7 +399,7 @@ func TestBuildTranscript_UserOverflowReturnsOmissionOnly(t *testing.T) {
 		t,
 		events,
 	)
-	transcript := p.buildTranscript(invocation)
+	transcript := p.buildTranscript(context.Background(), invocation)
 	require.Len(t, transcript, 1)
 	assert.Equal(t, model.RoleAssistant, transcript[0].Role)
 	assert.Equal(t, omissionNote, transcript[0].Content)
@@ -437,7 +437,7 @@ func (errorTokenCounter) CountTokensRange(
 
 func TestCountTokens_ReturnsZeroOnCounterError(t *testing.T) {
 	p := &Plugin{tokenCounter: errorTokenCounter{}}
-	require.Equal(t, defaultMessageTranscriptBudget+1, p.countTokens(approvalreview.TranscriptEntry{
+	require.Equal(t, defaultMessageTranscriptBudget+1, p.countTokens(context.Background(), approvalreview.TranscriptEntry{
 		Role:    model.RoleUser,
 		Content: "hello",
 	}))
@@ -459,7 +459,7 @@ func TestBuildTranscript_TokenCounterErrorFailsClosed(t *testing.T) {
 			model.Message{Role: model.RoleAssistant, Content: "I will inspect it."},
 		),
 	})
-	transcript := p.buildTranscript(invocation)
+	transcript := p.buildTranscript(context.Background(), invocation)
 	require.Len(t, transcript, 1)
 	require.Equal(t, model.RoleAssistant, transcript[0].Role)
 	require.Equal(t, omissionNote, transcript[0].Content)

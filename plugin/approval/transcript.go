@@ -51,16 +51,16 @@ func (p *Plugin) buildRequest(ctx context.Context, args *tool.BeforeToolArgs) (*
 	if !ok || invocation == nil || invocation.Session == nil {
 		return req, nil
 	}
-	req.Transcript = p.buildTranscript(invocation)
+	req.Transcript = p.buildTranscript(ctx, invocation)
 	return req, nil
 }
 
-func (p *Plugin) buildTranscript(invocation *agent.Invocation) []review.TranscriptEntry {
+func (p *Plugin) buildTranscript(ctx context.Context, invocation *agent.Invocation) []review.TranscriptEntry {
 	rawEntries := p.collectTranscriptEntries(invocation)
 	if len(rawEntries) == 0 {
 		return nil
 	}
-	records := p.applyEntryCaps(rawEntries)
+	records := p.applyEntryCaps(ctx, rawEntries)
 	entries, omitted := p.selectTranscriptEntries(records)
 	if omitted {
 		entries = append([]review.TranscriptEntry{{
@@ -104,7 +104,7 @@ func (p *Plugin) collectTranscriptEntries(invocation *agent.Invocation) []transc
 	return entries
 }
 
-func (p *Plugin) applyEntryCaps(raw []transcriptRecord) []transcriptRecord {
+func (p *Plugin) applyEntryCaps(ctx context.Context, raw []transcriptRecord) []transcriptRecord {
 	records := make([]transcriptRecord, 0, len(raw))
 	for _, record := range raw {
 		capLimit := defaultMessageEntryCap
@@ -114,7 +114,7 @@ func (p *Plugin) applyEntryCaps(raw []transcriptRecord) []transcriptRecord {
 		content, truncated := truncateContent(record.entry.Content, capLimit)
 		record.entry.Content = content
 		record.truncated = truncated
-		record.tokens = p.countTokens(record.entry)
+		record.tokens = p.countTokens(ctx, record.entry)
 		records = append(records, record)
 	}
 	return records
@@ -186,8 +186,8 @@ func (p *Plugin) selectTranscriptEntries(records []transcriptRecord) ([]review.T
 	return entries, omitted
 }
 
-func (p *Plugin) countTokens(entry review.TranscriptEntry) int {
-	tokens, err := p.tokenCounter.CountTokens(context.Background(), model.Message{
+func (p *Plugin) countTokens(ctx context.Context, entry review.TranscriptEntry) int {
+	tokens, err := p.tokenCounter.CountTokens(ctx, model.Message{
 		Role:    entry.Role,
 		Content: entry.Content,
 	})

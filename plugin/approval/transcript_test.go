@@ -9,6 +9,7 @@
 package approval
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -68,5 +69,5 @@ func TestCompactJSON_InvalidJSONReturnsOriginal(t *testing.T) {
 func TestBuildTranscript_EmptyEventsReturnsNil(t *testing.T) {
 	p := &Plugin{tokenCounter: model.NewSimpleTokenCounter()}
 	invocation := invocationWithEvents(t, nil)
-	assert.Nil(t, p.buildTranscript(invocation))
+	assert.Nil(t, p.buildTranscript(context.Background(), invocation))
 }
