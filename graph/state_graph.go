@@ -35,6 +35,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/internal/jsonrepair"
 	stateinject "trpc.group/trpc-go/trpc-agent-go/internal/state"
 	istructure "trpc.group/trpc-go/trpc-agent-go/internal/structure"
+	"trpc.group/trpc-go/trpc-agent-go/internal/surfacepatch"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	itool "trpc.group/trpc-go/trpc-agent-go/internal/tool"
 	"trpc.group/trpc-go/trpc-agent-go/internal/toolcall"
@@ -1262,6 +1263,7 @@ func (r *llmRunner) executeOneShotStage(
 ) (any, error) {
 	instr := r.processInstruction(state)
 	used := ensureSystemHead(oneShotMsgs, instr)
+	used = r.insertFewShot(state, used)
 	result, err := r.executeModel(ctx, state, used, span, instr)
 	if err != nil {
 		return nil, err
@@ -1303,6 +1305,7 @@ func (r *llmRunner) executeUserInputStage(
 	}
 	instr := r.processInstruction(state)
 	used := ensureSystemHead(history, instr)
+	used = r.insertFewShot(state, used)
 	var ops []MessageOp
 	if len(used) > 0 && used[len(used)-1].Role == model.RoleUser {
 		if used[len(used)-1].Content != userInput {
@@ -1344,6 +1347,7 @@ func (r *llmRunner) executeHistoryStage(ctx context.Context, state State, span o
 	}
 	instr := r.processInstruction(state)
 	used := ensureSystemHead(history, instr)
+	used = r.insertFewShot(state, used)
 	result, err := r.executeModel(ctx, state, used, span, instr)
 	if err != nil {
 		return nil, err
@@ -1407,6 +1411,12 @@ func (r *llmRunner) executeModel(
 	if v, ok := state[StateKeyCurrentNodeID].(string); ok && v != "" {
 		nodeID = v
 	}
+	invocation := invocationFromContextOrDefault(ctx, nil)
+	if patch, ok := graphSurfacePatch(invocation, nodeID); ok {
+		if patchedTools, ok := patch.Tools(); ok {
+			tools = toolSliceToMap(patchedTools)
+		}
+	}
 	request := &model.Request{
 		Messages:         messages,
 		Tools:            tools,
@@ -1414,7 +1424,6 @@ func (r *llmRunner) executeModel(
 	}
 	// Sanitize invalid tool calls in history to avoid poisoning future requests.
 	request.Messages = toolcall.SanitizeMessagesWithTools(request.Messages, request.Tools)
-	invocation := invocationFromContextOrDefault(ctx, nil)
 	applyInvocationRequestOverrides(request, invocation, nodeID)
 	invocationID, sessionID, appName, userID, eventChan := extractExecutionContext(state)
 	modelCallbacks, _ := state[StateKeyModelCallbacks].(*model.Callbacks)
@@ -1440,7 +1449,7 @@ func (r *llmRunner) executeModel(
 	ctx, invocation, result, err := executeModelAndProcessResponsesWithContext(ctx, modelExecutionConfig{
 		Invocation:     invocation,
 		ModelCallbacks: modelCallbacks,
-		LLMModel:       r.llmModel,
+		LLMModel:       graphPatchedModel(invocation, nodeID, r.llmModel),
 		Request:        request,
 		EventChan:      eventChan,
 		InvocationID:   invocationID,
@@ -1522,16 +1531,17 @@ func (r *llmRunner) executeModel(
 // stored on the current invocation.
 func (r *llmRunner) processInstruction(state State) string {
 	instr := r.instruction
+	if invocation := graphInvocationFromState(state); invocation != nil {
+		if patch, ok := graphSurfacePatch(invocation, r.currentNodeID(state)); ok {
+			if patchedInstruction, ok := patch.Instruction(); ok {
+				instr = patchedInstruction
+			}
+		}
+	}
 	if instr == "" {
 		return instr
 	}
-
-	var invocation *agent.Invocation
-	if execVal, ok := state[StateKeyExecContext]; ok {
-		if execCtx, ok := execVal.(*ExecutionContext); ok && execCtx != nil {
-			invocation = execCtx.Invocation
-		}
-	}
+	invocation := graphInvocationFromState(state)
 
 	var sess *session.Session
 	if sessVal, ok := state[StateKeySession]; ok {
@@ -2154,6 +2164,17 @@ func newToolsNodeRuntime(
 				baseTools,
 				node.toolSets,
 			)
+		}
+		if invocation, ok := agent.InvocationFromContext(ctx); ok {
+			localNodeID := node.ID
+			if currentNodeID, ok := GetStateValue[string](state, StateKeyCurrentNodeID); ok && currentNodeID != "" {
+				localNodeID = currentNodeID
+			}
+			if patch, ok := graphSurfacePatch(invocation, localNodeID); ok {
+				if patchedTools, ok := patch.Tools(); ok {
+					effectiveTools = toolSliceToMap(patchedTools)
+				}
+			}
 		}
 
 		// Determine which callbacks to use: node-configured takes precedence over state.
@@ -3364,6 +3385,12 @@ func buildAgentInvocationWithStateScopeAndInputKey(
 			runOptions.CustomAgentConfigs,
 			nodeID,
 		)
+		if surfaceRootNodeID := buildAgentNodeSurfaceRoot(parentInvocation, nodeID, targetAgent); surfaceRootNodeID != "" {
+			runOptions.CustomAgentConfigs = surfacepatch.WithRootNodeID(
+				runOptions.CustomAgentConfigs,
+				surfaceRootNodeID,
+			)
+		}
 
 		base := util.If(scope != "", scope, targetAgent.Info().Name)
 		parentKey := parentInvocation.GetEventFilterKey()
@@ -3436,11 +3463,29 @@ func buildAgentInvocationWithStateAndScope(
 	)
 }
 
-func buildAgentNodeTraceNodeID(parentInvocation *agent.Invocation, nodeID string) string {
+func buildAgentNodeTraceNodeID(
+	parentInvocation *agent.Invocation,
+	nodeID string,
+) string {
 	if parentInvocation == nil || nodeID == "" {
 		return ""
 	}
-	return istructure.JoinNodeID(agent.InvocationTraceNodeID(parentInvocation), nodeID)
+	return istructure.JoinNodeID(
+		agent.InvocationTraceNodeID(parentInvocation),
+		nodeID,
+	)
+}
+
+func buildAgentNodeSurfaceRoot(
+	parentInvocation *agent.Invocation,
+	nodeID string,
+	targetAgent agent.Agent,
+) string {
+	traceNodeID := buildAgentNodeTraceNodeID(parentInvocation, nodeID)
+	if targetAgent == nil || targetAgent.Info().Name == "" {
+		return traceNodeID
+	}
+	return istructure.JoinNodeID(traceNodeID, targetAgent.Info().Name)
 }
 
 const (

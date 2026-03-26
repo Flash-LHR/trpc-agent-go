@@ -19,6 +19,8 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	istructure "trpc.group/trpc-go/trpc-agent-go/internal/structure"
+	"trpc.group/trpc-go/trpc-agent-go/internal/surfacepatch"
+	"trpc.group/trpc-go/trpc-agent-go/internal/teamtrace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
 	agenttool "trpc.group/trpc-go/trpc-agent-go/tool/agent"
@@ -198,7 +200,29 @@ func (t *Team) runCoordinator(
 	if t.coordinator == nil {
 		return nil, errors.New("coordinator is nil")
 	}
-	return t.coordinator.Run(ctx, invocation)
+	rootNodeID := teamtrace.RootNodeID(invocation, t.name)
+	originalRunOptions := invocation.RunOptions
+	runOptions := invocation.RunOptions
+	runOptions.CustomAgentConfigs = teamtrace.WithMemberTraceRoot(
+		runOptions.CustomAgentConfigs,
+		rootNodeID,
+	)
+	runOptions.CustomAgentConfigs = surfacepatch.WithRootNodeID(
+		runOptions.CustomAgentConfigs,
+		teamtrace.CoordinatorNodeID(rootNodeID),
+	)
+	invocation.RunOptions = runOptions
+	coordinatorCtx := agent.NewInvocationContext(ctx, invocation)
+	eventCh, err := t.coordinator.Run(coordinatorCtx, invocation)
+	if err != nil {
+		invocation.RunOptions = originalRunOptions
+		return nil, err
+	}
+	return restoreCoordinatorInvocation(
+		eventCh,
+		invocation,
+		originalRunOptions,
+	), nil
 }
 
 func (t *Team) runSwarm(
@@ -210,7 +234,7 @@ func (t *Team) runSwarm(
 	if t.crossRequestTransfer && invocation.Session != nil {
 		invocation.Session.SetState(SwarmTeamNameKey, []byte(t.name))
 		if invocation.RunOptions.ExecutionTraceEnabled {
-			traceNodeID := agent.InvocationTraceNodeID(invocation)
+			traceNodeID := teamtrace.RootNodeID(invocation, t.name)
 			if traceNodeID != "" {
 				invocation.Session.SetState(swarmTraceNodeIDKey, []byte(traceNodeID))
 			}
@@ -236,7 +260,8 @@ func (t *Team) runSwarm(
 	}
 
 	ensureSwarmRuntime(invocation, t.swarm)
-	memberPathAllocator := istructure.NewPathAllocator(agent.InvocationTraceNodeID(invocation))
+	rootNodeID := teamtrace.RootNodeID(invocation, t.name)
+	memberPathAllocator := istructure.NewPathAllocator(rootNodeID)
 	var memberNodeID string
 	startAgentName := startAgent.Info().Name
 	t.mu.RLock()
@@ -249,7 +274,7 @@ func (t *Team) runSwarm(
 	}
 	t.mu.RUnlock()
 	if memberNodeID == "" {
-		memberNodeID = istructure.JoinNodeID(agent.InvocationTraceNodeID(invocation), startAgent.Info().Name)
+		memberNodeID = teamtrace.MemberNodeID(rootNodeID, startAgent.Info().Name)
 	}
 	child := invocation.Clone(
 		agent.WithInvocationAgent(startAgent),
@@ -448,4 +473,25 @@ func swarmActiveAgentKey(teamName string) string {
 		return SwarmActiveAgentKeyPrefix
 	}
 	return SwarmActiveAgentKeyPrefix + teamName
+}
+
+func restoreCoordinatorInvocation(
+	src <-chan *event.Event,
+	invocation *agent.Invocation,
+	originalRunOptions agent.RunOptions,
+) <-chan *event.Event {
+	if src == nil || invocation == nil {
+		return src
+	}
+	out := make(chan *event.Event)
+	go func() {
+		defer close(out)
+		defer func() {
+			invocation.RunOptions = originalRunOptions
+		}()
+		for evt := range src {
+			out <- evt
+		}
+	}()
+	return out
 }

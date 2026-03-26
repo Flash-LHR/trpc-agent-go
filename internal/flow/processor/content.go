@@ -27,6 +27,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/internal/fileref"
+	iflow "trpc.group/trpc-go/trpc-agent-go/internal/flow"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -120,6 +121,7 @@ type ContentRequestProcessor struct {
 	// SummaryFormatter allows custom formatting of session summary content.
 	// When nil (default), uses the default formatSummaryContent function.
 	SummaryFormatter func(summary string) string
+	fewShotResolver  func(*agent.Invocation) [][]model.Message
 }
 
 // ContentOption is a functional option for configuring the ContentRequestProcessor.
@@ -215,6 +217,15 @@ func WithPreloadMemory(limit int) ContentOption {
 func WithSummaryFormatter(formatter func(summary string) string) ContentOption {
 	return func(p *ContentRequestProcessor) {
 		p.SummaryFormatter = formatter
+	}
+}
+
+// WithFewShotResolver sets an invocation-aware few-shot resolver.
+func WithFewShotResolver(
+	resolver func(*agent.Invocation) [][]model.Message,
+) ContentOption {
+	return func(p *ContentRequestProcessor) {
+		p.fewShotResolver = resolver
 	}
 }
 
@@ -322,6 +333,7 @@ func (p *ContentRequestProcessor) ProcessRequest(
 			invocation.SetState(contentHasSessionSummaryStateKey, true)
 			p.injectSystemContextMessage(req, *summaryMsg)
 		}
+		p.injectFewShotMessages(invocation, req)
 
 		if skipHistory {
 			// When include_contents=none, only get events from current invocation
@@ -344,6 +356,9 @@ func (p *ContentRequestProcessor) ProcessRequest(
 		req.Messages = append(req.Messages, messages...)
 		needToAddInvocationMessage = len(messages) == 0
 	}
+	if invocation.Session == nil {
+		p.injectFewShotMessages(invocation, req)
+	}
 
 	if model.HasPayload(invocation.Message) && needToAddInvocationMessage {
 		msg := annotateUserMessageWithAttachedFiles(invocation.Message)
@@ -362,6 +377,23 @@ func (p *ContentRequestProcessor) ProcessRequest(
 		invocation.AgentName,
 		event.WithObject(model.ObjectTypePreprocessingContent),
 	))
+}
+
+func (p *ContentRequestProcessor) injectFewShotMessages(
+	invocation *agent.Invocation,
+	req *model.Request,
+) {
+	if p == nil || req == nil || p.fewShotResolver == nil {
+		return
+	}
+	examples := p.fewShotResolver(invocation)
+	if len(examples) == 0 {
+		return
+	}
+	req.Messages = iflow.InsertFewShotMessages(
+		req.Messages,
+		examples,
+	)
 }
 
 // injectSystemContextMessage injects summary or memory context into request.

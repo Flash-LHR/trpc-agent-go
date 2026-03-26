@@ -32,6 +32,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/internal/surfacepatch"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/plugin"
@@ -3224,6 +3225,14 @@ func TestBuildAgentInvocationWithStateAndScope_PropagatesExecutionTraceMetadata(
 		"",
 	)
 	require.Equal(t, "parent/delegate", agent.InvocationTraceNodeID(inv))
+	require.Equal(
+		t,
+		"parent/delegate/child",
+		surfacepatch.RootNodeID(
+			inv.RunOptions.CustomAgentConfigs,
+			agent.InvocationTraceNodeID(inv),
+		),
+	)
 	require.Equal(t, []string{rootStepID}, agent.NextExecutionTracePredecessors(inv))
 }
 

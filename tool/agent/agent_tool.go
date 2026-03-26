@@ -22,6 +22,8 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/flush"
+	"trpc.group/trpc-go/trpc-agent-go/internal/surfacepatch"
+	"trpc.group/trpc-go/trpc-agent-go/internal/teamtrace"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
@@ -211,11 +213,23 @@ func (at *Tool) callWithParentInvocation(
 	// Build child filter key based on history scope.
 	childKey := at.buildChildFilterKey(parentInv)
 	// Clone parent invocation with child-specific settings.
-	subInv := parentInv.Clone(
+	invocationOpts := []agent.InvocationOptions{
 		agent.WithInvocationAgent(at.agent),
 		agent.WithInvocationMessage(message),
 		agent.WithInvocationEventFilterKey(childKey),
-	)
+	}
+	if surfaceRootNodeID := at.surfaceRootNodeIDForParentInvocation(parentInv); surfaceRootNodeID != "" {
+		runOptions := parentInv.RunOptions
+		runOptions.CustomAgentConfigs = surfacepatch.WithRootNodeID(
+			runOptions.CustomAgentConfigs,
+			surfaceRootNodeID,
+		)
+		invocationOpts = append(
+			invocationOpts,
+			agent.WithInvocationRunOptions(runOptions),
+		)
+	}
+	subInv := parentInv.Clone(invocationOpts...)
 
 	// Run the agent and collect response.
 	subCtx := agent.NewInvocationContext(ctx, subInv)
@@ -224,6 +238,19 @@ func (at *Tool) callWithParentInvocation(
 		return "", fmt.Errorf("failed to run agent: %w", err)
 	}
 	return at.collectResponse(subInv, at.wrapWithCallSemantics(subCtx, subInv, evCh))
+}
+
+func (at *Tool) surfaceRootNodeIDForParentInvocation(
+	parentInv *agent.Invocation,
+) string {
+	if parentInv == nil || at.agent == nil {
+		return ""
+	}
+	rootNodeID := teamtrace.MemberTraceRoot(parentInv.RunOptions.CustomAgentConfigs)
+	if rootNodeID == "" {
+		return ""
+	}
+	return teamtrace.MemberNodeID(rootNodeID, at.agent.Info().Name)
 }
 
 // wrapWithCompletion consumes events, notifies completion when required, and forwards to a new channel.
