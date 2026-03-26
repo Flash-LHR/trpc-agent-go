@@ -1,11 +1,12 @@
-# Approval Plugin Example
+# Guardrail Tool Approval Example
 
-This example shows how to wire the `approval` runner plugin to a real application runner and a separate real reviewer runner. It uses the built-in `hostexec` tool set and a real LLM-backed reviewer instead of mocks.
+This example shows how to wire the top-level `guardrail` plugin with the built-in `approval` capability to a real application runner and a separate real reviewer runner. It uses the built-in `hostexec` tool set and a real LLM-backed reviewer instead of mocks.
 
 ## What this example demonstrates
 
 - Create a dedicated reviewer runner and adapt it with `review.New(...)`
-- Attach the approval plugin once with `runner.WithPlugins(...)`
+- Build a tool approval capability with `approval.New(...)`
+- Attach the top-level guardrail plugin once with `runner.WithPlugins(...)`
 - Apply different tool policies:
   - `hostexec_exec_command` requires approval review
   - `hostexec_write_stdin` skips approval
@@ -35,7 +36,7 @@ This example shows how to wire the `approval` runner plugin to a real applicatio
 ## Usage
 
 ```bash
-cd examples/approval
+cd examples/guardrail/approval
 export OPENAI_API_KEY="your-api-key"
 go run .
 ```

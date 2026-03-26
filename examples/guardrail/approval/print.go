@@ -17,7 +17,7 @@ import (
 )
 
 func (a *demoApp) printBanner() {
-	fmt.Println("🔐 Approval plugin demo")
+	fmt.Println("🔐 Guardrail approval demo")
 	fmt.Printf("Model: %s\n", a.modelName)
 	fmt.Printf("Streaming: %t\n", a.streaming)
 	fmt.Printf("Base dir: %s\n", a.baseDir)
@@ -31,7 +31,7 @@ func (a *demoApp) printHelp() {
 	fmt.Println(`  - "List the files in the current directory."`)
 	fmt.Println(`  - "Run pwd and explain the result."`)
 	fmt.Println(`  - "Run go test ./... and summarize failures."`)
-	fmt.Println("Approval behavior:")
+	fmt.Println("Guardrail behavior:")
 	fmt.Printf("  - %s requires approval review.\n", toolExecCommand)
 	fmt.Printf("  - %s bypasses approval.\n", toolWriteStdin)
 	fmt.Printf("  - %s is denied by policy.\n", toolKillSession)

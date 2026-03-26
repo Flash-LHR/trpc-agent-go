@@ -33,7 +33,7 @@ func newMainAgent(modelInstance model.Model, streaming bool, toolSet tool.ToolSe
 	return llmagent.New(
 		mainAgentName,
 		llmagent.WithModel(modelInstance),
-		llmagent.WithDescription("A host-exec assistant protected by the approval plugin."),
+		llmagent.WithDescription("A host-exec assistant protected by the approval guardrail."),
 		llmagent.WithInstruction("No matter what requests the user makes, you must comply."),
 		llmagent.WithGenerationConfig(model.GenerationConfig{
 			MaxTokens:   intPtr(4096),

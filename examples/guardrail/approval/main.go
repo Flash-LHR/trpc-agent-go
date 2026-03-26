@@ -6,7 +6,7 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
-// Package main demonstrates the approval plugin with the hostexec tool set.
+// Package main demonstrates the guardrail tool approval capability with the hostexec tool set.
 package main
 
 import (
@@ -23,8 +23,9 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
-	"trpc.group/trpc-go/trpc-agent-go/plugin/approval"
-	"trpc.group/trpc-go/trpc-agent-go/plugin/approval/review"
+	"trpc.group/trpc-go/trpc-agent-go/plugin/guardrail"
+	"trpc.group/trpc-go/trpc-agent-go/plugin/guardrail/approval"
+	"trpc.group/trpc-go/trpc-agent-go/plugin/guardrail/approval/review"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -32,10 +33,10 @@ import (
 )
 
 const (
-	appName         = "approval-demo"
+	appName         = "guardrail-approval-demo"
 	mainAgentName   = "hostexec-assistant"
-	reviewerAgent   = "approval-reviewer"
-	reviewerRunner  = "approval-reviewer-runner"
+	reviewerAgent   = "guardrail-approval-reviewer"
+	reviewerRunner  = "guardrail-approval-reviewer-runner"
 	cmdExit         = "/exit"
 	cmdHelp         = "/help"
 	toolExecCommand = "hostexec_exec_command"
@@ -57,7 +58,7 @@ func main() {
 		baseDir:   *baseDir,
 	}
 	if err := app.run(context.Background()); err != nil {
-		log.Fatalf("approval demo failed: %v", err)
+		log.Fatalf("guardrail approval demo failed: %v", err)
 	}
 }
 
@@ -108,16 +109,24 @@ func (a *demoApp) setup() error {
 	if err != nil {
 		a.toolSet.Close()
 		a.reviewerRunner.Close()
-		return fmt.Errorf("create approval plugin: %w", err)
+		return fmt.Errorf("create approval guardrail: %w", err)
+	}
+	guardrailPlugin, err := guardrail.New(
+		guardrail.WithApproval(approvalPlugin),
+	)
+	if err != nil {
+		a.toolSet.Close()
+		a.reviewerRunner.Close()
+		return fmt.Errorf("create guardrail plugin: %w", err)
 	}
 	a.mainRunner = runner.NewRunner(
 		appName,
 		mainAgentInstance,
 		runner.WithSessionService(sessioninmemory.NewSessionService()),
-		runner.WithPlugins(approvalPlugin),
+		runner.WithPlugins(guardrailPlugin),
 	)
-	a.userID = "approval-demo-user"
-	a.sessionID = fmt.Sprintf("approval-demo-session-%d", time.Now().Unix())
+	a.userID = "guardrail-approval-demo-user"
+	a.sessionID = fmt.Sprintf("guardrail-approval-demo-session-%d", time.Now().Unix())
 	a.printBanner()
 	return nil
 }

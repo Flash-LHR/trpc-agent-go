@@ -447,9 +447,13 @@ operations. It is useful for debugging and performance profiling.
 request. This is useful for organization-wide policies or shared behavior that
 should apply to all agents managed by a Runner.
 
-### Tool Approval
+### Guardrail
 
-`approval.New(reviewer, opts...)` is a tool approval plugin. It intercepts
+`guardrail.New(...)` from `plugin/guardrail` is the top-level plugin that wires one or more guardrail capabilities into the runner.
+
+#### Approval
+
+`approval.New(reviewer, opts...)` from `plugin/guardrail/approval` builds the built-in tool approval capability. This capability intercepts
 `BeforeTool` and decides whether a tool call should:
 
 - run immediately
@@ -462,9 +466,9 @@ A typical setup looks like this:
 modelInstance := openai.New("gpt-5.4")
 
 reviewerRunner := runner.NewRunner(
-	"approval-reviewer-runner",
+	"guardrail-approval-reviewer-runner",
 	llmagent.New(
-		"approval-reviewer",
+		"guardrail-approval-reviewer",
 		llmagent.WithModel(modelInstance),
 	),
 )
@@ -492,10 +496,17 @@ if err != nil {
 	return err
 }
 
+guardrailPlugin, err := guardrail.New(
+	guardrail.WithApproval(approvalPlugin),
+)
+if err != nil {
+	return err
+}
+
 runnerInstance := runner.NewRunner(
-	"approval-demo",
+	"guardrail-approval-demo",
 	agentInstance,
-	runner.WithPlugins(approvalPlugin),
+	runner.WithPlugins(guardrailPlugin),
 )
 defer runnerInstance.Close()
 ```
@@ -562,7 +573,7 @@ If the reviewer fails or does not return a valid decision, the plugin behaves
 fail-closed: it does not execute the tool and instead returns a failure result
 to the main flow.
 
-For a complete runnable example, see `examples/approval`. It uses the real
+For a complete runnable example, see `examples/guardrail/approval`. It uses the real
 `hostexec` tool set and a separate reviewer runner, and covers four typical
 paths:
 
@@ -572,10 +583,11 @@ paths:
 - Approval denied: `hostexec_exec_command -> cat ~/.ssh/id_rsa`
 
 See the full example at
-[examples/approval](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/approval).
+[examples/guardrail/approval](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/guardrail/approval).
 
-The repository currently includes Logging, GlobalInstruction, and Approval as
-built-in plugins. Additional plugins can be implemented as custom plugins.
+The repository currently includes Logging, GlobalInstruction, and Guardrail as
+built-in plugins. Tool Approval is currently the built-in capability under the
+Guardrail plugin. Additional plugins can be implemented as custom plugins.
 
 ## Writing Your Own Plugin
 
