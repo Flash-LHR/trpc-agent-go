@@ -416,6 +416,28 @@ type SubgraphInputMapper func(parent State) State
 // this reads clearer and is equivalent to applying an empty update.
 type SubgraphOutputMapper func(parent State, result SubgraphResult) State
 
+// SubgraphMessageSource controls who assembles an AgentNode child invocation's
+// message history.
+type SubgraphMessageSource string
+
+const (
+	// SubgraphMessageSourceAuto lets the graph choose a default strategy.
+	SubgraphMessageSourceAuto SubgraphMessageSource = "auto"
+	// SubgraphMessageSourceGraphSnapshot uses StateKeyMessages already present
+	// in the child runtime state as the conversation snapshot for the child.
+	SubgraphMessageSourceGraphSnapshot SubgraphMessageSource = "graph_snapshot"
+	// SubgraphMessageSourceLLMAgentDefault leaves history assembly to the child
+	// LLMAgent's default session/history logic.
+	SubgraphMessageSourceLLMAgentDefault SubgraphMessageSource = "llmagent_default"
+	// SubgraphMessageSourceNone suppresses session-history seeding and relies on
+	// only the child invocation's current-turn input.
+	SubgraphMessageSourceNone SubgraphMessageSource = "none"
+	// SubgraphMessageSourceLastResponse suppresses session-history seeding and
+	// maps the parent's last_response to the child invocation's current-turn
+	// user input.
+	SubgraphMessageSourceLastResponse SubgraphMessageSource = "last_response"
+)
+
 // WithSubgraphInputMapper sets a mapper used to build the child runtime state.
 func WithSubgraphInputMapper(f SubgraphInputMapper) Option {
 	return func(node *Node) {
@@ -427,6 +449,14 @@ func WithSubgraphInputMapper(f SubgraphInputMapper) Option {
 func WithSubgraphOutputMapper(f SubgraphOutputMapper) Option {
 	return func(node *Node) {
 		node.agentOutputMapper = f
+	}
+}
+
+// WithSubgraphMessageSource sets how an AgentNode child invocation should
+// assemble messages.
+func WithSubgraphMessageSource(source SubgraphMessageSource) Option {
+	return func(node *Node) {
+		node.agentMessageSource = source
 	}
 }
 
@@ -2403,6 +2433,7 @@ type agentNodeConfig struct {
 	outputMapper        SubgraphOutputMapper
 	isolated            bool
 	scope               string
+	messageSource       SubgraphMessageSource
 	inputFromLast       bool
 	llmGenerationConfig *model.GenerationConfig
 	userInputKey        string
@@ -2420,6 +2451,7 @@ func agentNodeConfigFromOptions(opts ...Option) agentNodeConfig {
 		outputMapper:        dummyNode.agentOutputMapper,
 		isolated:            dummyNode.agentIsolatedMessages,
 		scope:               dummyNode.agentEventScope,
+		messageSource:       dummyNode.agentMessageSource,
 		inputFromLast:       dummyNode.agentInputFromLastResponse,
 		llmGenerationConfig: dummyNode.llmGenerationConfig,
 		userInputKey:        dummyNode.userInputKey,
@@ -2468,6 +2500,52 @@ func applyIsolatedMessages(child State, isolated bool) {
 		return
 	}
 	child[CfgKeyIncludeContents] = includeContentsNone
+}
+
+func resolveSubgraphMessageSource(
+	child State,
+	source SubgraphMessageSource,
+) SubgraphMessageSource {
+	switch source {
+	case "", SubgraphMessageSourceAuto:
+		if hasGraphSnapshotMessages(child) {
+			return SubgraphMessageSourceGraphSnapshot
+		}
+		return SubgraphMessageSourceLLMAgentDefault
+	case SubgraphMessageSourceGraphSnapshot,
+		SubgraphMessageSourceLLMAgentDefault,
+		SubgraphMessageSourceNone,
+		SubgraphMessageSourceLastResponse:
+		return source
+	default:
+		if hasGraphSnapshotMessages(child) {
+			return SubgraphMessageSourceGraphSnapshot
+		}
+		return SubgraphMessageSourceLLMAgentDefault
+	}
+}
+
+func hasGraphSnapshotMessages(state State) bool {
+	msgs, ok := state[StateKeyMessages].([]model.Message)
+	return ok && len(msgs) > 0
+}
+
+func applySubgraphMessageSource(
+	child State,
+	source SubgraphMessageSource,
+	explicit bool,
+) {
+	if child == nil {
+		return
+	}
+	switch source {
+	case SubgraphMessageSourceGraphSnapshot,
+		SubgraphMessageSourceNone,
+		SubgraphMessageSourceLastResponse:
+		child[CfgKeyIncludeContents] = includeContentsNone
+	}
+	child[CfgKeySubgraphMessageSource] = string(source)
+	child[CfgKeySubgraphMessageSourceExplicit] = explicit
 }
 
 func applyCheckpointResumeFields(child State, info subgraphInterruptInfo) {
@@ -2536,7 +2614,7 @@ func buildChildStateForAgentNode(
 	nodeID string,
 	targetAgent agent.Agent,
 	cfg agentNodeConfig,
-) State {
+) (State, SubgraphMessageSource) {
 	childState := initialChildStateForAgentNode(parent, cfg.inputMapper)
 	delete(childState, StateKeySubgraphInterrupt)
 	if cfg.inputMapper == nil {
@@ -2544,7 +2622,13 @@ func buildChildStateForAgentNode(
 	}
 	applyIsolatedMessages(childState, cfg.isolated)
 	applySubgraphResumeForAgentNode(parent, childState, nodeID)
-	return childState
+	source := resolveSubgraphMessageSource(childState, cfg.messageSource)
+	applySubgraphMessageSource(
+		childState,
+		source,
+		cfg.messageSource == SubgraphMessageSourceGraphSnapshot,
+	)
+	return childState, source
 }
 
 func mapParentInputFromLastResponse(
@@ -2653,12 +2737,12 @@ func NewAgentNodeFunc(agentName string, opts ...Option) NodeFunc {
 			return nil, err
 		}
 
-		childState := buildChildStateForAgentNode(state, nodeID, targetAgent, cfg)
+		childState, messageSource := buildChildStateForAgentNode(state, nodeID, targetAgent, cfg)
 
 		// Optionally map parent's last_response to user_input for this agent node.
 		parentForInput := mapParentInputFromLastResponse(
 			state,
-			cfg.inputFromLast,
+			cfg.inputFromLast || messageSource == SubgraphMessageSourceLastResponse,
 			cfg.userInputKey,
 		)
 
@@ -2671,6 +2755,7 @@ func NewAgentNodeFunc(agentName string, opts ...Option) NodeFunc {
 			nodeID,
 			cfg.scope,
 			cfg.userInputKey,
+			messageSource,
 		)
 
 		// Emit agent execution start event.
@@ -3354,15 +3439,19 @@ func buildAgentInvocationWithStateScopeAndInputKey(
 	nodeID string,
 	scope string,
 	userInputKey string,
+	messageSource SubgraphMessageSource,
 ) *agent.Invocation {
 	// Extract user input from parent state.
 	var userInput string
 	if userInputKey == "" {
 		userInputKey = StateKeyUserInput
 	}
-	if input, exists := parentState[userInputKey]; exists {
-		if inputStr, ok := input.(string); ok {
-			userInput = inputStr
+	if !(messageSource == SubgraphMessageSourceGraphSnapshot &&
+		hasGraphSnapshotMessages(runtime)) {
+		if input, exists := parentState[userInputKey]; exists {
+			if inputStr, ok := input.(string); ok {
+				userInput = inputStr
+			}
 		}
 	}
 	// Extract session from parent state.
@@ -3460,6 +3549,7 @@ func buildAgentInvocationWithStateAndScope(
 		nodeID,
 		scope,
 		StateKeyUserInput,
+		SubgraphMessageSourceLLMAgentDefault,
 	)
 }
 
