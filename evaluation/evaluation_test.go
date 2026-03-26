@@ -433,6 +433,20 @@ func TestNewAgentEvaluatorWithParallelOptionsBuildsLocalService(t *testing.T) {
 	assert.NoError(t, ae.Close())
 }
 
+func TestNewAgentEvaluatorWithExpectedRunnerBuildsLocalService(t *testing.T) {
+	ae, err := New(
+		"app",
+		stubRunner{},
+		WithExpectedRunner(stubRunner{}),
+	)
+	assert.NoError(t, err)
+	if err != nil {
+		return
+	}
+
+	assert.NoError(t, ae.Close())
+}
+
 type optionProbeService struct {
 	lastInferenceOptions *service.Options
 	lastEvaluateOptions  *service.Options
@@ -906,6 +920,27 @@ func TestAgentEvaluatorCollectCaseResultsGetEvalSetError(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
+func TestAgentEvaluatorCollectCaseResultsRunEvaluationError(t *testing.T) {
+	ctx := context.Background()
+	appName := "app"
+	evalSetID := "set"
+	evalSetMgr := evalsetinmemory.New()
+	_, err := evalSetMgr.Create(ctx, appName, evalSetID)
+	assert.NoError(t, err)
+	ae := &agentEvaluator{
+		appName:           appName,
+		evalSetManager:    evalSetMgr,
+		evalService:       &fakeService{inferenceErr: errors.New("inference failed")},
+		metricManager:     &fakeMetricManager{metrics: map[string]*metric.EvalMetric{}},
+		evalResultManager: evalresultinmemory.New(),
+		numRuns:           1,
+	}
+	_, _, err = ae.collectCaseResults(ctx, evalSetID, defaultTestOptions(ae))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "run evaluation")
+	assert.Contains(t, err.Error(), "inference failed")
+}
+
 func TestAgentEvaluatorCollectCaseResultsSortByEvalSetOrder(t *testing.T) {
 	ctx := context.Background()
 	appName := "app"
@@ -1226,6 +1261,30 @@ func TestAgentEvaluatorEvaluateInferenceError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestAgentEvaluatorEvaluateWrapsCollectCaseResultsError(t *testing.T) {
+	ctx := context.Background()
+	appName := "app"
+	evalSetID := "set"
+	evalSetMgr := evalsetinmemory.New()
+	_, err := evalSetMgr.Create(ctx, appName, evalSetID)
+	assert.NoError(t, err)
+	ae := &agentEvaluator{
+		appName:           appName,
+		runner:            stubRunner{},
+		evalSetManager:    evalSetMgr,
+		evalService:       &fakeService{inferenceErr: errors.New("inference failed")},
+		metricManager:     metricinmemory.New(),
+		evalResultManager: evalresultinmemory.New(),
+		registry:          registry.New(),
+		metricRegistry:    metricregistry.New(),
+		numRuns:           1,
+	}
+	_, err = ae.Evaluate(ctx, evalSetID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "collect eval case results")
+	assert.Contains(t, err.Error(), "inference failed")
+}
+
 func TestAgentEvaluatorEvaluateEmptyEvalSetID(t *testing.T) {
 	ctx := context.Background()
 	ae := &agentEvaluator{}
@@ -1294,6 +1353,23 @@ func TestAgentEvaluatorRunEvaluationErrors(t *testing.T) {
 			assert.Error(t, err)
 		})
 	}
+}
+
+func TestAgentEvaluatorRunEvaluationInParallelReturnsRunError(t *testing.T) {
+	ctx := context.Background()
+	appName := "app"
+	evalSetID := "set"
+	ae := &agentEvaluator{
+		appName:                appName,
+		evalService:            &fakeService{inferenceErr: errors.New("inference failed")},
+		metricManager:          &fakeMetricManager{metrics: map[string]*metric.EvalMetric{}},
+		evalResultManager:      evalresultinmemory.New(),
+		numRuns:                2,
+		numRunsParallelEnabled: boolPtr(true),
+	}
+	_, err := ae.runEvaluation(ctx, evalSetID, defaultTestOptions(ae))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "inference failed")
 }
 
 func TestAgentEvaluatorRunEvaluationInjectsJudgeRunnerIntoLLMJudgeMetrics(t *testing.T) {
@@ -1814,6 +1890,42 @@ func TestAggregateCaseRunsHardFailureWithoutMetrics(t *testing.T) {
 	assert.Equal(t, status.EvalStatusFailed, result.OverallStatus)
 	assert.Empty(t, result.MetricResults)
 	assert.Len(t, result.EvalCaseResults, 1)
+}
+
+func TestCollectRunDetailsReturnsNilForMissingData(t *testing.T) {
+	assert.Nil(t, collectRunDetails(nil, nil))
+	runs := []*evalresult.EvalCaseResult{
+		nil,
+		{RunID: 2},
+	}
+	assert.Nil(t, collectRunDetails(runs, map[int]*EvaluationCaseRunDetails{
+		1: {RunID: 1},
+	}))
+}
+
+func TestNewEvaluationInferenceDetailsNil(t *testing.T) {
+	assert.Nil(t, newEvaluationInferenceDetails(nil))
+}
+
+func TestRunDetailsCollectorAddIgnoresNilAndEmptyInputs(t *testing.T) {
+	var collector *runDetailsCollector
+	collector.add(1, []*service.InferenceResult{{EvalCaseID: "case"}})
+
+	collector = newRunDetailsCollector()
+	collector.add(1, []*service.InferenceResult{
+		nil,
+		{EvalCaseID: ""},
+	})
+	assert.Empty(t, collector.byCaseID)
+}
+
+func TestRunDetailsCollectorCaseRunDetailsHandlesNilAndMissingCases(t *testing.T) {
+	var collector *runDetailsCollector
+	assert.Nil(t, collector.caseRunDetails("case"))
+
+	collector = newRunDetailsCollector()
+	assert.Nil(t, collector.caseRunDetails(""))
+	assert.Nil(t, collector.caseRunDetails("missing"))
 }
 
 func TestSummarizeOverallStatus(t *testing.T) {
