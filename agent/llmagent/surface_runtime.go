@@ -88,6 +88,12 @@ func (a *LLMAgent) InvocationToolSurface(
 	options := a.option
 	subAgents := append([]agent.Agent(nil), a.subAgents...)
 	a.mu.RUnlock()
+	userTools, userToolNames = filterInvocationUserTools(
+		ctx,
+		userTools,
+		userToolNames,
+		options.toolFilter,
+	)
 
 	allTools := append([]tool.Tool(nil), userTools...)
 	allTools = appendKnowledgeTools(allTools, &options)
@@ -159,4 +165,27 @@ func (a *LLMAgent) userToolsForInvocation(
 		}
 	}
 	return userTools, userToolNames
+}
+
+func filterInvocationUserTools(
+	ctx context.Context,
+	userTools []tool.Tool,
+	userToolNames map[string]bool,
+	filter tool.FilterFunc,
+) ([]tool.Tool, map[string]bool) {
+	if filter == nil || len(userTools) == 0 {
+		return userTools, userToolNames
+	}
+	filtered := make([]tool.Tool, 0, len(userTools))
+	filteredNames := make(map[string]bool, len(userToolNames))
+	for _, tl := range userTools {
+		if tl == nil || tl.Declaration() == nil {
+			continue
+		}
+		if filter(ctx, tl) {
+			filtered = append(filtered, tl)
+			filteredNames[tl.Declaration().Name] = true
+		}
+	}
+	return filtered, filteredNames
 }

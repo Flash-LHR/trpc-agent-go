@@ -1420,6 +1420,9 @@ func (a *LLMAgent) instructionForInvocation(inv *agent.Invocation) string {
 			return instruction
 		}
 	}
+	if inv != nil && inv.RunOptions.Instruction != "" {
+		return inv.RunOptions.Instruction
+	}
 	modelName := ""
 	if inv != nil && inv.Model != nil {
 		modelName = inv.Model.Info().Name
@@ -1441,6 +1444,9 @@ func (a *LLMAgent) systemPromptForInvocation(inv *agent.Invocation) string {
 		if prompt, ok := patch.GlobalInstruction(); ok {
 			return prompt
 		}
+	}
+	if inv != nil && inv.RunOptions.GlobalInstruction != "" {
+		return inv.RunOptions.GlobalInstruction
 	}
 	modelName := ""
 	if inv != nil && inv.Model != nil {

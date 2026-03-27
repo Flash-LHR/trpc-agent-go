@@ -94,7 +94,7 @@ func TestLLMAgent_SurfacePatch_ModelOverridesLegacyRunOptions(t *testing.T) {
 	require.Equal(t, patchedModel, inv.Model)
 }
 
-func TestLLMAgent_RunOptions_DoNotOverrideStaticInstructionAndSystemPrompt(
+func TestLLMAgent_RunOptions_OverrideStaticInstructionAndSystemPrompt(
 	t *testing.T,
 ) {
 	agt := New(
@@ -132,10 +132,10 @@ func TestLLMAgent_RunOptions_DoNotOverrideStaticInstructionAndSystemPrompt(
 
 	require.NotEmpty(t, req.Messages)
 	content := req.Messages[0].Content
-	require.Contains(t, content, "static instruction")
-	require.Contains(t, content, "static system prompt")
-	require.NotContains(t, content, "legacy instruction")
-	require.NotContains(t, content, "legacy system prompt")
+	require.Contains(t, content, "legacy instruction")
+	require.Contains(t, content, "legacy system prompt")
+	require.NotContains(t, content, "static instruction")
+	require.NotContains(t, content, "static system prompt")
 }
 
 func TestLLMAgent_Run_SurfacePatch_InsertsFewShotBeforeUserMessage(t *testing.T) {
@@ -235,6 +235,38 @@ func TestLLMAgent_Run_SurfacePatch_ReplacesUserToolsAndPreservesFrameworkTools(t
 	require.NotNil(t, m.got)
 	require.Contains(t, m.got.Tools, "new_user_tool")
 	require.NotContains(t, m.got.Tools, "old_user_tool")
+	require.Contains(t, m.got.Tools, testTransferToolName)
+}
+
+func TestLLMAgent_Run_AgentToolFilterStillAppliesWithInvocationToolSurface(
+	t *testing.T,
+) {
+	m := &captureModel{}
+	agt := New(
+		"test-agent",
+		WithModel(m),
+		WithTools([]tool.Tool{
+			dummyTool{decl: &tool.Declaration{Name: "allowed_user_tool"}},
+			dummyTool{decl: &tool.Declaration{Name: "blocked_user_tool"}},
+		}),
+		WithSubAgents([]agent.Agent{&mockAgent{name: "child"}}),
+		WithToolFilter(func(_ context.Context, tl tool.Tool) bool {
+			return tl.Declaration().Name == "allowed_user_tool"
+		}),
+	)
+
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("hello")),
+	)
+
+	ch, err := agt.Run(context.Background(), inv)
+	require.NoError(t, err)
+	for range ch {
+	}
+
+	require.NotNil(t, m.got)
+	require.Contains(t, m.got.Tools, "allowed_user_tool")
+	require.NotContains(t, m.got.Tools, "blocked_user_tool")
 	require.Contains(t, m.got.Tools, testTransferToolName)
 }
 
