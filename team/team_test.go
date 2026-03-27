@@ -664,6 +664,41 @@ func TestTeam_RunCoordinator_DoesNotMutateSourceRunOptions(t *testing.T) {
 	require.Equal(t, "workflow/team/coordinator", coordinator.gotSurfaceRootNodeID)
 }
 
+func TestTeam_RunCoordinator_PreservesSourceInvocationObservableState(t *testing.T) {
+	modelImpl := &teamScriptedSurfaceModel{
+		name:      "team-coordinator-model",
+		responses: []model.Message{model.NewAssistantMessage("coordinator response")},
+	}
+	coordinator := llmagent.New(
+		testCoordinatorName,
+		llmagent.WithModel(modelImpl),
+	)
+	tm, err := New(coordinator, []agent.Agent{testAgent{name: testMemberNameOne}})
+	require.NoError(t, err)
+	sourceConfigs := map[string]any{"business": "value"}
+	inv := agent.NewInvocation(
+		agent.WithInvocationAgent(tm),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID:          "request-id",
+			CustomAgentConfigs: sourceConfigs,
+		}),
+		agent.WithInvocationMessage(model.NewUserMessage(testUserMessage)),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+	ch, err := tm.Run(ctx, inv)
+	require.NoError(t, err)
+	require.Same(t, coordinator, inv.Agent)
+	require.Equal(t, testCoordinatorName, inv.AgentName)
+	require.Same(t, modelImpl, inv.Model)
+	require.Equal(t, sourceConfigs, inv.RunOptions.CustomAgentConfigs)
+	for range ch {
+	}
+	require.Same(t, coordinator, inv.Agent)
+	require.Equal(t, testCoordinatorName, inv.AgentName)
+	require.Same(t, modelImpl, inv.Model)
+	require.Equal(t, sourceConfigs, inv.RunOptions.CustomAgentConfigs)
+}
+
 func TestTeam_RunCoordinator_MemberToolUsesMemberSurfaceRootNodeID(t *testing.T) {
 	member := &traceRecordingAgent{name: testMemberNameOne}
 	coordinator := &testCoordinator{name: testCoordinatorName}

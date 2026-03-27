@@ -1124,6 +1124,45 @@ func (inv *Invocation) View(invocationOpts ...InvocationOptions) *Invocation {
 	return view
 }
 
+// SyncView copies execution-visible state from a view while preserving RunOptions.
+func (inv *Invocation) SyncView(view *Invocation) {
+	if inv == nil || view == nil || inv == view {
+		return
+	}
+	inv.Agent = view.Agent
+	inv.AgentName = view.AgentName
+	inv.InvocationID = view.InvocationID
+	inv.Branch = view.Branch
+	inv.EndInvocation = view.EndInvocation
+	inv.Session = view.Session
+	inv.SessionService = view.SessionService
+	inv.Model = view.Model
+	inv.Message = view.Message
+	inv.TransferInfo = view.TransferInfo
+	inv.Plugins = view.Plugins
+	inv.StructuredOutput = view.StructuredOutput
+	inv.StructuredOutputType = view.StructuredOutputType
+	inv.MemoryService = view.MemoryService
+	inv.ArtifactService = view.ArtifactService
+	inv.noticeChannels = view.noticeChannels
+	inv.noticeMu = view.noticeMu
+	inv.eventFilterKey = view.eventFilterKey
+	inv.parent = view.parent
+	inv.traceCapture = view.traceCapture
+	inv.entryPredecessorStepIDs = cloneStringSlice(
+		view.entryPredecessorStepIDs,
+	)
+	inv.traceNodeID = view.traceNodeID
+	inv.MaxLLMCalls = view.MaxLLMCalls
+	inv.MaxToolIterations = view.MaxToolIterations
+	inv.timingInfo = view.timingInfo
+	inv.llmCallCount = view.llmCallCount
+	inv.toolIterationCount = view.toolIterationCount
+	inv.stateMu.Lock()
+	inv.state = view.cloneState()
+	inv.stateMu.Unlock()
+}
+
 func (inv *Invocation) cloneState() map[string]any {
 	if inv == nil || inv.state == nil {
 		return nil

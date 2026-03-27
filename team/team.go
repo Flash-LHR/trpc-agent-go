@@ -215,7 +215,38 @@ func (t *Team) runCoordinator(
 		agent.WithInvocationRunOptions(runOptions),
 	)
 	coordinatorCtx := agent.NewInvocationContext(ctx, coordinatorInvocation)
-	return t.coordinator.Run(coordinatorCtx, coordinatorInvocation)
+	coordinatorEventCh, err := t.coordinator.Run(
+		coordinatorCtx,
+		coordinatorInvocation,
+	)
+	invocation.SyncView(coordinatorInvocation)
+	if err != nil {
+		return nil, err
+	}
+	return wrapCoordinatorInvocationView(
+		invocation,
+		coordinatorInvocation,
+		coordinatorEventCh,
+	), nil
+}
+
+func wrapCoordinatorInvocationView(
+	source *agent.Invocation,
+	view *agent.Invocation,
+	src <-chan *event.Event,
+) <-chan *event.Event {
+	if source == nil || view == nil || src == nil {
+		return src
+	}
+	out := make(chan *event.Event)
+	go func() {
+		defer close(out)
+		defer source.SyncView(view)
+		for evt := range src {
+			out <- evt
+		}
+	}()
+	return out
 }
 
 func (t *Team) runSwarm(
