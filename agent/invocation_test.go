@@ -112,6 +112,39 @@ func TestInvocation_Clone(t *testing.T) {
 	require.Equal(t, inv.noticeMu, subInv.noticeMu)
 }
 
+func TestInvocation_View_PreservesIdentityWithoutMutatingSource(t *testing.T) {
+	sourceConfigs := map[string]any{"source": "config"}
+	inv := NewInvocation(
+		WithInvocationID("test-invocation"),
+		WithInvocationAgent(&mockAgent{name: "root-agent"}),
+		WithInvocationRunOptions(RunOptions{
+			RequestID:          "request-id",
+			CustomAgentConfigs: sourceConfigs,
+		}),
+		WithInvocationTraceNodeID("root/node"),
+		WithInvocationMessage(model.Message{Role: model.RoleUser, Content: "Hello"}),
+	)
+	viewConfigs := map[string]any{"view": "config"}
+	view := inv.View(
+		WithInvocationAgent(&mockAgent{name: "view-agent"}),
+		WithInvocationRunOptions(RunOptions{
+			RequestID:          "request-id",
+			CustomAgentConfigs: viewConfigs,
+		}),
+	)
+	require.NotNil(t, view)
+	require.Equal(t, inv.InvocationID, view.InvocationID)
+	require.Equal(t, inv.GetParentInvocation(), view.GetParentInvocation())
+	require.Equal(t, inv.noticeChannels, view.noticeChannels)
+	require.Equal(t, inv.noticeMu, view.noticeMu)
+	require.Equal(t, "view-agent", view.AgentName)
+	require.Equal(t, "root-agent", inv.AgentName)
+	require.Equal(t, viewConfigs, view.RunOptions.CustomAgentConfigs)
+	require.Equal(t, sourceConfigs, inv.RunOptions.CustomAgentConfigs)
+	require.Equal(t, "root/node", InvocationTraceNodeID(view))
+	require.Equal(t, "root/node", InvocationTraceNodeID(inv))
+}
+
 func TestInvocation_AddNoticeChannel(t *testing.T) {
 	inv := NewInvocation()
 	defer inv.CleanupNotice(context.Background())

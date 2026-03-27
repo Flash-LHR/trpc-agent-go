@@ -638,6 +638,32 @@ func TestTeam_RunCoordinator_SetsCoordinatorSurfaceRootNodeID(t *testing.T) {
 	)
 }
 
+func TestTeam_RunCoordinator_DoesNotMutateSourceRunOptions(t *testing.T) {
+	coordinator := &testCoordinator{name: testCoordinatorName}
+	tm, err := New(coordinator, []agent.Agent{testAgent{name: testMemberNameOne}})
+	require.NoError(t, err)
+	sourceConfigs := map[string]any{"business": "value"}
+	inv := agent.NewInvocation(
+		agent.WithInvocationAgent(tm),
+		agent.WithInvocationSession(session.NewSession(testAppName, testUserID, testSessionID)),
+		agent.WithInvocationTraceNodeID("workflow/team"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RequestID:          "request-id",
+			CustomAgentConfigs: sourceConfigs,
+		}),
+		agent.WithInvocationMessage(model.NewUserMessage(testUserMessage)),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+	ch, err := tm.Run(ctx, inv)
+	require.NoError(t, err)
+	for range ch {
+	}
+	require.Equal(t, sourceConfigs, inv.RunOptions.CustomAgentConfigs)
+	require.Equal(t, "value", inv.RunOptions.CustomAgentConfigs["business"])
+	require.Equal(t, "workflow/team", agent.InvocationTraceNodeID(inv))
+	require.Equal(t, "workflow/team/coordinator", coordinator.gotSurfaceRootNodeID)
+}
+
 func TestTeam_RunCoordinator_MemberToolUsesMemberSurfaceRootNodeID(t *testing.T) {
 	member := &traceRecordingAgent{name: testMemberNameOne}
 	coordinator := &testCoordinator{name: testCoordinatorName}

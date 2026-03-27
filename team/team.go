@@ -201,7 +201,6 @@ func (t *Team) runCoordinator(
 		return nil, errors.New("coordinator is nil")
 	}
 	rootNodeID := teamtrace.RootNodeID(invocation, t.name)
-	originalRunOptions := invocation.RunOptions
 	runOptions := invocation.RunOptions
 	runOptions.CustomAgentConfigs = teamtrace.WithMemberTraceRoot(
 		runOptions.CustomAgentConfigs,
@@ -211,18 +210,12 @@ func (t *Team) runCoordinator(
 		runOptions.CustomAgentConfigs,
 		teamtrace.CoordinatorNodeID(rootNodeID),
 	)
-	invocation.RunOptions = runOptions
-	coordinatorCtx := agent.NewInvocationContext(ctx, invocation)
-	eventCh, err := t.coordinator.Run(coordinatorCtx, invocation)
-	if err != nil {
-		invocation.RunOptions = originalRunOptions
-		return nil, err
-	}
-	return restoreCoordinatorInvocation(
-		eventCh,
-		invocation,
-		originalRunOptions,
-	), nil
+	coordinatorInvocation := invocation.View(
+		agent.WithInvocationAgent(t.coordinator),
+		agent.WithInvocationRunOptions(runOptions),
+	)
+	coordinatorCtx := agent.NewInvocationContext(ctx, coordinatorInvocation)
+	return t.coordinator.Run(coordinatorCtx, coordinatorInvocation)
 }
 
 func (t *Team) runSwarm(
@@ -473,25 +466,4 @@ func swarmActiveAgentKey(teamName string) string {
 		return SwarmActiveAgentKeyPrefix
 	}
 	return SwarmActiveAgentKeyPrefix + teamName
-}
-
-func restoreCoordinatorInvocation(
-	src <-chan *event.Event,
-	invocation *agent.Invocation,
-	originalRunOptions agent.RunOptions,
-) <-chan *event.Event {
-	if src == nil || invocation == nil {
-		return src
-	}
-	out := make(chan *event.Event)
-	go func() {
-		defer close(out)
-		defer func() {
-			invocation.RunOptions = originalRunOptions
-		}()
-		for evt := range src {
-			out <- evt
-		}
-	}()
-	return out
 }

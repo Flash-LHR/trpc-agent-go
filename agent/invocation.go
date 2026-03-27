@@ -1080,6 +1080,50 @@ func (inv *Invocation) Clone(invocationOpts ...InvocationOptions) *Invocation {
 	return newInv
 }
 
+// View returns an isolated invocation view that preserves identity.
+func (inv *Invocation) View(invocationOpts ...InvocationOptions) *Invocation {
+	if inv == nil {
+		return nil
+	}
+	view := &Invocation{
+		Agent:                inv.Agent,
+		AgentName:            inv.AgentName,
+		InvocationID:         inv.InvocationID,
+		Branch:               inv.Branch,
+		EndInvocation:        inv.EndInvocation,
+		Session:              inv.Session,
+		SessionService:       inv.SessionService,
+		Model:                inv.Model,
+		Message:              inv.Message,
+		RunOptions:           inv.RunOptions,
+		TransferInfo:         inv.TransferInfo,
+		Plugins:              inv.Plugins,
+		StructuredOutput:     inv.StructuredOutput,
+		StructuredOutputType: inv.StructuredOutputType,
+		MemoryService:        inv.MemoryService,
+		ArtifactService:      inv.ArtifactService,
+		noticeChannels:       inv.noticeChannels,
+		noticeMu:             inv.noticeMu,
+		eventFilterKey:       inv.eventFilterKey,
+		parent:               inv.parent,
+		traceCapture:         inv.traceCapture,
+		entryPredecessorStepIDs: cloneStringSlice(
+			inv.entryPredecessorStepIDs,
+		),
+		traceNodeID:        inv.traceNodeID,
+		state:              inv.cloneState(),
+		MaxLLMCalls:        inv.MaxLLMCalls,
+		MaxToolIterations:  inv.MaxToolIterations,
+		timingInfo:         inv.timingInfo,
+		llmCallCount:       inv.llmCallCount,
+		toolIterationCount: inv.toolIterationCount,
+	}
+	for _, opt := range invocationOpts {
+		opt(view)
+	}
+	return view
+}
+
 func (inv *Invocation) cloneState() map[string]any {
 	if inv == nil || inv.state == nil {
 		return nil
