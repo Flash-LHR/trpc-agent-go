@@ -53,16 +53,16 @@ func TestBuild_KeepsLatestUserInputOutsideTranscript(t *testing.T) {
 	assert.Equal(t, "Latest user input.", req.LastUserInput)
 }
 
-func TestBuild_TruncatesLatestUserInput(t *testing.T) {
+func TestBuild_KeepsFullLatestUserInput(t *testing.T) {
+	longInput := repeat("user ", guardtranscript.DefaultMessageEntryCap+10)
 	req := Build(context.Background(), []model.Message{
-		{Role: model.RoleUser, Content: repeat("user ", guardtranscript.DefaultMessageEntryCap)},
+		{Role: model.RoleUser, Content: longInput},
 	}, fixedTokenCounter{count: 1}, func(entry guardtranscript.Entry) guardtranscript.Entry {
 		return entry
 	})
 	require.NotNil(t, req)
 	require.Empty(t, req.Transcript)
-	require.NotEmpty(t, req.LastUserInput)
-	assert.Contains(t, req.LastUserInput, guardtranscript.DefaultTruncatedSuffix)
+	assert.Equal(t, longInput, req.LastUserInput)
 }
 
 func TestBuild_CountTokenFailureFallsBackToOmission(t *testing.T) {
@@ -83,6 +83,22 @@ func TestBuild_WithoutLatestUserInputReturnsNil(t *testing.T) {
 	req := Build(context.Background(), []model.Message{
 		{Role: model.RoleAssistant, Content: "Assistant context."},
 		{Role: model.RoleTool, Content: "Tool context."},
+	}, fixedTokenCounter{count: 1}, func(entry guardtranscript.Entry) guardtranscript.Entry {
+		return entry
+	})
+	require.Nil(t, req)
+}
+
+func TestBuild_WithoutTextInLatestUserMessageReturnsNil(t *testing.T) {
+	req := Build(context.Background(), []model.Message{
+		{Role: model.RoleUser, Content: "Earlier user context."},
+		{
+			Role: model.RoleUser,
+			ContentParts: []model.ContentPart{{
+				Type:  model.ContentTypeImage,
+				Image: &model.Image{URL: "https://example.com/image.png"},
+			}},
+		},
 	}, fixedTokenCounter{count: 1}, func(entry guardtranscript.Entry) guardtranscript.Entry {
 		return entry
 	})

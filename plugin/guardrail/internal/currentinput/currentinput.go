@@ -31,11 +31,6 @@ func Build[T any](
 	if lastUserInput == "" {
 		return nil
 	}
-	lastUserInput, _ = guardtranscript.TruncateContent(
-		lastUserInput,
-		guardtranscript.DefaultMessageEntryCap,
-		guardtranscript.DefaultTruncatedSuffix,
-	)
 	transcript := buildTranscript(ctx, collectTranscriptEntries(messages, lastUserIndex), tokenCounter, mapEntry)
 	return &Request[T]{
 		LastUserInput: lastUserInput,
@@ -122,11 +117,7 @@ func extractLastUserInput(messages []model.Message) (string, int) {
 		if messages[i].Role != model.RoleUser {
 			continue
 		}
-		text := extractMessageText(messages[i])
-		if text == "" {
-			continue
-		}
-		return text, i
+		return extractMessageText(messages[i]), i
 	}
 	return "", -1
 }

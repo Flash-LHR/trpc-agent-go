@@ -266,15 +266,15 @@ func TestBuildReviewRequest_KeepsLatestUserInputOutsideTranscript(t *testing.T) 
 	assert.Equal(t, "Latest user input.", req.LastUserInput)
 }
 
-func TestBuildReviewRequest_TruncatesLatestUserInput(t *testing.T) {
+func TestBuildReviewRequest_KeepsFullLatestUserInput(t *testing.T) {
+	longInput := stringsRepeat("user ", guardtranscript.DefaultMessageEntryCap+10)
 	p := &Plugin{tokenCounter: model.NewSimpleTokenCounter()}
 	req := p.buildReviewRequest(context.Background(), []model.Message{
-		{Role: model.RoleUser, Content: stringsRepeat("user ", guardtranscript.DefaultMessageEntryCap)},
+		{Role: model.RoleUser, Content: longInput},
 	})
 	require.NotNil(t, req)
 	require.Empty(t, req.Transcript)
-	require.NotEmpty(t, req.LastUserInput)
-	assert.Contains(t, req.LastUserInput, guardtranscript.DefaultTruncatedSuffix)
+	assert.Equal(t, longInput, req.LastUserInput)
 }
 
 func TestBuildReviewRequest_TokenCounterErrorFailsClosed(t *testing.T) {
