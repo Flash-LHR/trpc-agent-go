@@ -96,6 +96,22 @@ func TestBuild_UsesToolBudgetIndependently(t *testing.T) {
 	assert.Equal(t, "assistant context", entries[2].Content)
 }
 
+func TestBuild_WithoutTokenizerFailsClosedForToolEntries(t *testing.T) {
+	options := DefaultOptions()
+	options.MessageTranscriptBudget = 10
+	options.ToolTranscriptBudget = 20
+	entries := Build(context.Background(), []Record{
+		{
+			Index:    0,
+			Entry:    Entry{Role: model.RoleTool, Content: "tool context"},
+			Category: CategoryTool,
+		},
+	}, nil, options)
+	require.Len(t, entries, 1)
+	assert.Equal(t, model.RoleAssistant, entries[0].Role)
+	assert.Equal(t, DefaultOmissionNote, entries[0].Content)
+}
+
 func repeat(value string, n int) string {
 	if n <= 0 {
 		return ""

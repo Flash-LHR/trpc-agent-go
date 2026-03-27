@@ -165,6 +165,9 @@ func prepareRecords(
 		entry := record.Entry
 		entry.Content = content
 		tokens := opts.MessageTranscriptBudget + 1
+		if record.Category == CategoryTool {
+			tokens = opts.ToolTranscriptBudget + 1
+		}
 		if countTokens != nil {
 			tokens = countTokens(ctx, entry)
 		}
