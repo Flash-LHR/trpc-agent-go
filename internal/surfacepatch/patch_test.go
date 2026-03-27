@@ -97,7 +97,6 @@ func TestPatch_TracksExplicitZeroValues(t *testing.T) {
 	var patch Patch
 	patch.SetInstruction("")
 	patch.SetFewShot(nil)
-	patch.SetModel(nil)
 	patch.SetTools(nil)
 	patch.SetSkillRepository(nil)
 
@@ -109,10 +108,6 @@ func TestPatch_TracksExplicitZeroValues(t *testing.T) {
 	require.True(t, ok)
 	require.Nil(t, fewShot)
 
-	modelValue, ok := patch.Model()
-	require.True(t, ok)
-	require.Nil(t, modelValue)
-
 	tools, ok := patch.Tools()
 	require.True(t, ok)
 	require.Nil(t, tools)
@@ -120,6 +115,16 @@ func TestPatch_TracksExplicitZeroValues(t *testing.T) {
 	repo, ok := patch.SkillRepository()
 	require.True(t, ok)
 	require.Nil(t, repo)
+}
+
+func TestPatch_IgnoresNilModelOverride(t *testing.T) {
+	var patch Patch
+	patch.SetModel(nil)
+
+	modelValue, ok := patch.Model()
+	require.False(t, ok)
+	require.Nil(t, modelValue)
+	require.True(t, patch.IsEmpty())
 }
 
 func TestPatch_ClonesMutableValues(t *testing.T) {

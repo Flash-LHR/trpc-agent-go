@@ -75,6 +75,9 @@ func (p *Patch) SetFewShot(examples [][]model.Message) {
 
 // SetModel sets the model surface override.
 func (p *Patch) SetModel(m model.Model) {
+	if m == nil {
+		return
+	}
 	p.model.set = true
 	p.model.value = m
 }
@@ -108,6 +111,9 @@ func (p Patch) FewShot() ([][]model.Message, bool) {
 
 // Model returns the model surface override.
 func (p Patch) Model() (model.Model, bool) {
+	if !p.model.set || p.model.value == nil {
+		return nil, false
+	}
 	return p.model.value, p.model.set
 }
 
