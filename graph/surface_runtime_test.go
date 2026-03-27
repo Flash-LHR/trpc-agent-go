@@ -10,13 +10,40 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
+
+type namedCaptureModel struct {
+	name    string
+	lastReq *model.Request
+}
+
+func (c *namedCaptureModel) GenerateContent(
+	ctx context.Context,
+	req *model.Request,
+) (<-chan *model.Response, error) {
+	c.lastReq = req
+	ch := make(chan *model.Response, 1)
+	ch <- &model.Response{
+		Done: true,
+		Choices: []model.Choice{{
+			Message: model.NewAssistantMessage("ok"),
+		}},
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (c *namedCaptureModel) Info() model.Info {
+	return model.Info{Name: c.name}
+}
 
 func TestLLMNode_SurfacePatch_OverridesInstructionFewShotModelAndTools(t *testing.T) {
 	staticModel := &captureModel{}
@@ -111,4 +138,57 @@ func TestToolsNode_SurfacePatch_OverridesExplicitTools(t *testing.T) {
 	state, ok := result.(State)
 	require.True(t, ok)
 	require.NotNil(t, state[StateKeyMessages])
+}
+
+func TestLLMNode_SurfacePatch_UsesPatchedModelNameInMetadata(t *testing.T) {
+	staticModel := &namedCaptureModel{name: "static-model"}
+	patchedModel := &namedCaptureModel{name: "patched-model"}
+	sg := NewStateGraph(MessagesStateSchema())
+	sg.AddLLMNode("llm", staticModel, "static instruction", nil)
+	var patch agent.SurfacePatch
+	patch.SetModel(patchedModel)
+	inv := agent.NewInvocation(
+		agent.WithInvocationTraceNodeID("graph"),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithSurfacePatchForNode("graph/llm", patch),
+		)),
+	)
+	eventCh := make(chan *event.Event, 8)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+	node := sg.graph.nodes["llm"]
+	exec := &ExecutionContext{
+		InvocationID: inv.InvocationID,
+		Invocation:   inv,
+		EventChan:    eventCh,
+	}
+	_, err := node.Function(ctx, State{
+		StateKeyExecContext:   exec,
+		StateKeyCurrentNodeID: "llm",
+		StateKeyUserInput:     "actual user",
+	})
+	require.NoError(t, err)
+	require.Nil(t, staticModel.lastReq)
+	require.NotNil(t, patchedModel.lastReq)
+	var modelNames []string
+	for {
+		select {
+		case evt := <-eventCh:
+			if evt == nil || evt.StateDelta == nil {
+				continue
+			}
+			data, ok := evt.StateDelta[MetadataKeyModel]
+			if !ok {
+				continue
+			}
+			var meta ModelExecutionMetadata
+			require.NoError(t, json.Unmarshal(data, &meta))
+			modelNames = append(modelNames, meta.ModelName)
+		default:
+			require.NotEmpty(t, modelNames)
+			for _, modelName := range modelNames {
+				require.Equal(t, "patched-model", modelName)
+			}
+			return
+		}
+	}
 }

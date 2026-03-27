@@ -212,24 +212,7 @@ func (at *Tool) callWithParentInvocation(
 	}
 	// Build child filter key based on history scope.
 	childKey := at.buildChildFilterKey(parentInv)
-	// Clone parent invocation with child-specific settings.
-	invocationOpts := []agent.InvocationOptions{
-		agent.WithInvocationAgent(at.agent),
-		agent.WithInvocationMessage(message),
-		agent.WithInvocationEventFilterKey(childKey),
-	}
-	if surfaceRootNodeID := at.surfaceRootNodeIDForParentInvocation(parentInv); surfaceRootNodeID != "" {
-		runOptions := parentInv.RunOptions
-		runOptions.CustomAgentConfigs = surfacepatch.WithRootNodeID(
-			runOptions.CustomAgentConfigs,
-			surfaceRootNodeID,
-		)
-		invocationOpts = append(
-			invocationOpts,
-			agent.WithInvocationRunOptions(runOptions),
-		)
-	}
-	subInv := parentInv.Clone(invocationOpts...)
+	subInv := parentInv.Clone(at.childInvocationOptions(parentInv, message, childKey)...)
 
 	// Run the agent and collect response.
 	subCtx := agent.NewInvocationContext(ctx, subInv)
@@ -251,6 +234,33 @@ func (at *Tool) surfaceRootNodeIDForParentInvocation(
 		return ""
 	}
 	return teamtrace.MemberNodeID(rootNodeID, at.agent.Info().Name)
+}
+
+func (at *Tool) childInvocationOptions(
+	parentInv *agent.Invocation,
+	message model.Message,
+	childKey string,
+) []agent.InvocationOptions {
+	invocationOpts := []agent.InvocationOptions{
+		agent.WithInvocationAgent(at.agent),
+		agent.WithInvocationMessage(message),
+		agent.WithInvocationEventFilterKey(childKey),
+	}
+	if parentInv == nil {
+		return invocationOpts
+	}
+	if surfaceRootNodeID := at.surfaceRootNodeIDForParentInvocation(parentInv); surfaceRootNodeID != "" {
+		runOptions := parentInv.RunOptions
+		runOptions.CustomAgentConfigs = surfacepatch.WithRootNodeID(
+			runOptions.CustomAgentConfigs,
+			surfaceRootNodeID,
+		)
+		invocationOpts = append(
+			invocationOpts,
+			agent.WithInvocationRunOptions(runOptions),
+		)
+	}
+	return invocationOpts
 }
 
 // wrapWithCompletion consumes events, notifies completion when required, and forwards to a new channel.
@@ -801,14 +811,7 @@ func (at *Tool) streamFromParentInvocation(
 		return
 	}
 	childKey := at.buildChildFilterKey(parentInv)
-	subInv := parentInv.Clone(
-		agent.WithInvocationAgent(at.agent),
-		agent.WithInvocationMessage(message),
-		// Reset event filter key to the sub-agent name so that content
-		// processors fetch session messages belonging to the sub-agent,
-		// not the parent agent. Use unique FilterKey to prevent cross-invocation event pollution.
-		agent.WithInvocationEventFilterKey(childKey),
-	)
+	subInv := parentInv.Clone(at.childInvocationOptions(parentInv, message, childKey)...)
 	subCtx := agent.NewInvocationContext(ctx, subInv)
 	evCh, err := agent.RunWithPlugins(subCtx, subInv, at.agent)
 	if err != nil {

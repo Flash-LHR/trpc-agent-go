@@ -11,6 +11,7 @@ package teamtrace
 import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	istructure "trpc.group/trpc-go/trpc-agent-go/internal/structure"
+	"trpc.group/trpc-go/trpc-agent-go/internal/surfacepatch"
 )
 
 const memberTraceRootConfigsKey = "__trpc_agent_internal_team_member_trace_root__"
@@ -18,7 +19,10 @@ const memberTraceRootConfigsKey = "__trpc_agent_internal_team_member_trace_root_
 // RootNodeID returns the mounted root node id for one team invocation.
 func RootNodeID(inv *agent.Invocation, teamName string) string {
 	if inv != nil {
-		if nodeID := agent.InvocationTraceNodeID(inv); nodeID != "" {
+		if nodeID := surfacepatch.RootNodeID(
+			inv.RunOptions.CustomAgentConfigs,
+			agent.InvocationTraceNodeID(inv),
+		); nodeID != "" {
 			return nodeID
 		}
 	}

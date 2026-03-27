@@ -127,8 +127,11 @@ func (p *SkillsToolResultRequestProcessor) ProcessRequest(
 	req *model.Request,
 	ch chan<- *event.Event,
 ) {
+	if req == nil || inv == nil || inv.Session == nil {
+		return
+	}
 	repo := p.repositoryForInvocation(inv)
-	if req == nil || inv == nil || inv.Session == nil || repo == nil {
+	if repo == nil {
 		return
 	}
 

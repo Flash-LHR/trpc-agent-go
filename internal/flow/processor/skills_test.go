@@ -1901,6 +1901,23 @@ func TestSkillsToolResultRequestProcessor_RepositoryResolver_CanDisableStaticRep
 	require.Equal(t, -1, findLoadedContextMessageIndex(req.Messages))
 }
 
+func TestSkillsToolResultRequestProcessor_RepositoryResolver_DoesNotPanicOnNilInvocation(
+	t *testing.T,
+) {
+	p := NewSkillsToolResultRequestProcessor(
+		nil,
+		WithSkillsToolResultRepositoryResolver(
+			func(inv *agent.Invocation) skill.Repository {
+				require.Nil(t, inv)
+				return nil
+			},
+		),
+	)
+	require.NotPanics(t, func() {
+		p.ProcessRequest(context.Background(), nil, &model.Request{}, nil)
+	})
+}
+
 func TestBuildDocsText_SkipsEmptyAndUnwanted(t *testing.T) {
 	require.Equal(t, "", buildDocsText(nil, []string{"a"}))
 

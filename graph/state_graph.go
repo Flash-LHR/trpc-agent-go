@@ -1442,6 +1442,7 @@ func (r *llmRunner) executeModel(
 		nodeID = v
 	}
 	invocation := invocationFromContextOrDefault(ctx, nil)
+	effectiveModel := graphPatchedModel(invocation, nodeID, r.llmModel)
 	if patch, ok := graphSurfacePatch(invocation, nodeID); ok {
 		if patchedTools, ok := patch.Tools(); ok {
 			tools = toolSliceToMap(patchedTools)
@@ -1479,7 +1480,7 @@ func (r *llmRunner) executeModel(
 	ctx, invocation, result, err := executeModelAndProcessResponsesWithContext(ctx, modelExecutionConfig{
 		Invocation:     invocation,
 		ModelCallbacks: modelCallbacks,
-		LLMModel:       graphPatchedModel(invocation, nodeID, r.llmModel),
+		LLMModel:       effectiveModel,
 		Request:        request,
 		EventChan:      eventChan,
 		InvocationID:   invocationID,
@@ -1507,7 +1508,7 @@ func (r *llmRunner) executeModel(
 			// so events accurately reflect both instruction and user input.
 			modelInput = extractModelInput(state, instructionUsed, r.userInputKey)
 			startTime = time.Now()
-			modelName = getModelName(r.llmModel)
+			modelName = getModelName(effectiveModel)
 			emitModelStartEvent(
 				modelCtx,
 				modelEventBaseInvocation,
@@ -3571,11 +3572,20 @@ func buildAgentNodeSurfaceRoot(
 	nodeID string,
 	targetAgent agent.Agent,
 ) string {
-	traceNodeID := buildAgentNodeTraceNodeID(parentInvocation, nodeID)
-	if targetAgent == nil || targetAgent.Info().Name == "" {
-		return traceNodeID
+	if parentInvocation == nil {
+		return ""
 	}
-	return istructure.JoinNodeID(traceNodeID, targetAgent.Info().Name)
+	baseNodeID := surfacepatch.RootNodeID(
+		parentInvocation.RunOptions.CustomAgentConfigs,
+		agent.InvocationTraceNodeID(parentInvocation),
+	)
+	if nodeID != "" {
+		baseNodeID = istructure.JoinNodeID(baseNodeID, nodeID)
+	}
+	if targetAgent == nil || targetAgent.Info().Name == "" {
+		return baseNodeID
+	}
+	return istructure.JoinNodeID(baseNodeID, targetAgent.Info().Name)
 }
 
 const (

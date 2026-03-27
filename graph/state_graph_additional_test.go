@@ -3236,6 +3236,40 @@ func TestBuildAgentInvocationWithStateAndScope_PropagatesExecutionTraceMetadata(
 	require.Equal(t, []string{rootStepID}, agent.NextExecutionTracePredecessors(inv))
 }
 
+func TestBuildAgentInvocationWithStateAndScope_PreservesMountedSurfaceRoot(
+	t *testing.T,
+) {
+	parent := agent.NewInvocation(
+		agent.WithInvocationAgent(&stubAgent{name: "parent"}),
+		agent.WithInvocationTraceNodeID("trace-parent"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			CustomAgentConfigs: surfacepatch.WithRootNodeID(
+				nil,
+				"workflow/parent",
+			),
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), parent)
+	target := &stubAgent{name: "child"}
+	inv := buildAgentInvocationWithStateAndScope(
+		ctx,
+		State{},
+		State{},
+		target,
+		"delegate",
+		"",
+	)
+	require.Equal(t, "trace-parent/delegate", agent.InvocationTraceNodeID(inv))
+	require.Equal(
+		t,
+		"workflow/parent/delegate/child",
+		surfacepatch.RootNodeID(
+			inv.RunOptions.CustomAgentConfigs,
+			agent.InvocationTraceNodeID(inv),
+		),
+	)
+}
+
 func TestBuildAgentInvocationWithStateAndScope_PrefersCurrentTraceStepPredecessor(t *testing.T) {
 	parent := agent.NewInvocation(
 		agent.WithInvocationAgent(&stubAgent{name: "parent"}),
