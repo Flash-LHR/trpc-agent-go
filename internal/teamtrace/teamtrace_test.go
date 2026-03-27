@@ -37,6 +37,20 @@ func TestRootNodeID_FallsBackToTraceNodeAndTeamName(t *testing.T) {
 	require.Equal(t, "team", RootNodeID(nil, "team"))
 }
 
+func TestTraceRootNodeID_PrefersTraceNodeAndFallsBackToTeamName(t *testing.T) {
+	traceInv := agent.NewInvocation(
+		agent.WithInvocationTraceNodeID("trace/team"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			CustomAgentConfigs: surfacepatch.WithRootNodeID(
+				nil,
+				"workflow/team",
+			),
+		}),
+	)
+	require.Equal(t, "trace/team", TraceRootNodeID(traceInv, "team"))
+	require.Equal(t, "team", TraceRootNodeID(nil, "team"))
+}
+
 func TestTeamTraceNodeIDHelpers(t *testing.T) {
 	require.Equal(t, "workflow/team/coordinator", CoordinatorNodeID("workflow/team"))
 	require.Equal(t, "workflow/team/member", MemberNodeID("workflow/team", "member"))

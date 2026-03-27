@@ -131,10 +131,11 @@ func (t *testCoordinator) FindSubAgent(string) agent.Agent { return nil }
 type testSwarmMember struct {
 	name string
 
-	gotRuntime     bool
-	gotTraceNodeID string
-	subAgents      []agent.Agent
-	tools          []tool.Tool
+	gotRuntime           bool
+	gotTraceNodeID       string
+	gotSurfaceRootNodeID string
+	subAgents            []agent.Agent
+	tools                []tool.Tool
 }
 
 func (t *testSwarmMember) SetSubAgents(subAgents []agent.Agent) {
@@ -146,6 +147,7 @@ func (t *testSwarmMember) Run(
 	inv *agent.Invocation,
 ) (<-chan *event.Event, error) {
 	t.gotTraceNodeID = agent.InvocationTraceNodeID(inv)
+	t.gotSurfaceRootNodeID = agent.InvocationSurfaceRootNodeID(inv)
 	if inv != nil && inv.RunOptions.RuntimeState != nil {
 		val := inv.RunOptions.RuntimeState[agent.RuntimeStateKeyTransferController]
 		_, t.gotRuntime = val.(agent.TransferController)
@@ -995,7 +997,44 @@ func TestTeam_RunSwarm_MountsMemberTraceNodeID(t *testing.T) {
 	for range ch {
 	}
 	require.Equal(t, "workflow/swarm/member_one", a.gotTraceNodeID)
+	require.Equal(t, "workflow/swarm/member_one", a.gotSurfaceRootNodeID)
 	require.Empty(t, b.gotTraceNodeID)
+}
+
+func TestTeam_RunSwarm_PreservesTraceNodeIDWhenSurfaceRootIsMounted(t *testing.T) {
+	a := &testSwarmMember{name: testMemberNameOne}
+	b := &testSwarmMember{name: testMemberNameTwo}
+	tm, err := NewSwarm(
+		testTeamName,
+		testEntryName,
+		[]agent.Agent{a, b},
+		WithCrossRequestTransfer(true),
+	)
+	require.NoError(t, err)
+	sess := session.NewSession(testAppName, testUserID, testSessionID)
+	inv := agent.NewInvocation(
+		agent.WithInvocationAgent(tm),
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			ExecutionTraceEnabled: true,
+			CustomAgentConfigs: surfacepatch.WithRootNodeID(
+				nil,
+				"workflow/parent/delegate/team",
+			),
+		}),
+		agent.WithInvocationTraceNodeID("workflow/parent/delegate"),
+		agent.WithInvocationMessage(model.NewUserMessage(testUserMessage)),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+	ch, err := tm.Run(ctx, inv)
+	require.NoError(t, err)
+	for range ch {
+	}
+	require.Equal(t, "workflow/parent/delegate/member_one", a.gotTraceNodeID)
+	require.Equal(t, "workflow/parent/delegate/team/member_one", a.gotSurfaceRootNodeID)
+	traceNodeIDBytes, ok := sess.GetState(swarmTraceNodeIDKey)
+	require.True(t, ok)
+	require.Equal(t, []byte("workflow/parent/delegate"), traceNodeIDBytes)
 }
 
 func TestTeam_RunSwarm_CrossRequestTransfer_UsesActiveAgent(t *testing.T) {

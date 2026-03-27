@@ -240,14 +240,15 @@ func (t *Team) runSwarm(
 	ctx context.Context,
 	invocation *agent.Invocation,
 ) (<-chan *event.Event, error) {
+	traceRootNodeID := teamtrace.TraceRootNodeID(invocation, t.name)
+	surfaceRootNodeID := teamtrace.RootNodeID(invocation, t.name)
 	// Mark this session as belonging to a Swarm team for transfer processor to detect.
 	// Only do this if cross-request transfer is enabled.
 	if t.crossRequestTransfer && invocation.Session != nil {
 		invocation.Session.SetState(SwarmTeamNameKey, []byte(t.name))
 		if invocation.RunOptions.ExecutionTraceEnabled {
-			traceNodeID := teamtrace.RootNodeID(invocation, t.name)
-			if traceNodeID != "" {
-				invocation.Session.SetState(swarmTraceNodeIDKey, []byte(traceNodeID))
+			if traceRootNodeID != "" {
+				invocation.Session.SetState(swarmTraceNodeIDKey, []byte(traceRootNodeID))
 			}
 		}
 	}
@@ -271,8 +272,7 @@ func (t *Team) runSwarm(
 	}
 
 	ensureSwarmRuntime(invocation, t.swarm)
-	rootNodeID := teamtrace.RootNodeID(invocation, t.name)
-	memberPathAllocator := istructure.NewPathAllocator(rootNodeID)
+	memberPathAllocator := istructure.NewPathAllocator(traceRootNodeID)
 	var memberNodeID string
 	startAgentName := startAgent.Info().Name
 	t.mu.RLock()
@@ -285,12 +285,19 @@ func (t *Team) runSwarm(
 	}
 	t.mu.RUnlock()
 	if memberNodeID == "" {
-		memberNodeID = teamtrace.MemberNodeID(rootNodeID, startAgent.Info().Name)
+		memberNodeID = teamtrace.MemberNodeID(traceRootNodeID, startAgent.Info().Name)
 	}
+	memberSurfaceRootNodeID := teamtrace.MemberNodeID(
+		surfaceRootNodeID,
+		startAgent.Info().Name,
+	)
 	child := invocation.Clone(
 		agent.WithInvocationAgent(startAgent),
 		agent.WithInvocationTraceNodeID(memberNodeID),
 		agent.WithInvocationEntryPredecessorStepIDs(agent.NextExecutionTracePredecessors(invocation)),
+		func(inv *agent.Invocation) {
+			agent.SetInvocationSurfaceRootNodeID(inv, memberSurfaceRootNodeID)
+		},
 	)
 	childCtx := agent.NewInvocationContext(ctx, child)
 

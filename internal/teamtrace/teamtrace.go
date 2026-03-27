@@ -16,10 +16,20 @@ import (
 
 const memberTraceRootConfigsKey = "__trpc_agent_internal_team_member_trace_root__"
 
-// RootNodeID returns the mounted root node id for one team invocation.
+// RootNodeID returns the mounted surface lookup root node id for one team invocation.
 func RootNodeID(inv *agent.Invocation, teamName string) string {
 	if inv != nil {
 		if nodeID := agent.InvocationSurfaceRootNodeID(inv); nodeID != "" {
+			return nodeID
+		}
+	}
+	return istructure.EscapeLocalName(teamName)
+}
+
+// TraceRootNodeID returns the execution trace root node id for one team invocation.
+func TraceRootNodeID(inv *agent.Invocation, teamName string) string {
+	if inv != nil {
+		if nodeID := agent.InvocationTraceNodeID(inv); nodeID != "" {
 			return nodeID
 		}
 	}
