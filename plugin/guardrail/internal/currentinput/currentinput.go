@@ -6,6 +6,7 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
+// Package currentinput provides shared helpers for extracting the latest user input and transcript.
 package currentinput
 
 import (
@@ -16,11 +17,13 @@ import (
 	guardtranscript "trpc.group/trpc-go/trpc-agent-go/plugin/guardrail/internal/transcript"
 )
 
+// Request contains the latest user input plus supporting transcript evidence.
 type Request[T any] struct {
 	LastUserInput string
 	Transcript    []T
 }
 
+// Build extracts the latest user input and supporting transcript for content reviewers.
 func Build[T any](
 	ctx context.Context,
 	messages []model.Message,

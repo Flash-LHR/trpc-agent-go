@@ -26,7 +26,7 @@ const (
 	// CategoryCyberAbuse indicates cyber abuse, malware, intrusion, or exploitation intent.
 	CategoryCyberAbuse Category = "cyber_abuse"
 	// CategoryCredentialTheft indicates credential theft or account takeover intent.
-	CategoryCredentialTheft Category = "credential_theft"
+	CategoryCredentialTheft Category = "credential_theft" // #nosec G101 - This is a classification label, not a credential.
 	// CategoryFraudDeception indicates fraud, scam, or deception intent.
 	CategoryFraudDeception Category = "fraud_deception"
 	// CategoryPrivacyAbuse indicates privacy invasion, stalking, or data abuse intent.
