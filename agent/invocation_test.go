@@ -96,6 +96,23 @@ func (m *mockAgent) FindSubAgent(name string) Agent {
 	return nil
 }
 
+type invocationSyncTestModel struct {
+	name string
+}
+
+func (m *invocationSyncTestModel) GenerateContent(
+	_ context.Context,
+	_ *model.Request,
+) (<-chan *model.Response, error) {
+	ch := make(chan *model.Response)
+	close(ch)
+	return ch, nil
+}
+
+func (m *invocationSyncTestModel) Info() model.Info {
+	return model.Info{Name: m.name}
+}
+
 func TestInvocation_Clone(t *testing.T) {
 	inv := NewInvocation(
 		WithInvocationID("test-invocation"),
@@ -143,6 +160,87 @@ func TestInvocation_View_PreservesIdentityWithoutMutatingSource(t *testing.T) {
 	require.Equal(t, sourceConfigs, inv.RunOptions.CustomAgentConfigs)
 	require.Equal(t, "root/node", InvocationTraceNodeID(view))
 	require.Equal(t, "root/node", InvocationTraceNodeID(inv))
+}
+
+func TestInvocation_SyncView_CopiesExecutionVisibleState(t *testing.T) {
+	sourceConfigs := map[string]any{"source": "config"}
+	source := NewInvocation(
+		WithInvocationID("source-invocation"),
+		WithInvocationAgent(&mockAgent{name: "source-agent"}),
+		WithInvocationRunOptions(RunOptions{
+			RequestID:          "request-id",
+			CustomAgentConfigs: sourceConfigs,
+		}),
+		WithInvocationMessage(model.Message{Role: model.RoleUser, Content: "Hello"}),
+	)
+	source.state = map[string]any{flusherStateKey: "source-holder"}
+	viewAgent := &mockAgent{name: "view-agent"}
+	viewModel := &invocationSyncTestModel{name: "view-model"}
+	view := source.View()
+	view.Agent = viewAgent
+	view.AgentName = viewAgent.name
+	view.InvocationID = "view-invocation"
+	view.Branch = "view-branch"
+	view.EndInvocation = true
+	view.Model = viewModel
+	view.Message = model.Message{Role: model.RoleAssistant, Content: "View"}
+	view.TransferInfo = &TransferInfo{
+		TargetAgentName: "target-agent",
+		Message:         "transfer-message",
+	}
+	view.StructuredOutput = &model.StructuredOutput{}
+	view.StructuredOutputType = reflect.TypeOf(struct{}{})
+	view.eventFilterKey = "view-filter-key"
+	view.parent = NewInvocation(WithInvocationID("parent-invocation"))
+	view.entryPredecessorStepIDs = []string{"step-1", "step-2"}
+	view.traceNodeID = "view/node"
+	view.MaxLLMCalls = 3
+	view.MaxToolIterations = 4
+	view.timingInfo = &model.TimingInfo{FirstTokenDuration: time.Second}
+	view.llmCallCount = 1
+	view.toolIterationCount = 2
+	view.state = map[string]any{flusherStateKey: "view-holder"}
+
+	source.SyncView(view)
+
+	require.Same(t, viewAgent, source.Agent)
+	require.Equal(t, "view-agent", source.AgentName)
+	require.Equal(t, "view-invocation", source.InvocationID)
+	require.Equal(t, "view-branch", source.Branch)
+	require.True(t, source.EndInvocation)
+	require.Same(t, viewModel, source.Model)
+	require.Equal(t, "View", source.Message.Content)
+	require.Equal(t, "target-agent", source.TransferInfo.TargetAgentName)
+	require.NotNil(t, source.StructuredOutput)
+	require.Equal(t, reflect.TypeOf(struct{}{}), source.StructuredOutputType)
+	require.Equal(t, "view-filter-key", source.GetEventFilterKey())
+	require.Equal(t, "parent-invocation", source.GetParentInvocation().InvocationID)
+	require.Equal(t, []string{"step-1", "step-2"}, source.entryPredecessorStepIDs)
+	require.Equal(t, "view/node", InvocationTraceNodeID(source))
+	require.Equal(t, 3, source.MaxLLMCalls)
+	require.Equal(t, 4, source.MaxToolIterations)
+	require.Equal(t, time.Second, source.timingInfo.FirstTokenDuration)
+	require.Equal(t, 1, source.llmCallCount)
+	require.Equal(t, 2, source.toolIterationCount)
+	require.Equal(t, sourceConfigs, source.RunOptions.CustomAgentConfigs)
+	require.Equal(t, "view-holder", source.state[flusherStateKey])
+}
+
+func TestInvocation_SyncView_Guards(t *testing.T) {
+	var nilInvocation *Invocation
+	nilInvocation.SyncView(NewInvocation())
+
+	source := NewInvocation(
+		WithInvocationID("source-invocation"),
+		WithInvocationAgent(&mockAgent{name: "source-agent"}),
+	)
+	source.SyncView(nil)
+	require.Equal(t, "source-invocation", source.InvocationID)
+	require.Equal(t, "source-agent", source.AgentName)
+
+	source.SyncView(source)
+	require.Equal(t, "source-invocation", source.InvocationID)
+	require.Equal(t, "source-agent", source.AgentName)
 }
 
 func TestInvocation_AddNoticeChannel(t *testing.T) {
