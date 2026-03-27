@@ -2187,26 +2187,7 @@ func newToolsNodeRuntime(
 
 		// Extract execution context for event emission.
 		invocationID, _, _, _, eventChan := extractExecutionContext(state)
-
-		effectiveTools := staticTools
-		if node.refreshToolSetsOnRun && len(node.toolSets) > 0 {
-			effectiveTools = mergeToolsWithToolSets(
-				ctx,
-				baseTools,
-				node.toolSets,
-			)
-		}
-		if invocation, ok := agent.InvocationFromContext(ctx); ok {
-			localNodeID := node.ID
-			if currentNodeID, ok := GetStateValue[string](state, StateKeyCurrentNodeID); ok && currentNodeID != "" {
-				localNodeID = currentNodeID
-			}
-			if patch, ok := graphSurfacePatch(invocation, localNodeID); ok {
-				if patchedTools, ok := patch.Tools(); ok {
-					effectiveTools = toolSliceToMap(patchedTools)
-				}
-			}
-		}
+		effectiveTools := resolveToolsNodeRuntimeTools(ctx, state, node, baseTools, staticTools)
 
 		// Determine which callbacks to use: node-configured takes precedence over state.
 		toolCallbacks := configuredCallbacks
@@ -2266,6 +2247,37 @@ func newToolsNodeRuntime(
 		}
 		return upd, nil
 	}, cloneToolsMap(staticTools)
+}
+
+func resolveToolsNodeRuntimeTools(
+	ctx context.Context,
+	state State,
+	node *Node,
+	baseTools map[string]tool.Tool,
+	staticTools map[string]tool.Tool,
+) map[string]tool.Tool {
+	effectiveTools := staticTools
+	if node.refreshToolSetsOnRun && len(node.toolSets) > 0 {
+		effectiveTools = mergeToolsWithToolSets(
+			ctx,
+			baseTools,
+			node.toolSets,
+		)
+	}
+	invocation, ok := agent.InvocationFromContext(ctx)
+	if !ok {
+		return effectiveTools
+	}
+	localNodeID := node.ID
+	if currentNodeID, ok := GetStateValue[string](state, StateKeyCurrentNodeID); ok && currentNodeID != "" {
+		localNodeID = currentNodeID
+	}
+	if patch, ok := graphSurfacePatch(invocation, localNodeID); ok {
+		if patchedTools, ok := patch.Tools(); ok {
+			return toolSliceToMap(patchedTools)
+		}
+	}
+	return effectiveTools
 }
 
 // copyRuntimeStateFiltered creates a shallow copy of the parent state excluding

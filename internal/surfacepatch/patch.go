@@ -6,6 +6,7 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
+// Package surfacepatch stores runtime node surface patches in invocation configs.
 package surfacepatch
 
 import (

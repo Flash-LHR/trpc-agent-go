@@ -77,6 +77,7 @@ func (a *LLMAgent) modelSurfaceForInvocation(
 	return patch.Model()
 }
 
+// InvocationToolSurface returns the invocation-scoped tool surface and user tool names.
 func (a *LLMAgent) InvocationToolSurface(
 	ctx context.Context,
 	inv *agent.Invocation,

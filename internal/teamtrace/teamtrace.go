@@ -6,6 +6,7 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
+// Package teamtrace provides internal helpers for mounted team node ids.
 package teamtrace
 
 import (
