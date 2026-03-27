@@ -19,7 +19,6 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	istructure "trpc.group/trpc-go/trpc-agent-go/internal/structure"
-	"trpc.group/trpc-go/trpc-agent-go/internal/surfacepatch"
 	"trpc.group/trpc-go/trpc-agent-go/internal/teamtrace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
@@ -201,47 +200,35 @@ func (t *Team) runCoordinator(
 		return nil, errors.New("coordinator is nil")
 	}
 	rootNodeID := teamtrace.RootNodeID(invocation, t.name)
-	runOptions := invocation.RunOptions
-	runOptions.CustomAgentConfigs = teamtrace.WithMemberTraceRoot(
-		runOptions.CustomAgentConfigs,
-		rootNodeID,
-	)
-	runOptions.CustomAgentConfigs = surfacepatch.WithRootNodeID(
-		runOptions.CustomAgentConfigs,
+	teamtrace.SetMemberTraceRootForInvocation(invocation, rootNodeID)
+	agent.SetInvocationSurfaceRootNodeID(
+		invocation,
 		teamtrace.CoordinatorNodeID(rootNodeID),
 	)
-	coordinatorInvocation := invocation.View(
-		agent.WithInvocationAgent(t.coordinator),
-		agent.WithInvocationRunOptions(runOptions),
-	)
-	coordinatorCtx := agent.NewInvocationContext(ctx, coordinatorInvocation)
-	coordinatorEventCh, err := t.coordinator.Run(
-		coordinatorCtx,
-		coordinatorInvocation,
-	)
-	invocation.SyncView(coordinatorInvocation)
+	coordinatorEventCh, err := t.coordinator.Run(ctx, invocation)
 	if err != nil {
+		agent.ClearInvocationSurfaceRootNodeID(invocation)
+		teamtrace.ClearMemberTraceRootForInvocation(invocation)
 		return nil, err
 	}
-	return wrapCoordinatorInvocationView(
+	return wrapCoordinatorInvocationState(
 		invocation,
-		coordinatorInvocation,
 		coordinatorEventCh,
 	), nil
 }
 
-func wrapCoordinatorInvocationView(
-	source *agent.Invocation,
-	view *agent.Invocation,
+func wrapCoordinatorInvocationState(
+	invocation *agent.Invocation,
 	src <-chan *event.Event,
 ) <-chan *event.Event {
-	if source == nil || view == nil || src == nil {
+	if invocation == nil || src == nil {
 		return src
 	}
 	out := make(chan *event.Event)
 	go func() {
 		defer close(out)
-		defer source.SyncView(view)
+		defer teamtrace.ClearMemberTraceRootForInvocation(invocation)
+		defer agent.ClearInvocationSurfaceRootNodeID(invocation)
 		for evt := range src {
 			out <- evt
 		}

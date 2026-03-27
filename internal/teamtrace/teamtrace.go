@@ -12,7 +12,6 @@ package teamtrace
 import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	istructure "trpc.group/trpc-go/trpc-agent-go/internal/structure"
-	"trpc.group/trpc-go/trpc-agent-go/internal/surfacepatch"
 )
 
 const memberTraceRootConfigsKey = "__trpc_agent_internal_team_member_trace_root__"
@@ -20,10 +19,7 @@ const memberTraceRootConfigsKey = "__trpc_agent_internal_team_member_trace_root_
 // RootNodeID returns the mounted root node id for one team invocation.
 func RootNodeID(inv *agent.Invocation, teamName string) string {
 	if inv != nil {
-		if nodeID := surfacepatch.RootNodeID(
-			inv.RunOptions.CustomAgentConfigs,
-			agent.InvocationTraceNodeID(inv),
-		); nodeID != "" {
+		if nodeID := agent.InvocationSurfaceRootNodeID(inv); nodeID != "" {
 			return nodeID
 		}
 	}
@@ -61,6 +57,30 @@ func MemberTraceRoot(cfgs map[string]any) string {
 	}
 	rootNodeID, _ := value.(string)
 	return rootNodeID
+}
+
+// SetMemberTraceRootForInvocation stores the mounted team root on one invocation.
+func SetMemberTraceRootForInvocation(
+	inv *agent.Invocation,
+	rootNodeID string,
+) {
+	agent.SetInvocationTeamMemberTraceRoot(inv, rootNodeID)
+}
+
+// ClearMemberTraceRootForInvocation removes the mounted team root from one invocation.
+func ClearMemberTraceRootForInvocation(inv *agent.Invocation) {
+	agent.ClearInvocationTeamMemberTraceRoot(inv)
+}
+
+// MemberTraceRootForInvocation returns the mounted team root for one invocation.
+func MemberTraceRootForInvocation(inv *agent.Invocation) string {
+	if inv == nil {
+		return ""
+	}
+	if rootNodeID := agent.InvocationTeamMemberTraceRoot(inv); rootNodeID != "" {
+		return rootNodeID
+	}
+	return MemberTraceRoot(inv.RunOptions.CustomAgentConfigs)
 }
 
 func copyConfigs(in map[string]any) map[string]any {

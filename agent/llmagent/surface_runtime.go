@@ -27,10 +27,7 @@ func (a *LLMAgent) rootSurfacePatch(
 	if inv == nil {
 		return surfacepatch.Patch{}, false
 	}
-	nodeID := surfacepatch.RootNodeID(
-		inv.RunOptions.CustomAgentConfigs,
-		agent.InvocationTraceNodeID(inv),
-	)
+	nodeID := agent.InvocationSurfaceRootNodeID(inv)
 	if nodeID == "" {
 		return surfacepatch.Patch{}, false
 	}

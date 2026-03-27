@@ -57,6 +57,10 @@ const (
 	// streamHubStateKey is the invocation state key used by the graph to
 	// share ephemeral streams across node invocations within the same run.
 	streamHubStateKey = "__graph_stream_hub__"
+	// surfaceRootNodeIDStateKey stores one invocation's mounted surface root node id.
+	surfaceRootNodeIDStateKey = "__trpc_agent_internal_surface_root_node_id_state__"
+	// teamMemberTraceRootStateKey stores one invocation's mounted team member trace root.
+	teamMemberTraceRootStateKey = "__trpc_agent_internal_team_member_trace_root_state__"
 
 	// SyncSummaryIntraRunStateKey is set on the invocation by the
 	// flow when sync intra-run summary is active.
@@ -1181,6 +1185,12 @@ func (inv *Invocation) cloneState() map[string]any {
 	}
 	if hub, ok := inv.state[streamHubStateKey]; ok {
 		copied[streamHubStateKey] = hub
+	}
+	if nodeID, ok := inv.state[surfaceRootNodeIDStateKey]; ok {
+		copied[surfaceRootNodeIDStateKey] = nodeID
+	}
+	if rootNodeID, ok := inv.state[teamMemberTraceRootStateKey]; ok {
+		copied[teamMemberTraceRootStateKey] = rootNodeID
 	}
 	return copied
 }

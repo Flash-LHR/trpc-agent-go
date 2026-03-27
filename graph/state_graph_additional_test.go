@@ -3228,10 +3228,7 @@ func TestBuildAgentInvocationWithStateAndScope_PropagatesExecutionTraceMetadata(
 	require.Equal(
 		t,
 		"parent/delegate/child",
-		surfacepatch.RootNodeID(
-			inv.RunOptions.CustomAgentConfigs,
-			agent.InvocationTraceNodeID(inv),
-		),
+		agent.InvocationSurfaceRootNodeID(inv),
 	)
 	require.Equal(t, []string{rootStepID}, agent.NextExecutionTracePredecessors(inv))
 }
@@ -3263,10 +3260,7 @@ func TestBuildAgentInvocationWithStateAndScope_PreservesMountedSurfaceRoot(
 	require.Equal(
 		t,
 		"workflow/parent/delegate/child",
-		surfacepatch.RootNodeID(
-			inv.RunOptions.CustomAgentConfigs,
-			agent.InvocationTraceNodeID(inv),
-		),
+		agent.InvocationSurfaceRootNodeID(inv),
 	)
 }
 

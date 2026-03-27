@@ -30,7 +30,6 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/barrier"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/flush"
-	"trpc.group/trpc-go/trpc-agent-go/internal/surfacepatch"
 	"trpc.group/trpc-go/trpc-agent-go/internal/teamtrace"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -825,10 +824,7 @@ type streamingMockAgent struct {
 func (m *streamingMockAgent) Run(ctx context.Context, inv *agent.Invocation) (<-chan *event.Event, error) {
 	// record the filter key used so tests can assert it equals agent name.
 	m.seenFilterKey = inv.GetEventFilterKey()
-	m.seenSurfaceRootNodeID = surfacepatch.RootNodeID(
-		inv.RunOptions.CustomAgentConfigs,
-		agent.InvocationTraceNodeID(inv),
-	)
+	m.seenSurfaceRootNodeID = agent.InvocationSurfaceRootNodeID(inv)
 	ch := make(chan *event.Event, 3)
 	go func() {
 		defer close(ch)

@@ -33,10 +33,7 @@ func graphSurfacePatch(
 	if invocation == nil || localNodeID == "" {
 		return surfacepatch.Patch{}, false
 	}
-	rootNodeID := surfacepatch.RootNodeID(
-		invocation.RunOptions.CustomAgentConfigs,
-		agent.InvocationTraceNodeID(invocation),
-	)
+	rootNodeID := agent.InvocationSurfaceRootNodeID(invocation)
 	absNodeID := istructure.JoinNodeID(
 		rootNodeID,
 		localNodeID,

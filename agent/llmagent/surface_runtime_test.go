@@ -94,7 +94,7 @@ func TestLLMAgent_SurfacePatch_ModelOverridesLegacyRunOptions(t *testing.T) {
 	require.Equal(t, patchedModel, inv.Model)
 }
 
-func TestLLMAgent_RunOptions_OverrideStaticInstructionAndSystemPrompt(
+func TestLLMAgent_RunOptions_DoNotOverrideStaticInstructionAndSystemPrompt(
 	t *testing.T,
 ) {
 	agt := New(
@@ -132,10 +132,10 @@ func TestLLMAgent_RunOptions_OverrideStaticInstructionAndSystemPrompt(
 
 	require.NotEmpty(t, req.Messages)
 	content := req.Messages[0].Content
-	require.Contains(t, content, "legacy instruction")
-	require.Contains(t, content, "legacy system prompt")
-	require.NotContains(t, content, "static instruction")
-	require.NotContains(t, content, "static system prompt")
+	require.Contains(t, content, "static instruction")
+	require.Contains(t, content, "static system prompt")
+	require.NotContains(t, content, "legacy instruction")
+	require.NotContains(t, content, "legacy system prompt")
 }
 
 func TestLLMAgent_Run_SurfacePatch_InsertsFewShotBeforeUserMessage(t *testing.T) {

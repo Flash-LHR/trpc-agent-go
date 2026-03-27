@@ -35,7 +35,6 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/internal/jsonrepair"
 	stateinject "trpc.group/trpc-go/trpc-agent-go/internal/state"
 	istructure "trpc.group/trpc-go/trpc-agent-go/internal/structure"
-	"trpc.group/trpc-go/trpc-agent-go/internal/surfacepatch"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	itool "trpc.group/trpc-go/trpc-agent-go/internal/tool"
 	"trpc.group/trpc-go/trpc-agent-go/internal/toolcall"
@@ -3487,13 +3486,6 @@ func buildAgentInvocationWithStateScopeAndInputKey(
 			runOptions.CustomAgentConfigs,
 			nodeID,
 		)
-		if surfaceRootNodeID := buildAgentNodeSurfaceRoot(parentInvocation, nodeID, targetAgent); surfaceRootNodeID != "" {
-			runOptions.CustomAgentConfigs = surfacepatch.WithRootNodeID(
-				runOptions.CustomAgentConfigs,
-				surfaceRootNodeID,
-			)
-		}
-
 		base := util.If(scope != "", scope, targetAgent.Info().Name)
 		parentKey := parentInvocation.GetEventFilterKey()
 		// Build a stable FilterKey without UUID to ensure multi-turn conversations
@@ -3513,6 +3505,11 @@ func buildAgentInvocationWithStateScopeAndInputKey(
 		}
 		if traceNodeID := buildAgentNodeTraceNodeID(parentInvocation, nodeID); traceNodeID != "" {
 			invocationOpts = append(invocationOpts, agent.WithInvocationTraceNodeID(traceNodeID))
+		}
+		if surfaceRootNodeID := buildAgentNodeSurfaceRoot(parentInvocation, nodeID, targetAgent); surfaceRootNodeID != "" {
+			invocationOpts = append(invocationOpts, func(inv *agent.Invocation) {
+				agent.SetInvocationSurfaceRootNodeID(inv, surfaceRootNodeID)
+			})
 		}
 		entryPredecessors := currentTraceStepPredecessors(parentState)
 		if len(entryPredecessors) == 0 {
@@ -3587,10 +3584,7 @@ func buildAgentNodeSurfaceRoot(
 	if parentInvocation == nil {
 		return ""
 	}
-	baseNodeID := surfacepatch.RootNodeID(
-		parentInvocation.RunOptions.CustomAgentConfigs,
-		agent.InvocationTraceNodeID(parentInvocation),
-	)
+	baseNodeID := agent.InvocationSurfaceRootNodeID(parentInvocation)
 	if nodeID != "" {
 		baseNodeID = istructure.JoinNodeID(baseNodeID, nodeID)
 	}

@@ -104,10 +104,7 @@ func (t *testCoordinator) Run(
 ) (<-chan *event.Event, error) {
 	t.ran = true
 	t.gotTraceNodeID = agent.InvocationTraceNodeID(inv)
-	t.gotSurfaceRootNodeID = surfacepatch.RootNodeID(
-		inv.RunOptions.CustomAgentConfigs,
-		t.gotTraceNodeID,
-	)
+	t.gotSurfaceRootNodeID = agent.InvocationSurfaceRootNodeID(inv)
 	if t.runFunc != nil {
 		return t.runFunc(ctx, inv, t.addedToolSets)
 	}
@@ -200,10 +197,7 @@ func (t *traceRecordingAgent) Run(
 	inv *agent.Invocation,
 ) (<-chan *event.Event, error) {
 	t.gotTraceNodeID = agent.InvocationTraceNodeID(inv)
-	t.gotSurfaceRootNodeID = surfacepatch.RootNodeID(
-		inv.RunOptions.CustomAgentConfigs,
-		t.gotTraceNodeID,
-	)
+	t.gotSurfaceRootNodeID = agent.InvocationSurfaceRootNodeID(inv)
 	ch := make(chan *event.Event, 1)
 	go func() {
 		defer close(ch)
@@ -697,6 +691,41 @@ func TestTeam_RunCoordinator_PreservesSourceInvocationObservableState(t *testing
 	require.Equal(t, testCoordinatorName, inv.AgentName)
 	require.Same(t, modelImpl, inv.Model)
 	require.Equal(t, sourceConfigs, inv.RunOptions.CustomAgentConfigs)
+}
+
+func TestTeam_RunCoordinator_PreservesCustomInvocationState(t *testing.T) {
+	coordinator := &testCoordinator{name: testCoordinatorName}
+	coordinator.runFunc = func(
+		_ context.Context,
+		inv *agent.Invocation,
+		_ []tool.ToolSet,
+	) (<-chan *event.Event, error) {
+		inv.SetState("custom:state", "value")
+		ch := make(chan *event.Event, 1)
+		go func() {
+			defer close(ch)
+			ch <- event.New(inv.InvocationID, coordinator.name)
+		}()
+		return ch, nil
+	}
+	tm, err := New(coordinator, []agent.Agent{testAgent{name: testMemberNameOne}})
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationAgent(tm),
+		agent.WithInvocationSession(session.NewSession(testAppName, testUserID, testSessionID)),
+		agent.WithInvocationMessage(model.NewUserMessage(testUserMessage)),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+	ch, err := tm.Run(ctx, inv)
+	require.NoError(t, err)
+	value, ok := inv.GetState("custom:state")
+	require.True(t, ok)
+	require.Equal(t, "value", value)
+	for range ch {
+	}
+	value, ok = inv.GetState("custom:state")
+	require.True(t, ok)
+	require.Equal(t, "value", value)
 }
 
 func TestTeam_RunCoordinator_MemberToolUsesMemberSurfaceRootNodeID(t *testing.T) {

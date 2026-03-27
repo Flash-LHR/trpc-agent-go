@@ -22,7 +22,6 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/flush"
-	"trpc.group/trpc-go/trpc-agent-go/internal/surfacepatch"
 	"trpc.group/trpc-go/trpc-agent-go/internal/teamtrace"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -229,7 +228,7 @@ func (at *Tool) surfaceRootNodeIDForParentInvocation(
 	if parentInv == nil || at.agent == nil {
 		return ""
 	}
-	rootNodeID := teamtrace.MemberTraceRoot(parentInv.RunOptions.CustomAgentConfigs)
+	rootNodeID := teamtrace.MemberTraceRootForInvocation(parentInv)
 	if rootNodeID == "" {
 		return ""
 	}
@@ -250,14 +249,11 @@ func (at *Tool) childInvocationOptions(
 		return invocationOpts
 	}
 	if surfaceRootNodeID := at.surfaceRootNodeIDForParentInvocation(parentInv); surfaceRootNodeID != "" {
-		runOptions := parentInv.RunOptions
-		runOptions.CustomAgentConfigs = surfacepatch.WithRootNodeID(
-			runOptions.CustomAgentConfigs,
-			surfaceRootNodeID,
-		)
 		invocationOpts = append(
 			invocationOpts,
-			agent.WithInvocationRunOptions(runOptions),
+			func(inv *agent.Invocation) {
+				agent.SetInvocationSurfaceRootNodeID(inv, surfaceRootNodeID)
+			},
 		)
 	}
 	return invocationOpts
