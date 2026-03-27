@@ -163,3 +163,65 @@ func TestPatch_ClonesMutableValues(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, gotRepo)
 }
+
+func TestWithPatch_IgnoresEmptyInputs(t *testing.T) {
+	cfgs := map[string]any{"keep": "value"}
+	require.Equal(t, cfgs, WithPatch(cfgs, "", Patch{}))
+	require.Equal(t, cfgs, WithPatch(cfgs, "root", Patch{}))
+}
+
+func TestPatchForNode_MissingAndDefensiveCopy(t *testing.T) {
+	var patch Patch
+	patch.SetInstruction("original")
+	cfgs := WithPatch(nil, "root", patch)
+	_, ok := PatchForNode(cfgs, "")
+	require.False(t, ok)
+	_, ok = PatchForNode(cfgs, "missing")
+	require.False(t, ok)
+	got, ok := PatchForNode(cfgs, "root")
+	require.True(t, ok)
+	got.SetInstruction("mutated")
+	again, ok := PatchForNode(cfgs, "root")
+	require.True(t, ok)
+	instruction, ok := again.Instruction()
+	require.True(t, ok)
+	require.Equal(t, "original", instruction)
+}
+
+func TestRootNodeID_UsesStoredValueAndFallsBack(t *testing.T) {
+	require.Equal(t, "fallback", RootNodeID(nil, "fallback"))
+	cfgs := WithRootNodeID(nil, "workflow/root")
+	require.Equal(t, "workflow/root", RootNodeID(cfgs, "fallback"))
+	require.Nil(t, WithRootNodeID(nil, ""))
+	require.Equal(
+		t,
+		"fallback",
+		RootNodeID(map[string]any{rootNodeIDConfigsKey: ""}, "fallback"),
+	)
+	require.Equal(
+		t,
+		"fallback",
+		RootNodeID(map[string]any{rootNodeIDConfigsKey: 123}, "fallback"),
+	)
+}
+
+func TestPatchForNode_ReadsMapStringPatchConfigs(t *testing.T) {
+	var patch Patch
+	patch.SetGlobalInstruction("global")
+	cfgs := map[string]any{
+		configsKey: map[string]Patch{
+			"root": patch,
+		},
+	}
+	got, ok := PatchForNode(cfgs, "root")
+	require.True(t, ok)
+	globalInstruction, ok := got.GlobalInstruction()
+	require.True(t, ok)
+	require.Equal(t, "global", globalInstruction)
+	got.SetGlobalInstruction("mutated")
+	again, ok := PatchForNode(cfgs, "root")
+	require.True(t, ok)
+	globalInstruction, ok = again.GlobalInstruction()
+	require.True(t, ok)
+	require.Equal(t, "global", globalInstruction)
+}
