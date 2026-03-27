@@ -12,6 +12,7 @@ package team
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent/structure"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/internal/surfacepatch"
+	"trpc.group/trpc-go/trpc-agent-go/internal/teamtrace"
 	itool "trpc.group/trpc-go/trpc-agent-go/internal/tool"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
@@ -765,6 +767,39 @@ func TestTeam_RunCoordinator_MemberToolUsesMemberSurfaceRootNodeID(t *testing.T)
 	require.Equal(t, "workflow/team/coordinator", coordinator.gotSurfaceRootNodeID)
 	require.Equal(t, testMemberNameOne, member.gotTraceNodeID)
 	require.Equal(t, "workflow/team/member_one", member.gotSurfaceRootNodeID)
+}
+
+func TestTeam_RunCoordinator_ClearsMountedRootsOnCoordinatorError(t *testing.T) {
+	coordinator := &testCoordinator{name: testCoordinatorName}
+	coordinator.runFunc = func(
+		_ context.Context,
+		inv *agent.Invocation,
+		_ []tool.ToolSet,
+	) (<-chan *event.Event, error) {
+		require.Equal(t, "workflow/team/coordinator", agent.InvocationSurfaceRootNodeID(inv))
+		require.Equal(t, "workflow/team", teamtrace.MemberTraceRootForInvocation(inv))
+		return nil, errors.New("coordinator failed")
+	}
+	tm, err := New(coordinator, []agent.Agent{testAgent{name: testMemberNameOne}})
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationAgent(tm),
+		agent.WithInvocationTraceNodeID("workflow/team"),
+		agent.WithInvocationMessage(model.NewUserMessage(testUserMessage)),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+	ch, err := tm.Run(ctx, inv)
+	require.Nil(t, ch)
+	require.EqualError(t, err, "coordinator failed")
+	require.Equal(t, "workflow/team", agent.InvocationSurfaceRootNodeID(inv))
+	require.Empty(t, teamtrace.MemberTraceRootForInvocation(inv))
+}
+
+func TestWrapCoordinatorInvocationState_Guards(t *testing.T) {
+	src := make(chan *event.Event)
+	var recvOnly <-chan *event.Event = src
+	require.Equal(t, recvOnly, wrapCoordinatorInvocationState(nil, src))
+	require.Nil(t, wrapCoordinatorInvocationState(agent.NewInvocation(), nil))
 }
 
 func TestTeam_RunSwarm_PreservesRunStructuredOutput(t *testing.T) {

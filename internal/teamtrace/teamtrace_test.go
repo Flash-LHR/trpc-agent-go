@@ -52,3 +52,29 @@ func TestMemberTraceRoot_ConfigHelpers(t *testing.T) {
 	require.Empty(t, MemberTraceRoot(map[string]any{memberTraceRootConfigsKey: 123}))
 	require.Equal(t, cfgs, WithMemberTraceRoot(cfgs, ""))
 }
+
+func TestMemberTraceRootForInvocation_PrefersInvocationStateAndFallsBackToConfigs(t *testing.T) {
+	inv := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			CustomAgentConfigs: WithMemberTraceRoot(nil, "workflow/team/config"),
+		}),
+	)
+	require.Equal(t, "workflow/team/config", MemberTraceRootForInvocation(inv))
+
+	SetMemberTraceRootForInvocation(inv, "workflow/team/state")
+	require.Equal(t, "workflow/team/state", MemberTraceRootForInvocation(inv))
+
+	ClearMemberTraceRootForInvocation(inv)
+	require.Equal(t, "workflow/team/config", MemberTraceRootForInvocation(inv))
+}
+
+func TestMemberTraceRootForInvocation_NilAndEmptyInput(t *testing.T) {
+	var nilInv *agent.Invocation
+	SetMemberTraceRootForInvocation(nilInv, "workflow/team")
+	ClearMemberTraceRootForInvocation(nilInv)
+	require.Empty(t, MemberTraceRootForInvocation(nilInv))
+
+	inv := agent.NewInvocation()
+	SetMemberTraceRootForInvocation(inv, "")
+	require.Empty(t, MemberTraceRootForInvocation(inv))
+}
