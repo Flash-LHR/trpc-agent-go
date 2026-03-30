@@ -31,21 +31,16 @@ func canonicalizeResponse(inv *agent.Invocation, rsp *model.Response) (*model.Re
 	if !hasToolCalls {
 		return nil, nil
 	}
-	if inv == nil {
-		return nil, fmt.Errorf("canonicalizing tool call ids: invocation is nil")
-	}
-	if inv.InvocationID == "" {
-		return nil, fmt.Errorf("canonicalizing tool call ids: invocation id is empty")
-	}
-	if rsp.ID == "" {
-		return nil, fmt.Errorf("canonicalizing tool call ids: response id is empty")
+	invocationID := ""
+	if inv != nil {
+		invocationID = inv.InvocationID
 	}
 	cloned := rsp.Clone()
 	for i, choice := range rsp.Choices {
 		clonedChoice := cloned.Choices[i]
 		canonicalizedMessageToolCalls, err := canonicalizeToolCalls(
 			choice.Message.ToolCalls,
-			inv.InvocationID,
+			invocationID,
 			rsp.ID,
 			choice.Index,
 		)
@@ -59,7 +54,7 @@ func canonicalizeResponse(inv *agent.Invocation, rsp *model.Response) (*model.Re
 		}
 		canonicalizedDeltaToolCalls, err := canonicalizeToolCalls(
 			choice.Delta.ToolCalls,
-			inv.InvocationID,
+			invocationID,
 			rsp.ID,
 			choice.Index,
 		)
@@ -88,13 +83,6 @@ func canonicalizeToolCalls(
 	canonicalized := append([]model.ToolCall(nil), toolCalls...)
 	for slotIndex := range canonicalized {
 		rawToolCallID := toolCalls[slotIndex].ID
-		if rawToolCallID == "" {
-			return nil, fmt.Errorf(
-				"canonicalizing tool call ids: tool call id is empty at choice %d slot %d",
-				choiceIndex,
-				slotIndex,
-			)
-		}
 		canonicalized[slotIndex].ID = canonicalToolCallID(
 			invocationID,
 			responseID,

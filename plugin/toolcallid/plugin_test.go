@@ -14,9 +14,11 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	pluginbase "trpc.group/trpc-go/trpc-agent-go/plugin"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
@@ -26,6 +28,86 @@ func TestNew(t *testing.T) {
 	t.Parallel()
 	p := New()
 	require.Equal(t, defaultPluginName, p.Name())
+}
+
+func TestPlugin_NameWithNilReceiverReturnsEmptyString(t *testing.T) {
+	t.Parallel()
+	var p *Plugin
+	require.Empty(t, p.Name())
+}
+
+func TestPlugin_RegisterHandlesNilReceiverAndRegistry(t *testing.T) {
+	t.Parallel()
+	var p *Plugin
+	require.NotPanics(t, func() {
+		p.Register(nil)
+	})
+	plugin := New()
+	require.NotPanics(t, func() {
+		plugin.Register(nil)
+	})
+	registry := &pluginbase.Registry{}
+	require.NotPanics(t, func() {
+		plugin.Register(registry)
+	})
+}
+
+func TestPlugin_AfterModelNoOpsOnNilInputs(t *testing.T) {
+	t.Parallel()
+	plugin := New()
+	result, err := plugin.afterModel(context.Background(), nil)
+	require.NoError(t, err)
+	require.Nil(t, result)
+	result, err = plugin.afterModel(context.Background(), &model.AfterModelArgs{})
+	require.NoError(t, err)
+	require.Nil(t, result)
+}
+
+func TestPlugin_AfterModelBestEffortWithoutInvocation(t *testing.T) {
+	t.Parallel()
+	plugin := New()
+	rsp := &model.Response{
+		ID:        "rsp-1",
+		Done:      true,
+		IsPartial: false,
+		Choices: []model.Choice{{
+			Index: 0,
+			Message: model.Message{
+				Role: model.RoleAssistant,
+				ToolCalls: []model.ToolCall{{
+					ID:   "call-1",
+					Type: "function",
+				}},
+			},
+		}},
+	}
+	_, err := plugin.afterModel(context.Background(), &model.AfterModelArgs{Response: rsp})
+	require.NoError(t, err)
+	require.Equal(t, canonicalToolCallID("", "rsp-1", "call-1", 0, 0), rsp.Choices[0].Message.ToolCalls[0].ID)
+}
+
+func TestPlugin_AfterModelCanonicalizesWithInvocationFromContext(t *testing.T) {
+	t.Parallel()
+	plugin := New()
+	rsp := &model.Response{
+		ID:        "rsp-1",
+		Done:      true,
+		IsPartial: false,
+		Choices: []model.Choice{{
+			Index: 2,
+			Message: model.Message{
+				Role: model.RoleAssistant,
+				ToolCalls: []model.ToolCall{{
+					ID:   "call-9",
+					Type: "function",
+				}},
+			},
+		}},
+	}
+	ctx := agent.NewInvocationContext(context.Background(), agent.NewInvocation(agent.WithInvocationID("inv-ctx")))
+	_, err := plugin.afterModel(ctx, &model.AfterModelArgs{Response: rsp})
+	require.NoError(t, err)
+	require.Equal(t, canonicalToolCallID("inv-ctx", "rsp-1", "call-9", 2, 0), rsp.Choices[0].Message.ToolCalls[0].ID)
 }
 
 func TestPlugin_Integration_CanonicalIDPropagatesAcrossCallbacksToolExecutionAndNextRequest(t *testing.T) {

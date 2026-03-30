@@ -266,7 +266,7 @@ func TestCanonicalizeResponse_RewritesFinalDeltaOnlyToolCalls(t *testing.T) {
 	)
 }
 
-func TestCanonicalizeResponse_ErrorsOnMissingRequiredFields(t *testing.T) {
+func TestCanonicalizeResponse_BestEffortWithMissingFields(t *testing.T) {
 	t.Parallel()
 	baseResponse := &model.Response{
 		ID:        "rsp-1",
@@ -284,22 +284,22 @@ func TestCanonicalizeResponse_ErrorsOnMissingRequiredFields(t *testing.T) {
 		}},
 	}
 	testCases := []struct {
-		name    string
-		inv     *agent.Invocation
-		rsp     *model.Response
-		wantErr string
+		name   string
+		inv    *agent.Invocation
+		rsp    *model.Response
+		wantID string
 	}{
 		{
-			name:    "nil invocation",
-			inv:     nil,
-			rsp:     baseResponse,
-			wantErr: "invocation is nil",
+			name:   "nil invocation",
+			inv:    nil,
+			rsp:    baseResponse,
+			wantID: canonicalToolCallID("", "rsp-1", "call-1", 0, 0),
 		},
 		{
-			name:    "empty invocation id",
-			inv:     agent.NewInvocation(agent.WithInvocationID("")),
-			rsp:     baseResponse,
-			wantErr: "invocation id is empty",
+			name:   "empty invocation id",
+			inv:    agent.NewInvocation(agent.WithInvocationID("")),
+			rsp:    baseResponse,
+			wantID: canonicalToolCallID("", "rsp-1", "call-1", 0, 0),
 		},
 		{
 			name: "empty response id",
@@ -310,7 +310,7 @@ func TestCanonicalizeResponse_ErrorsOnMissingRequiredFields(t *testing.T) {
 				IsPartial: false,
 				Choices:   baseResponse.Choices,
 			},
-			wantErr: "response id is empty",
+			wantID: canonicalToolCallID("inv-1", "", "call-1", 0, 0),
 		},
 		{
 			name: "empty tool call id",
@@ -330,15 +330,17 @@ func TestCanonicalizeResponse_ErrorsOnMissingRequiredFields(t *testing.T) {
 					},
 				}},
 			},
-			wantErr: "tool call id is empty",
+			wantID: canonicalToolCallID("inv-1", "rsp-1", "", 0, 0),
 		},
 	}
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := canonicalizeResponse(tc.inv, tc.rsp)
-			require.ErrorContains(t, err, tc.wantErr)
+			canonicalized, err := canonicalizeResponse(tc.inv, tc.rsp)
+			require.NoError(t, err)
+			require.NotNil(t, canonicalized)
+			require.Equal(t, tc.wantID, canonicalized.Choices[0].Message.ToolCalls[0].ID)
 		})
 	}
 }
