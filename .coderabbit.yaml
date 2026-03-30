@@ -43,7 +43,7 @@ reviews:
     - "!**/*.o"
     - "!**/*.wasm"
 
-  high_level_summary_instructions: >-
+  high_level_summary_instructions: |-
     Please output a bilingual high-level summary.
     Show the English summary first.
     Wrap the Chinese translation in a Markdown-compatible HTML details block collapsed by default.
