@@ -20,18 +20,21 @@ import (
 
 const defaultPluginName = "tool_call_id"
 
-// Plugin canonicalizes final tool call IDs in an AfterModel callback.
-type Plugin struct {
+type plugin struct {
 	name string
 }
 
 // New creates a ToolCall ID plugin.
-func New() *Plugin {
-	return &Plugin{name: defaultPluginName}
+func New() pluginbase.Plugin {
+	return newPlugin()
+}
+
+func newPlugin() *plugin {
+	return &plugin{name: defaultPluginName}
 }
 
 // Name implements plugin.Plugin.
-func (p *Plugin) Name() string {
+func (p *plugin) Name() string {
 	if p == nil {
 		return ""
 	}
@@ -39,14 +42,14 @@ func (p *Plugin) Name() string {
 }
 
 // Register implements plugin.Plugin.
-func (p *Plugin) Register(r *pluginbase.Registry) {
+func (p *plugin) Register(r *pluginbase.Registry) {
 	if p == nil || r == nil {
 		return
 	}
 	r.AfterModel(p.afterModel)
 }
 
-func (p *Plugin) afterModel(
+func (p *plugin) afterModel(
 	ctx context.Context,
 	args *model.AfterModelArgs,
 ) (*model.AfterModelResult, error) {

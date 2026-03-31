@@ -32,17 +32,17 @@ func TestNew(t *testing.T) {
 
 func TestPlugin_NameWithNilReceiverReturnsEmptyString(t *testing.T) {
 	t.Parallel()
-	var p *Plugin
+	var p *plugin
 	require.Empty(t, p.Name())
 }
 
 func TestPlugin_RegisterHandlesNilReceiverAndRegistry(t *testing.T) {
 	t.Parallel()
-	var p *Plugin
+	var p *plugin
 	require.NotPanics(t, func() {
 		p.Register(nil)
 	})
-	plugin := New()
+	plugin := newPlugin()
 	require.NotPanics(t, func() {
 		plugin.Register(nil)
 	})
@@ -54,7 +54,7 @@ func TestPlugin_RegisterHandlesNilReceiverAndRegistry(t *testing.T) {
 
 func TestPlugin_AfterModelNoOpsOnNilInputs(t *testing.T) {
 	t.Parallel()
-	plugin := New()
+	plugin := newPlugin()
 	result, err := plugin.afterModel(context.Background(), nil)
 	require.NoError(t, err)
 	require.Nil(t, result)
@@ -65,7 +65,7 @@ func TestPlugin_AfterModelNoOpsOnNilInputs(t *testing.T) {
 
 func TestPlugin_AfterModelBestEffortWithoutInvocation(t *testing.T) {
 	t.Parallel()
-	plugin := New()
+	plugin := newPlugin()
 	rsp := &model.Response{
 		ID:        "rsp-1",
 		Done:      true,
@@ -88,7 +88,7 @@ func TestPlugin_AfterModelBestEffortWithoutInvocation(t *testing.T) {
 
 func TestPlugin_AfterModelCanonicalizesWithInvocationFromContext(t *testing.T) {
 	t.Parallel()
-	plugin := New()
+	plugin := newPlugin()
 	rsp := &model.Response{
 		ID:        "rsp-1",
 		Done:      true,
