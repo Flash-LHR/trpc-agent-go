@@ -25,7 +25,6 @@ This example shows the standard integration pattern for `plugin/messagemerger` w
 | Argument | Description | Default Value |
 | --- | --- | --- |
 | `-model` | Name of the chat model to use. | `gpt-4o-mini` |
-| `-variant` | OpenAI provider variant. | `openai` |
 
 ## Usage
 
@@ -35,10 +34,10 @@ export OPENAI_API_KEY="your-api-key"
 go run .
 ```
 
-A different model or provider variant can be selected:
+A different model can be selected:
 
 ```bash
-go run . -model deepseek-chat -variant openai
+go run . -model deepseek-chat
 ```
 
 ## Core integration
@@ -49,10 +48,8 @@ The example wires the plugin at Runner construction time:
 runnerInstance := runner.NewRunner(
 	"message-merger-demo",
 	agentInstance,
-	runner.WithSessionService(sessioninmemory.NewSessionService()),
 	runner.WithPlugins(
 		messagemerger.New(
-			messagemerger.WithName("strict_sequence_normalizer"),
 		),
 	),
 )
