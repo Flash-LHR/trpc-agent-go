@@ -48,10 +48,7 @@ The example wires the plugin at Runner construction time:
 runnerInstance := runner.NewRunner(
 	"message-merger-demo",
 	agentInstance,
-	runner.WithPlugins(
-		messagemerger.New(
-		),
-	),
+	runner.WithPlugins(messagemerger.New()),
 )
 ```
 
