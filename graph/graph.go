@@ -306,6 +306,11 @@ func (n *Node) Model() model.Model {
 	return n.llmModel
 }
 
+// AgentEventScope returns the configured event scope for an agent node.
+func (n *Node) AgentEventScope() string {
+	return n.agentEventScope
+}
+
 // HasTools reports whether the node has statically configured tools.
 func (n *Node) HasTools() bool {
 	return len(n.baseTools) > 0 || len(n.toolSets) > 0
@@ -484,6 +489,10 @@ type ExecutionContext struct {
 	// stateMutex protects State reads/writes.
 	stateMutex sync.RWMutex
 	State      State
+	// completionIdentity* carry internal agent-node completion identity when
+	// the public graph state does not expose StateKeyLastResponseID.
+	completionIdentityText string
+	completionIdentity     string
 	// pendingMu protects pendingWrites operations.
 	pendingMu     sync.Mutex
 	pendingWrites []PendingWrite
@@ -510,6 +519,27 @@ type ExecutionContext struct {
 	traceBarrierChannelSources map[string]map[string]string
 	// traceStepIDByTaskID tracks the real trace step created for each task.
 	traceStepIDByTaskID map[string]string
+}
+
+func (e *ExecutionContext) setCompletionIdentity(text, identity string) {
+	if e == nil {
+		return
+	}
+	e.stateMutex.Lock()
+	defer e.stateMutex.Unlock()
+	e.completionIdentityText = text
+	e.completionIdentity = identity
+}
+
+func (e *ExecutionContext) snapshotCompletionState(
+	fields map[string]StateField,
+) (State, string, string) {
+	if e == nil {
+		return nil, "", ""
+	}
+	e.stateMutex.RLock()
+	defer e.stateMutex.RUnlock()
+	return e.State.deepCopy(false, fields), e.completionIdentityText, e.completionIdentity
 }
 
 // Command represents a command that combines state updates with routing.

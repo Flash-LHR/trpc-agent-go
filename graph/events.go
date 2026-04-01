@@ -346,6 +346,13 @@ type CompletionMetadata struct {
 	TotalDuration time.Duration `json:"totalDuration"`
 	// FinalStateKeys is the number of keys in the final state.
 	FinalStateKeys int `json:"finalStateKeys"`
+	// FinalResponseID carries the stable identity of the terminal assistant
+	// response when the graph can provide one. When available, this is
+	// typically the underlying model response ID.
+	FinalResponseID string `json:"finalResponseID,omitempty"`
+	// SnapshotOnly marks terminal completion snapshots that should remain
+	// available to callers but must not be replayed as conversational history.
+	SnapshotOnly bool `json:"snapshotOnly,omitempty"`
 }
 
 // NodeCustomEventCategory represents the category of node custom events.
@@ -1080,10 +1087,12 @@ func WithStateEventStateSize(stateSize int) StateEventOption {
 
 // CompletionEventOptions contains options for creating completion events.
 type CompletionEventOptions struct {
-	InvocationID  string
-	FinalState    State
-	TotalSteps    int
-	TotalDuration time.Duration
+	InvocationID    string
+	FinalState      State
+	FinalResponseID string
+	TotalSteps      int
+	TotalDuration   time.Duration
+	SnapshotOnly    bool
 }
 
 // CompletionEventOption is a function that configures completion event options.
@@ -1103,6 +1112,14 @@ func WithCompletionEventFinalState(finalState State) CompletionEventOption {
 	}
 }
 
+// WithCompletionEventFinalResponseID sets the terminal response ID for
+// completion events when one is available.
+func WithCompletionEventFinalResponseID(responseID string) CompletionEventOption {
+	return func(opts *CompletionEventOptions) {
+		opts.FinalResponseID = responseID
+	}
+}
+
 // WithCompletionEventTotalSteps sets the total steps for completion events.
 func WithCompletionEventTotalSteps(totalSteps int) CompletionEventOption {
 	return func(opts *CompletionEventOptions) {
@@ -1114,6 +1131,14 @@ func WithCompletionEventTotalSteps(totalSteps int) CompletionEventOption {
 func WithCompletionEventTotalDuration(totalDuration time.Duration) CompletionEventOption {
 	return func(opts *CompletionEventOptions) {
 		opts.TotalDuration = totalDuration
+	}
+}
+
+// WithCompletionEventSnapshotOnly marks completion output as terminal
+// snapshot content that should not be replayed as conversational history.
+func WithCompletionEventSnapshotOnly(snapshotOnly bool) CompletionEventOption {
+	return func(opts *CompletionEventOptions) {
+		opts.SnapshotOnly = snapshotOnly
 	}
 }
 
@@ -1484,12 +1509,73 @@ func buildFinalChoices(text string) []model.Choice {
 // addCompletionMetadata attaches completion metadata to StateDelta.
 func addCompletionMetadata(e *event.Event, options *CompletionEventOptions) {
 	completionMetadata := CompletionMetadata{
-		TotalSteps:     options.TotalSteps,
-		TotalDuration:  options.TotalDuration,
-		FinalStateKeys: len(extractStateKeys(options.FinalState)),
+		TotalSteps:      options.TotalSteps,
+		TotalDuration:   options.TotalDuration,
+		FinalStateKeys:  len(extractStateKeys(options.FinalState)),
+		FinalResponseID: options.FinalResponseID,
+		SnapshotOnly:    options.SnapshotOnly,
 	}
 	if jsonData, err := json.Marshal(completionMetadata); err == nil {
 		e.StateDelta[MetadataKeyCompletion] = jsonData
+	}
+}
+
+// FinalResponseIDFromStateDelta returns the stable terminal response identity
+// carried by a graph completion snapshot when one is available.
+func FinalResponseIDFromStateDelta(stateDelta map[string][]byte) string {
+	if stateDelta == nil {
+		return ""
+	}
+	raw, ok := stateDelta[StateKeyLastResponseID]
+	if ok && len(raw) > 0 {
+		var responseID string
+		if err := json.Unmarshal(raw, &responseID); err == nil {
+			if responseID != "" {
+				return responseID
+			}
+		}
+	}
+	metadataRaw, ok := stateDelta[MetadataKeyCompletion]
+	if !ok || len(metadataRaw) == 0 {
+		return ""
+	}
+	var metadata CompletionMetadata
+	if err := json.Unmarshal(metadataRaw, &metadata); err != nil {
+		return ""
+	}
+	return metadata.FinalResponseID
+}
+
+// CompletionSnapshotOnlyFromStateDelta reports whether a completion snapshot
+// should be excluded from conversational history replay.
+func CompletionSnapshotOnlyFromStateDelta(stateDelta map[string][]byte) bool {
+	if stateDelta == nil {
+		return false
+	}
+	metadataRaw, ok := stateDelta[MetadataKeyCompletion]
+	if !ok || len(metadataRaw) == 0 {
+		return false
+	}
+	var metadata CompletionMetadata
+	if err := json.Unmarshal(metadataRaw, &metadata); err != nil {
+		return false
+	}
+	return metadata.SnapshotOnly
+}
+
+// SetCompletionSnapshotOnlyInStateDelta updates completion metadata to mark the
+// snapshot as replay-ineligible conversational history.
+func SetCompletionSnapshotOnlyInStateDelta(stateDelta map[string][]byte, snapshotOnly bool) {
+	if stateDelta == nil {
+		return
+	}
+	metadata := CompletionMetadata{}
+	if raw, ok := stateDelta[MetadataKeyCompletion]; ok && len(raw) > 0 {
+		_ = json.Unmarshal(raw, &metadata)
+	}
+	metadata.SnapshotOnly = snapshotOnly
+	if jsonData, err := json.Marshal(metadata); err == nil {
+		stateDelta[MetadataKeyCompletion] = jsonData
 	}
 }
 

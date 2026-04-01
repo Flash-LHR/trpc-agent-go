@@ -255,6 +255,34 @@ repo, _ := skill.NewFSRepository(
 )
 ```
 
+If one long-lived agent serves many requests against a shared
+repository view, add a per-run visibility filter. The filter can read
+any business signal available in `ctx` / runtime state (for example
+`user_id`, `tenant_id`, role, or other request-scoped flags) and hides
+non-matching skills from the overview, tool declarations, and runtime
+checks. `user_id` below is only one example:
+
+```go
+agt := llmagent.New(
+    "skills-assistant",
+    llmagent.WithSkills(repo),
+    llmagent.WithSkillFilter(func(ctx context.Context, s skill.Summary) bool {
+        userID, _ := agent.GetRuntimeStateValueFromContext[string](ctx, "user_id")
+        return allow(userID, s.Name)
+    }),
+)
+
+r := runner.NewRunner("skills-app", agt)
+
+ch, _ := r.Run(
+    ctx,
+    userID,
+    sessionID,
+    model.NewUserMessage("..."),
+    agent.WithRuntimeState(map[string]any{"user_id": userID}),
+)
+```
+
 If a long-lived process installs, deletes, or renames skills after
 startup, call `repo.Refresh()` after the filesystem update is committed.
 `Refresh()` is meant for repository structure changes, not for every
@@ -268,6 +296,18 @@ agent := llmagent.New(
     llmagent.WithSkills(repo),
     llmagent.WithSkillToolProfile(
         llmagent.SkillToolProfileKnowledgeOnly,
+    ),
+)
+```
+
+Fine-grained allowlist:
+
+```go
+agent := llmagent.New(
+    "skills-assistant",
+    llmagent.WithSkills(repo),
+    llmagent.WithAllowedSkillTools(
+        llmagent.SkillToolLoad,
     ),
 )
 ```
@@ -287,9 +327,15 @@ Key points:
     prompt guidance is suppressed.
   - `knowledge_only` profile: only `skill_load`, `skill_select_docs`,
     and `skill_list_docs`.
-  - Executor requirement follows the profile:
-    `full` usually also needs `WithCodeExecutor(...)`;
-    `knowledge_only` does not.
+  - `WithAllowedSkillTools(...)` overrides the profile with an explicit
+    allowlist, for example `SkillToolLoad` only.
+  - If the allowlist includes `skill_run` / `skill_exec`, the default
+    `WithSkillRunRequireSkillLoaded(true)` still requires `skill_load`
+    to be enabled as well. To omit `skill_load`, explicitly set
+    `llmagent.WithSkillRunRequireSkillLoaded(false)`.
+  - Executor requirement follows the final registered tool set:
+    any configuration without `skill_run` / `skill_exec` does not need
+    `WithCodeExecutor(...)`.
 - Note: when `WithCodeExecutor` is set, LLMAgent will (by default) try to
   execute Markdown fenced code blocks in model responses. If you only need
   the executor for `skill_run`, disable this behavior with
@@ -298,8 +344,10 @@ Key points:
   block after the `Available skills:` list in the system message.
   - Disable it (to save prompt tokens): `llmagent.WithSkillsToolingGuidance("")`.
   - Or replace it with your own text: `llmagent.WithSkillsToolingGuidance("...")`.
+  - Guidance follows the final registered skill tools, including
+    `WithAllowedSkillTools(...)`.
   - If you disable it, make sure your instruction tells the model which
-    skill tools are available in your chosen profile.
+    skill tools are available in your chosen profile or allowlist.
   - Loader: [tool/skill/load.go](https://github.com/trpc-group/trpc-agent-go/blob/main/tool/skill/load.go)
   - Runner: [tool/skill/run.go](https://github.com/trpc-group/trpc-agent-go/blob/main/tool/skill/run.go)
 

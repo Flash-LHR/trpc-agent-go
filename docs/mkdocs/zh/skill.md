@@ -238,6 +238,33 @@ repo, _ := skill.NewFSRepository(
 )
 ```
 
+如果是一个常驻 Agent 服务复用同一个 skills 仓库来处理多种请求，
+可以再加一层按请求生效的可见性过滤。过滤函数可以从 `ctx` /
+运行时状态里读取任意业务信号（例如 `user_id`、`tenant_id`、角色、
+实验开关等），并把不匹配的 skill 从概览、工具声明和运行时校验里
+一起隐藏。下面用 `user_id` 只是举例：
+
+```go
+agt := llmagent.New(
+    "skills-assistant",
+    llmagent.WithSkills(repo),
+    llmagent.WithSkillFilter(func(ctx context.Context, s skill.Summary) bool {
+        userID, _ := agent.GetRuntimeStateValueFromContext[string](ctx, "user_id")
+        return allow(userID, s.Name)
+    }),
+)
+
+r := runner.NewRunner("skills-app", agt)
+
+ch, _ := r.Run(
+    ctx,
+    userID,
+    sessionID,
+    model.NewUserMessage("..."),
+    agent.WithRuntimeState(map[string]any{"user_id": userID}),
+)
+```
+
 如果你的进程在启动后还会安装、删除或重命名 skill，请在文件系统
 变更完成后调用一次 `repo.Refresh()`，让下一轮请求看到最新技能
 集合。`Refresh()` 适用于仓库结构变化，不建议每次请求前都调用。
@@ -254,6 +281,18 @@ agent := llmagent.New(
 )
 ```
 
+细粒度白名单：
+
+```go
+agent := llmagent.New(
+    "skills-assistant",
+    llmagent.WithSkills(repo),
+    llmagent.WithAllowedSkillTools(
+        llmagent.SkillToolLoad,
+    ),
+)
+```
+
 要点：
 - 请求处理器注入概览与按需内容：
   [internal/flow/processor/skills.go]
@@ -266,9 +305,15 @@ agent := llmagent.New(
     （且无本地回退），这些会话工具将被省略，相应的提示文案也会被跳过。
   - `knowledge_only` 档位：只注册 `skill_load`、
     `skill_select_docs` 与 `skill_list_docs`。
-  - 执行器是否需要，也取决于档位：
-    `full` 通常还需要 `WithCodeExecutor(...)`；
-    `knowledge_only` 则不需要。
+  - `WithAllowedSkillTools(...)` 会用显式白名单覆盖档位，例如只保留
+    `SkillToolLoad`。
+  - 如果白名单里包含了 `skill_run` / `skill_exec`，默认的
+    `WithSkillRunRequireSkillLoaded(true)` 仍要求同时启用
+    `skill_load`。如果你希望省略 `skill_load`，需要显式设置
+    `llmagent.WithSkillRunRequireSkillLoaded(false)`。
+  - 是否需要执行器，取决于最终注册的工具集：
+    只要没有 `skill_run` / `skill_exec`，就不需要
+    `WithCodeExecutor(...)`。
 - 注意：当你同时设置了 `WithCodeExecutor` 时，LLMAgent 默认会尝试执行
   模型回复里的 Markdown 围栏代码块。如果你只是为了给 `skill_run` 提供运行时，
   不希望自动执行代码块，可以加上
@@ -277,7 +322,10 @@ agent := llmagent.New(
   `Tooling and workspace guidance:` 指引文本。
   - 关闭该指引（减少提示词占用）：`llmagent.WithSkillsToolingGuidance("")`。
   - 或用自定义文本替换：`llmagent.WithSkillsToolingGuidance("...")`。
-  - 如果你关闭它，请在自己的指令里明确当前档位下哪些 skill 工具可用。
+  - 指引会跟随最终注册的 skill 工具集，包括
+    `WithAllowedSkillTools(...)`。
+  - 如果你关闭它，请在自己的指令里明确当前档位或白名单下哪些
+    skill 工具可用。
   - 加载器： [tool/skill/load.go](https://github.com/trpc-group/trpc-agent-go/blob/main/tool/skill/load.go)
   - 运行器： [tool/skill/run.go](https://github.com/trpc-group/trpc-agent-go/blob/main/tool/skill/run.go)
 

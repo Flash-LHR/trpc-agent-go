@@ -1035,7 +1035,7 @@ func TestRun_PromptDirWithoutMarkdownExitCode(t *testing.T) {
 func TestNewAgent_EmptyInstructionUsesDefault(t *testing.T) {
 	t.Parallel()
 
-	agt, err := newAgent(&echoModel{name: "mock"}, agentConfig{
+	agt, _, err := newAgent(&echoModel{name: "mock"}, agentConfig{
 		AppName:      "demo",
 		SkillsRoot:   t.TempDir(),
 		StateDir:     t.TempDir(),
@@ -1052,7 +1052,7 @@ func TestNewAgent_SkillsToolingGuidance_ConfigApplied(t *testing.T) {
 	root := createAppTestSkill(t)
 	mdl := &captureRequestModel{}
 	guide := ""
-	agt, err := newAgent(mdl, agentConfig{
+	agt, _, err := newAgent(mdl, agentConfig{
 		AppName:            "demo",
 		SkillsRoot:         root,
 		StateDir:           t.TempDir(),
@@ -1080,7 +1080,7 @@ func TestNewAgent_BrowserToolingGuidance_Applied(t *testing.T) {
 
 	root := createAppTestSkill(t)
 	mdl := &captureRequestModel{}
-	agt, err := newAgent(mdl, agentConfig{
+	agt, _, err := newAgent(mdl, agentConfig{
 		AppName:    "demo",
 		SkillsRoot: root,
 		StateDir:   t.TempDir(),
@@ -1128,7 +1128,7 @@ func TestNewAgent_BrowserToolingGuidance_FromToolProvider(
 
 	root := createAppTestSkill(t)
 	mdl := &captureRequestModel{}
-	agt, err := newAgent(mdl, agentConfig{
+	agt, _, err := newAgent(mdl, agentConfig{
 		AppName:    "demo",
 		SkillsRoot: root,
 		StateDir:   t.TempDir(),
@@ -1170,7 +1170,7 @@ func TestNewAgent_ToolProviderErrorIsReturned(t *testing.T) {
 	var node yaml.Node
 	require.NoError(t, yaml.Unmarshal([]byte("{}"), &node))
 
-	_, err := newAgent(&captureRequestModel{}, agentConfig{
+	_, _, err := newAgent(&captureRequestModel{}, agentConfig{
 		AppName:    "demo",
 		SkillsRoot: createAppTestSkill(t),
 		StateDir:   t.TempDir(),
@@ -1188,7 +1188,7 @@ func TestNewAgent_SkillsLoadModeTurnClearsLoadedState(t *testing.T) {
 
 	root := createAppTestSkill(t)
 	mdl := &captureRequestModel{}
-	agt, err := newAgent(mdl, agentConfig{
+	agt, _, err := newAgent(mdl, agentConfig{
 		AppName:        "demo",
 		SkillsRoot:     root,
 		StateDir:       t.TempDir(),
@@ -1212,7 +1212,7 @@ func TestNewAgent_SkillsToolResults_ConfigApplied(t *testing.T) {
 
 	root := createAppTestSkill(t)
 	mdl := &captureRequestModel{}
-	agt, err := newAgent(mdl, agentConfig{
+	agt, _, err := newAgent(mdl, agentConfig{
 		AppName:           "demo",
 		SkillsRoot:        root,
 		StateDir:          t.TempDir(),
@@ -1349,6 +1349,13 @@ func TestRun_WithTelegram_BaseURLOverride(t *testing.T) {
 	dir := t.TempDir()
 	token := "token"
 
+	// gotMe is signalled once the mock server receives the Telegram
+	// getMe request, which means initialisation reached the point where
+	// the base-URL override was applied. We use it to cancel the context
+	// only *after* the handshake succeeds so that the test is reliable on
+	// slow CI runners.
+	gotMe := make(chan struct{}, 1)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter,
 		r *http.Request,
@@ -1359,6 +1366,10 @@ func TestRun_WithTelegram_BaseURLOverride(t *testing.T) {
 			_, _ = io.WriteString(w,
 				`{"ok":true,"result":{"id":1,"username":"bot"}}`,
 			)
+			select {
+			case gotMe <- struct{}{}:
+			default:
+			}
 		case "/bot" + token + "/getUpdates":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"ok":true,"result":[]}`)
@@ -1386,7 +1397,17 @@ func TestRun_WithTelegram_BaseURLOverride(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	time.AfterFunc(50*time.Millisecond, cancel)
+
+	// Cancel as soon as getMe succeeds, or bail after a generous timeout.
+	go func() {
+		select {
+		case <-gotMe:
+			// Give the server loop a moment to finish set-up.
+			time.Sleep(50 * time.Millisecond)
+		case <-time.After(5 * time.Second):
+		}
+		cancel()
+	}()
 
 	runErr := run(ctx, []string{
 		"-http-addr", "127.0.0.1:0",
@@ -1540,6 +1561,19 @@ func TestValidateAgentRunOptions(t *testing.T) {
 			agentType: agentTypeClaudeCode,
 			opts: runOptions{
 				ToolSets: []pluginSpec{{Type: "x"}},
+			},
+			wantErr: true,
+		},
+		{
+			name:      "knowledges",
+			agentType: agentTypeClaudeCode,
+			opts: runOptions{
+				KnowledgesConfig: map[string]*yaml.Node{
+					"docs": yamlNode(t, `
+vector_store:
+  type: inmemory
+`),
+				},
 			},
 			wantErr: true,
 		},
@@ -2724,6 +2758,11 @@ func TestInProcGatewayClient_SendMessage_OK(t *testing.T) {
 	srv, err := gateway.New(&inProcGWTestRunner{
 		reply:     testReply,
 		requestID: testRequestID,
+		usage: &model.Usage{
+			PromptTokens:     12000,
+			CompletionTokens: 345,
+			TotalTokens:      12345,
+		},
 	})
 	require.NoError(t, err)
 
@@ -2738,6 +2777,8 @@ func TestInProcGatewayClient_SendMessage_OK(t *testing.T) {
 	require.Equal(t, testReply, rsp.Reply)
 	require.Equal(t, testRequestID, rsp.RequestID)
 	require.NotEmpty(t, rsp.SessionID)
+	require.NotNil(t, rsp.Usage)
+	require.Equal(t, 12345, rsp.Usage.TotalTokens)
 }
 
 func TestInProcGatewayClient_SendMessage_StatusError(t *testing.T) {
@@ -3731,6 +3772,7 @@ func (s *stubRunner) Close() error {
 type inProcGWTestRunner struct {
 	reply     string
 	requestID string
+	usage     *model.Usage
 }
 
 func (r *inProcGWTestRunner) Run(
@@ -3756,7 +3798,8 @@ func (r *inProcGWTestRunner) Run(
 			Choices: []model.Choice{
 				{Message: model.NewAssistantMessage(reply)},
 			},
-			Done: true,
+			Usage: r.usage,
+			Done:  true,
 		},
 		RequestID: requestID,
 	}

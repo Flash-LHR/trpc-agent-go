@@ -32,6 +32,8 @@ import (
 	"syscall"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/claudecode"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
@@ -624,8 +626,9 @@ func NewRuntime(
 	extraTools = append(extraTools, openClawTools.tools...)
 
 	var (
-		toolSets []tool.ToolSet
-		ag       agent.Agent
+		toolSets   []tool.ToolSet
+		ag         agent.Agent
+		skillsRepo *ocskills.Repository
 	)
 	if agentType == agentTypeClaudeCode {
 		ag, err = newClaudeCodeAgent(opts)
@@ -642,7 +645,7 @@ func NewRuntime(
 				Err:  fmt.Errorf("create toolsets failed: %w", err),
 			}
 		}
-		ag, err = newAgent(mdl, agentConfig{
+		ag, skillsRepo, err = newAgent(mdl, agentConfig{
 			AppName:           opts.AppName,
 			AddSessionSummary: opts.AddSessionSummary,
 			MaxHistoryRuns:    opts.MaxHistoryRuns,
@@ -663,6 +666,7 @@ func NewRuntime(
 			SkillsToolResults:  opts.SkillsToolResults,
 			SkillsSkipFallback: opts.SkillsSkipFallback,
 			SkillsToolingGuide: opts.SkillsToolingGuide,
+			KnowledgesConfig:   opts.KnowledgesConfig,
 			StateDir:           resolvedStateDir,
 
 			EnableLocalExec:     opts.EnableLocalExec,
@@ -859,6 +863,7 @@ func NewRuntime(
 			nil,
 			opts.AdminAddr,
 			adminURL,
+			skillsRepo,
 		))
 		rt.Admin = AdminSurface{
 			Handler: adminSvc.Handler(),
@@ -1044,8 +1049,9 @@ func run(ctx context.Context, args []string) error {
 	extraTools = append(extraTools, openClawTools.tools...)
 
 	var (
-		toolSets []tool.ToolSet
-		ag       agent.Agent
+		toolSets   []tool.ToolSet
+		ag         agent.Agent
+		skillsRepo *ocskills.Repository
 	)
 	defer func() {
 		closeToolSets(toolSets)
@@ -1065,7 +1071,7 @@ func run(ctx context.Context, args []string) error {
 				Err:  fmt.Errorf("create toolsets failed: %w", err),
 			}
 		}
-		ag, err = newAgent(mdl, agentConfig{
+		ag, skillsRepo, err = newAgent(mdl, agentConfig{
 			AppName:           opts.AppName,
 			AddSessionSummary: opts.AddSessionSummary,
 			MaxHistoryRuns:    opts.MaxHistoryRuns,
@@ -1086,6 +1092,7 @@ func run(ctx context.Context, args []string) error {
 			SkillsToolResults:  opts.SkillsToolResults,
 			SkillsSkipFallback: opts.SkillsSkipFallback,
 			SkillsToolingGuide: opts.SkillsToolingGuide,
+			KnowledgesConfig:   opts.KnowledgesConfig,
 			StateDir:           resolvedStateDir,
 
 			EnableLocalExec:     opts.EnableLocalExec,
@@ -1300,6 +1307,7 @@ func run(ctx context.Context, args []string) error {
 			browserServerSup,
 			adminBinding.addr,
 			adminBinding.url,
+			skillsRepo,
 		))
 		adminSrv = &http.Server{
 			Handler:           adminSvc.Handler(),
@@ -1672,6 +1680,11 @@ func validateAgentRunOptions(agentType string, opts runOptions) error {
 			"claude-code agent does not support tools.toolsets",
 		)
 	}
+	if len(opts.KnowledgesConfig) > 0 {
+		return errors.New(
+			"claude-code agent does not support knowledges",
+		)
+	}
 	if opts.RefreshToolSetsOnRun {
 		return errors.New(
 			"claude-code agent does not support refresh-toolsets-on-run",
@@ -1811,7 +1824,7 @@ func newAgent(
 	cfg agentConfig,
 	extraTools []tool.Tool,
 	toolSets []tool.ToolSet,
-) (agent.Agent, error) {
+) (agent.Agent, *ocskills.Repository, error) {
 	instruction := strings.TrimSpace(cfg.Instruction)
 	if instruction == "" {
 		instruction = defaultAgentInstruction
@@ -1821,7 +1834,10 @@ func newAgent(
 			instruction + "\n\n" + openClawToolingGuidance,
 		)
 	}
-
+	knowledgeTools, err := buildKnowledgeTools(cfg.KnowledgesConfig)
+	if err != nil {
+		return nil, nil, err
+	}
 	cwd, _ := os.Getwd()
 	roots := resolveSkillRoots(cwd, cfg)
 	bundledRoot := resolveBundledSkillsRoot(cwd, cfg.StateDir)
@@ -1834,10 +1850,13 @@ func newAgent(
 		ocskills.WithSkillConfigs(cfg.SkillConfigs),
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	tools := append([]tool.Tool(nil), extraTools...)
+	if knowledgeTools != nil && len(knowledgeTools.tools) > 0 {
+		tools = append(tools, knowledgeTools.tools...)
+	}
 	tools = append(tools, ocskills.NewListTool(repo))
 	if len(cfg.ToolProviders) > 0 {
 		extra, err := toolsFromProviders(
@@ -1847,7 +1866,7 @@ func newAgent(
 			cfg.ToolProviders,
 		)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		tools = append(tools, extra...)
 	}
@@ -1864,6 +1883,9 @@ func newAgent(
 		llmagent.WithAddSessionSummary(cfg.AddSessionSummary),
 		llmagent.WithMaxHistoryRuns(cfg.MaxHistoryRuns),
 		llmagent.WithPreloadMemory(cfg.PreloadMemory),
+		llmagent.WithEventMessageProjector(
+			conversation.ProjectEventMessage,
+		),
 		llmagent.WithEnableParallelTools(cfg.EnableParallelTools),
 	}
 	opts = append(opts, llmagent.WithSkills(repo))
@@ -1909,7 +1931,7 @@ func newAgent(
 	callbacks.RegisterToolResultMessages(openClawToolResultMessages)
 	opts = append(opts, llmagent.WithToolCallbacks(callbacks))
 
-	return llmagent.New(defaultAgentName, opts...), nil
+	return llmagent.New(defaultAgentName, opts...), repo, nil
 }
 
 func hasToolNamed(tools []tool.Tool, name string) bool {
@@ -2097,6 +2119,7 @@ type agentConfig struct {
 	SkillsToolResults  bool
 	SkillsSkipFallback bool
 	SkillsToolingGuide *string
+	KnowledgesConfig   map[string]*yaml.Node
 
 	StateDir string
 

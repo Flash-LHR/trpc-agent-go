@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
@@ -209,6 +210,32 @@ func TestMemoryFileEnvFromContext_EnsureMemoryErrorReturnsNil(t *testing.T) {
 	ctx := agent.NewInvocationContext(context.Background(), inv)
 
 	require.Nil(t, memoryFileEnvFromContext(ctx, root))
+}
+
+func TestMemoryFileEnvFromContext_RuntimeStateOverridesUserID(t *testing.T) {
+	t.Parallel()
+
+	root, err := memoryfile.DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	store, err := memoryfile.NewStore(root)
+	require.NoError(t, err)
+
+	inv := agent.NewInvocation(
+		agent.WithInvocationSession(
+			sessionpkg.NewSession("app", "scope-user", "telegram:thread:g1"),
+		),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			RuntimeState: imemory.RuntimeState("actor-user"),
+		}),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	env := memoryFileEnvFromContext(ctx, store)
+	require.NotNil(t, env)
+
+	path, err := store.MemoryPath("app", "actor-user")
+	require.NoError(t, err)
+	require.Equal(t, path, env[envMemoryFile])
 }
 
 func TestAnnotateExecResult_ParsesMediaMarkers(t *testing.T) {
@@ -775,7 +802,10 @@ func TestTools_NilManagers(t *testing.T) {
 func TestManager_ExecErrors(t *testing.T) {
 	mgr := NewManager()
 
-	_, err := mgr.Exec(nil, execParams{Command: "echo hi"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := mgr.Exec(ctx, execParams{Command: "echo hi"})
 	require.Error(t, err)
 
 	_, err = mgr.Exec(context.Background(), execParams{})

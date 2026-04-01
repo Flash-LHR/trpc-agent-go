@@ -347,6 +347,17 @@ func WithGraphEmitFinalModelResponses(enabled bool) RunOption {
 	}
 }
 
+// WithGraphTerminalMessagesOnly limits caller-visible graph message events to
+// terminal nodes only.
+//
+// When disabled (default), all graph Large Language Model (LLM) nodes and
+// sub-agent nodes may emit caller-visible message events.
+func WithGraphTerminalMessagesOnly(enabled bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.GraphTerminalMessagesOnly = enabled
+	}
+}
+
 // WithStreamMode sets StreamMode selection for this run.
 //
 // When StreamModeMessages is present, graph-based Large Language Model (LLM)
@@ -611,7 +622,11 @@ func WithStructuredOutputJSON(examplePtr any, strict bool, description string) R
 		} else {
 			t = reflect.PointerTo(rt)
 		}
-		gen := jsonschema.New()
+		genOpts := make([]jsonschema.Option, 0, 1)
+		if strict {
+			genOpts = append(genOpts, jsonschema.WithStrict())
+		}
+		gen := jsonschema.New(genOpts...)
 		schema := gen.Generate(t.Elem())
 		name := t.Elem().Name()
 		if name == "" {
@@ -826,6 +841,17 @@ type RunOptions struct {
 	// When enabled, Runner may omit echoing the final assistant message
 	// in its runner-completion event to avoid duplicates.
 	GraphEmitFinalModelResponses bool
+
+	// GraphTerminalMessagesOnly limits caller-visible graph message events to
+	// terminal nodes only.
+	//
+	// When false (default), graph message-capable nodes may all emit
+	// caller-visible events.
+	//
+	// When true, GraphAgent keeps internal state propagation unchanged, but
+	// caller-visible message events are forwarded only for terminal LLM nodes
+	// and terminal sub-agent nodes.
+	GraphTerminalMessagesOnly bool
 
 	// StreamModeEnabled indicates whether the caller explicitly configured
 	// StreamModes for this run.

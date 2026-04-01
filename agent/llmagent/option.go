@@ -15,6 +15,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/codeexecutor"
+	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
 	"trpc.group/trpc-go/trpc-agent-go/internal/jsonschema"
 	"trpc.group/trpc-go/trpc-agent-go/internal/skillprofile"
@@ -95,6 +96,14 @@ const (
 	// equivalent to TimelineFilterCurrentInvocation + BranchFilterModeExact.
 	IsolatedInvocation
 )
+
+// EventMessageProjector projects one event-derived message into the
+// model-facing request view.
+type EventMessageProjector func(
+	inv *agent.Invocation,
+	evt event.Event,
+	msg model.Message,
+) model.Message
 
 var (
 	defaultOptions = Options{
@@ -250,6 +259,9 @@ type Options struct {
 	// Default is false, so same-branch events are merged into user context
 	// unless explicitly opted into preserving roles.
 	PreserveSameBranch bool
+	// EventMessageProjector rewrites one event-derived message before it
+	// is appended to the model request.
+	EventMessageProjector EventMessageProjector
 	// StructuredOutput defines how the model should produce structured output in normal runs.
 	StructuredOutput *model.StructuredOutput
 	// StructuredOutputType is the reflect.Type of the example pointer used to generate the schema.
@@ -308,8 +320,13 @@ type Options struct {
 
 	// skillsRepository enables agent skills when non-nil.
 	skillsRepository skill.Repository
+	// skillFilter narrows the visible skill set per run context.
+	skillFilter skill.VisibilityFilter
 	// skillToolProfile controls which built-in skill tools are registered.
 	skillToolProfile string
+	// allowedSkillTools, when non-nil, overrides skillToolProfile and limits
+	// the final built-in skill tool registration set to this explicit allowlist.
+	allowedSkillTools []string
 	// skillsToolingGuidance overrides the built-in skills guidance block.
 	skillsToolingGuidance *string
 	// skillRunAllowedCommands restricts skill_run to allowlisted commands.
@@ -367,6 +384,10 @@ type Options struct {
 // SkillToolProfile controls which framework-provided skill tools are enabled.
 type SkillToolProfile string
 
+// SkillTool identifies a built-in framework-provided skill tool that can be
+// exposed when skills are enabled.
+type SkillTool string
+
 const (
 	// SkillToolProfileFull keeps the existing behavior and registers the full
 	// built-in skill tool suite, including execution tools.
@@ -374,6 +395,23 @@ const (
 	// SkillToolProfileKnowledgeOnly registers only progressive-disclosure skill
 	// tools used for knowledge injection. No execution tools are exposed.
 	SkillToolProfileKnowledgeOnly SkillToolProfile = skillprofile.KnowledgeOnly
+
+	// SkillToolLoad loads SKILL.md and optional docs into model context.
+	SkillToolLoad SkillTool = skillprofile.ToolLoad
+	// SkillToolListDocs lists the docs exposed by a skill.
+	SkillToolListDocs SkillTool = skillprofile.ToolListDocs
+	// SkillToolSelectDocs updates which docs are selected for a skill.
+	SkillToolSelectDocs SkillTool = skillprofile.ToolSelectDocs
+	// SkillToolRun executes a non-interactive command inside a skill workspace.
+	SkillToolRun SkillTool = skillprofile.ToolRun
+	// SkillToolExec starts an interactive skill execution session.
+	SkillToolExec SkillTool = skillprofile.ToolExec
+	// SkillToolWriteStdin writes stdin to a running skill_exec session.
+	SkillToolWriteStdin SkillTool = skillprofile.ToolWriteStdin
+	// SkillToolPollSession polls a running skill_exec session.
+	SkillToolPollSession SkillTool = skillprofile.ToolPollSession
+	// SkillToolKillSession terminates a running skill_exec session.
+	SkillToolKillSession SkillTool = skillprofile.ToolKillSession
 )
 
 // WithModel sets the model to use.
@@ -519,6 +557,15 @@ func WithSkills(repo skill.Repository) Option {
 	}
 }
 
+// WithSkillFilter narrows visible skills per run context without changing the
+// mounted repository roots. The filter is evaluated against skill summaries
+// and can read runtime state from ctx.
+func WithSkillFilter(filter skill.VisibilityFilter) Option {
+	return func(opts *Options) {
+		opts.skillFilter = filter
+	}
+}
+
 // WithSkillToolProfile selects which built-in skill tools are registered when
 // skills are enabled via WithSkills.
 //
@@ -528,6 +575,23 @@ func WithSkills(repo skill.Repository) Option {
 func WithSkillToolProfile(profile SkillToolProfile) Option {
 	return func(opts *Options) {
 		opts.skillToolProfile = string(profile)
+	}
+}
+
+// WithAllowedSkillTools overrides the profile-derived built-in skill tool set
+// with an explicit allowlist.
+//
+// When not configured, built-in skill tools continue to follow
+// WithSkillToolProfile (default: full).
+//
+// When configured with no tools, no built-in skill tools are registered.
+func WithAllowedSkillTools(tools ...SkillTool) Option {
+	return func(opts *Options) {
+		names := make([]string, 0, len(tools))
+		for _, tl := range tools {
+			names = append(names, string(tl))
+		}
+		opts.allowedSkillTools = names
 	}
 }
 
@@ -583,7 +647,8 @@ func WithSkipSkillsFallbackOnSessionSummary(
 //
 // Behavior:
 //   - Not configured: use the built-in default guidance.
-//   - Configured with empty string: omit the guidance block.
+//   - Configured with empty string: omit both the tooling/workspace
+//     guidance block and the capability disclosure block.
 //   - Configured with non-empty string: append the provided text.
 func WithSkillsToolingGuidance(
 	guidance string,
@@ -775,7 +840,11 @@ func WithStructuredOutputJSON(examplePtr any, strict bool, description string) O
 			t = reflect.PointerTo(rt)
 		}
 		// Generate a robust JSON schema via the generator.
-		gen := jsonschema.New()
+		genOpts := make([]jsonschema.Option, 0, 1)
+		if strict {
+			genOpts = append(genOpts, jsonschema.WithStrict())
+		}
+		gen := jsonschema.New(genOpts...)
 		schema := gen.Generate(t.Elem())
 		name := t.Elem().Name()
 		if name == "" {
@@ -859,6 +928,16 @@ func WithMaxHistoryRuns(maxRuns int) Option {
 func WithPreserveSameBranch(preserve bool) Option {
 	return func(opts *Options) {
 		opts.PreserveSameBranch = preserve
+	}
+}
+
+// WithEventMessageProjector rewrites one event-derived message before
+// it is appended to the model request.
+func WithEventMessageProjector(
+	projector EventMessageProjector,
+) Option {
+	return func(opts *Options) {
+		opts.EventMessageProjector = projector
 	}
 }
 

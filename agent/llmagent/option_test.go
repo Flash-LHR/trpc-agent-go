@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"trpc.group/trpc-go/trpc-agent-go/skill"
 	toolskill "trpc.group/trpc-go/trpc-agent-go/tool/skill"
 )
 
@@ -205,6 +206,15 @@ func TestWithSkillsLoadedContentInToolResults(t *testing.T) {
 	require.True(t, b.option.SkillsLoadedContentInToolResults)
 }
 
+func TestWithSkillFilter(t *testing.T) {
+	a := New("test-agent")
+	require.Nil(t, a.option.skillFilter)
+
+	filter := func(context.Context, skill.Summary) bool { return true }
+	b := New("test-agent", WithSkillFilter(filter))
+	require.NotNil(t, b.option.skillFilter)
+}
+
 func TestWithSkipSkillsFallbackOnSessionSummary(t *testing.T) {
 	a := New("test-agent")
 	require.True(t, a.option.SkipSkillsFallbackOnSessionSummary)
@@ -318,6 +328,20 @@ func TestWithSkillToolProfile(t *testing.T) {
 
 	WithSkillToolProfile(SkillToolProfileFull)(opts)
 	require.Equal(t, "full", opts.skillToolProfile)
+}
+
+func TestWithAllowedSkillTools(t *testing.T) {
+	opts := &Options{}
+	WithAllowedSkillTools(SkillToolLoad, SkillToolRun)(opts)
+	require.Equal(
+		t,
+		[]string{"skill_load", "skill_run"},
+		opts.allowedSkillTools,
+	)
+
+	WithAllowedSkillTools()(opts)
+	require.NotNil(t, opts.allowedSkillTools)
+	require.Empty(t, opts.allowedSkillTools)
 }
 
 func TestWithSummaryFormatter(t *testing.T) {

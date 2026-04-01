@@ -27,6 +27,7 @@ import (
 	"trpc.group/trpc-go/trpc-a2a-go/taskmanager"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/graph"
 	ia2a "trpc.group/trpc-go/trpc-agent-go/internal/a2a"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -96,6 +97,17 @@ func buildRuntimeState(metadata map[string]any) map[string]any {
 		runtimeState[key] = value
 	}
 	return runtimeState
+}
+
+func cloneMetadata(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+	cloned := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func buildProcessor(
@@ -276,6 +288,56 @@ func isFinalStreamingEvent(evt *event.Event) bool {
 	return evt.IsRunnerCompletion()
 }
 
+func buildFinalStreamingMetadata(evt *event.Event) map[string]any {
+	if evt == nil {
+		return nil
+	}
+
+	var metadata map[string]any
+	if responseID := finalStreamingResponseID(evt); responseID != "" {
+		metadata = map[string]any{
+			ia2a.MessageMetadataResponseIDKey: responseID,
+		}
+	}
+	if evt.Response != nil && evt.Response.Error != nil {
+		metadata = ia2a.WithResponseErrorMetadata(metadata, evt.Response.Error)
+	}
+	if stateDelta := ia2a.EncodeStateDeltaMetadata(evt.StateDelta); len(stateDelta) > 0 {
+		if metadata == nil {
+			metadata = make(map[string]any, 1)
+		}
+		metadata[ia2a.MessageMetadataStateDeltaKey] = stateDelta
+	}
+	return metadata
+}
+
+func finalStreamingResponseID(evt *event.Event) string {
+	if evt == nil || len(evt.StateDelta) == 0 {
+		return ""
+	}
+	raw, ok := evt.StateDelta[graph.StateKeyLastResponseID]
+	if !ok || len(raw) == 0 {
+		return ""
+	}
+	var responseID string
+	if err := json.Unmarshal(raw, &responseID); err != nil {
+		return ""
+	}
+	return responseID
+}
+
+func cloneStreamingMetadata(metadata map[string]any) map[string]any {
+	if len(metadata) == 0 {
+		return nil
+	}
+
+	cloned := make(map[string]any, len(metadata))
+	for key, value := range metadata {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 func isStructuredTaskErrorEvent(
 	evt *event.Event,
 ) bool {
@@ -292,10 +354,33 @@ func taskErrorState(
 	return protocol.TaskStateFailed
 }
 
+func buildTaskErrorMetadata(
+	agentEvent *event.Event,
+) map[string]any {
+	if agentEvent == nil || agentEvent.Response == nil {
+		return nil
+	}
+	respErr := agentEvent.Response.Error
+	if respErr == nil {
+		return nil
+	}
+
+	metadata := ia2a.WithResponseErrorMetadata(nil, respErr)
+	metadata[ia2a.MessageMetadataTaskStateKey] = string(
+		taskErrorState(respErr),
+	)
+	if agentEvent.Response.ID != "" {
+		metadata[ia2a.MessageMetadataResponseIDKey] =
+			agentEvent.Response.ID
+	}
+	return metadata
+}
+
 func buildTaskErrorMessage(
 	taskID string,
 	ctxID string,
 	agentEvent *event.Event,
+	metadata map[string]any,
 ) *protocol.Message {
 	if agentEvent == nil || agentEvent.Response == nil {
 		return nil
@@ -315,17 +400,9 @@ func buildTaskErrorMessage(
 		&taskID,
 		&ctxID,
 	)
-	msg.Metadata = ia2a.WithResponseErrorMetadata(
-		msg.Metadata,
-		respErr,
-	)
-	msg.Metadata[ia2a.MessageMetadataTaskStateKey] = string(
-		taskErrorState(respErr),
-	)
+	msg.Metadata = cloneMetadata(metadata)
 	if agentEvent.Response.ID != "" {
 		msg.MessageID = agentEvent.Response.ID
-		msg.Metadata[ia2a.MessageMetadataResponseIDKey] =
-			agentEvent.Response.ID
 	}
 	return &msg
 }
@@ -336,14 +413,21 @@ func buildStructuredFailureTask(
 	history []protocol.Message,
 	agentEvent *event.Event,
 ) *protocol.Task {
+	taskMetadata := buildTaskErrorMetadata(agentEvent)
+	statusMsg := buildTaskErrorMessage(
+		taskID,
+		ctxID,
+		agentEvent,
+		taskMetadata,
+	)
 	task := protocol.NewTask(taskID, ctxID)
 	task.History = history
 	task.Status = protocol.TaskStatus{
 		State:     taskErrorState(agentEvent.Response.Error),
-		Message:   buildTaskErrorMessage(taskID, ctxID, agentEvent),
+		Message:   statusMsg,
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
-	task.Metadata = task.Status.Message.Metadata
+	task.Metadata = taskMetadata
 	return task
 }
 
@@ -652,6 +736,7 @@ func (m *messageProcessor) processAgentStreamingEvents(
 
 	// define consume function
 	var terminalTaskError bool
+	var finalStreamingMetadata map[string]any
 	consume := func(batch []*event.Event) (bool, error) {
 		return m.processBatchStreamingEvents(
 			ctx,
@@ -660,6 +745,7 @@ func (m *messageProcessor) processAgentStreamingEvents(
 			batch,
 			subscriber,
 			&terminalTaskError,
+			&finalStreamingMetadata,
 		)
 	}
 
@@ -703,6 +789,7 @@ func (m *messageProcessor) processAgentStreamingEvents(
 			protocol.Artifact{Parts: []protocol.Part{}},
 			true,
 		)
+		finalArtifact.Metadata = cloneStreamingMetadata(finalStreamingMetadata)
 		if err := subscriber.Send(protocol.StreamingMessageEvent{
 			Result: &finalArtifact,
 		}); err != nil {
@@ -725,6 +812,9 @@ func (m *messageProcessor) processAgentStreamingEvents(
 		},
 		true,
 	)
+	if m.streamingEventType == StreamingEventTypeMessage {
+		taskCompleted.Metadata = cloneStreamingMetadata(finalStreamingMetadata)
+	}
 	if err := subscriber.Send(protocol.StreamingMessageEvent{Result: &taskCompleted}); err != nil {
 		log.ErrorfContext(
 			ctx,
@@ -745,6 +835,7 @@ func (m *messageProcessor) processBatchStreamingEvents(
 	batch []*event.Event,
 	subscriber taskmanager.TaskSubscriber,
 	terminalTaskError *bool,
+	finalStreamingMetadata *map[string]any,
 ) (bool, error) {
 	if len(batch) == 0 {
 		log.DebugContext(ctx, "received empty batch, continuing")
@@ -820,6 +911,19 @@ func (m *messageProcessor) processBatchStreamingEvents(
 			return false, nil
 		}
 
+		if isFinalStreamingEvent(agentEvent) {
+			if finalStreamingMetadata != nil {
+				*finalStreamingMetadata = buildFinalStreamingMetadata(agentEvent)
+			}
+			log.DebugfContext(
+				ctx,
+				"received final event, stopping batch processing "+
+					"(eventID=%s)",
+				agentEvent.ID,
+			)
+			return false, nil
+		}
+
 		// Convert event to A2A message for streaming
 		convertedResult, err := m.eventToA2AConverter.ConvertStreamingToA2AMessage(
 			ctx, agentEvent, EventToA2AStreamingOptions{CtxID: *a2aMsg.ContextID, TaskID: taskID},
@@ -851,16 +955,6 @@ func (m *messageProcessor) processBatchStreamingEvents(
 			}
 		}
 
-		// Check if this is the final event - stop processing if done
-		if isFinalStreamingEvent(agentEvent) {
-			log.DebugfContext(
-				ctx,
-				"received final event, stopping batch processing "+
-					"(eventID=%s)",
-				agentEvent.ID,
-			)
-			return false, nil
-		}
 	}
 
 	// Continue processing - need more data

@@ -153,6 +153,12 @@ func TestNode_EndTargets_DeduplicatesConcreteTargets(t *testing.T) {
 	assert.Equal(t, []string{"done", "retry"}, node.EndTargets())
 }
 
+func TestNode_AgentEventScope(t *testing.T) {
+	node := &Node{agentEventScope: "scope/child"}
+	assert.Equal(t, "scope/child", node.AgentEventScope())
+	assert.Empty(t, (&Node{}).AgentEventScope())
+}
+
 func TestNode_Tools_SkipsNilBaseTools(t *testing.T) {
 	node := &Node{
 		baseTools: map[string]tool.Tool{
@@ -201,6 +207,16 @@ func TestNode_Tools_RefreshesToolSetsWhenEnabled(t *testing.T) {
 	require.Len(t, tools, 2)
 	assert.Equal(t, "base", tools[0].Declaration().Name)
 	assert.Equal(t, "simple_echo", tools[1].Declaration().Name)
+}
+
+func TestExecutionContextCompletionIdentity_NilReceiver(t *testing.T) {
+	var execCtx *ExecutionContext
+
+	execCtx.setCompletionIdentity("answer", "resp-1")
+	state, text, identity := execCtx.snapshotCompletionState(nil)
+	require.Nil(t, state)
+	require.Empty(t, text)
+	require.Empty(t, identity)
 }
 
 func TestValidate_NoStaticReachabilityRequired(t *testing.T) {

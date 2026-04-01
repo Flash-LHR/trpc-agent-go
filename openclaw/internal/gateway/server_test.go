@@ -31,6 +31,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
@@ -40,8 +41,9 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 )
 
+const testTimeout = 2 * time.Second
+
 const (
-	testTimeout   = 2 * time.Second
 	testShortWait = 100 * time.Millisecond
 
 	debugEventsFile     = "events.jsonl"
@@ -526,6 +528,7 @@ func TestServerInjectedContextMessages_IncludePersonaAndUploads(t *testing.T) {
 		"u1",
 		sessionID,
 		"",
+		nil,
 	)
 	require.Len(t, msgs, 2)
 	require.Contains(t, msgs[0].Content, personaContextHeader)
@@ -545,6 +548,7 @@ func TestServerInjectedContextMessages_IncludeRequestSystemPrompt(
 		"u1",
 		"telegram:dm:u1",
 		"Follow the channel runtime guidance.",
+		nil,
 	)
 	require.Len(t, msgs, 1)
 	require.Equal(t, model.RoleSystem, msgs[0].Role)
@@ -635,6 +639,7 @@ func TestServerInjectedContextMessages_IncludeMemoryFiles(t *testing.T) {
 		"u1",
 		sessionID,
 		"",
+		nil,
 	)
 	require.Len(t, msgs, 3)
 	require.Contains(t, msgs[0].Content, personaContextHeader)
@@ -665,6 +670,7 @@ func TestServerInjectedContextMessages_CanceledContextSkipsMemoryFiles(t *testin
 		"u1",
 		"telegram:dm:u1",
 		"",
+		nil,
 	)
 	require.Empty(t, msgs)
 }
@@ -687,6 +693,7 @@ func TestServerInjectedContextMessages_EmptyAppNameSkipsMemoryFiles(t *testing.T
 		"u1",
 		"telegram:dm:u1",
 		"",
+		nil,
 	)
 	require.Empty(t, msgs)
 }
@@ -709,6 +716,7 @@ func TestServerInjectedContextMessages_EmptyUserIDSkipsMemoryFiles(t *testing.T)
 		" ",
 		"telegram:dm:u1",
 		"",
+		nil,
 	)
 	require.Empty(t, msgs)
 }
@@ -739,8 +747,50 @@ func TestServerInjectedContextMessages_EmptyMemoryFileSkipsMessage(t *testing.T)
 		"u1",
 		"telegram:dm:u1",
 		"",
+		nil,
 	)
 	require.Empty(t, msgs)
+}
+
+func TestServerInjectedContextMessages_RuntimeStateOverridesMemoryUser(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	root, err := memoryfile.DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	memoryStore, err := memoryfile.NewStore(root)
+	require.NoError(t, err)
+
+	path, err := memoryStore.EnsureMemory(
+		context.Background(),
+		"demo-app",
+		"actor-user",
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		os.WriteFile(
+			path,
+			[]byte("## Preferences\n\n- Use the actor-scoped memory."),
+			0o600,
+		),
+	)
+
+	srv := &Server{
+		appName:         "demo-app",
+		memoryFileStore: memoryStore,
+	}
+
+	msgs := srv.injectedContextMessages(
+		context.Background(),
+		"scope-user",
+		"telegram:thread:group1",
+		"",
+		imemory.RuntimeState("actor-user"),
+	)
+	require.Len(t, msgs, 1)
+	require.Contains(t, msgs[0].Content, "actor-scoped memory")
 }
 
 func TestDefaultSessionID_MissingFromForDM(t *testing.T) {
@@ -1410,10 +1460,8 @@ func TestServer_ProcessMessage_RunOptionResolver(t *testing.T) {
 
 	type ctxKey string
 
-	const (
-		resolverKey ctxKey = "resolver"
-		resolverTag        = "langfuse"
-	)
+	const resolverKey ctxKey = "resolver"
+	const resolverTag = "langfuse"
 
 	runner := &resolvingRunner{}
 	srv, err := New(
@@ -1573,6 +1621,69 @@ func TestServer_ProcessMessage_RunOptionResolver_Composes(t *testing.T) {
 	require.Equal(t, firstTag, runner.ctx.Value(firstKey))
 	require.Equal(t, secondTag, runner.ctx.Value(secondKey))
 	require.Len(t, runner.opts.TraceStartedCallbacks, 2)
+}
+
+func TestServer_ProcessMessage_RunOptionResolver_AppliesMemoryRuntimeStateBeforeInjectedContext(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	root, err := memoryfile.DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	memoryStore, err := memoryfile.NewStore(root)
+	require.NoError(t, err)
+
+	path, err := memoryStore.EnsureMemory(
+		context.Background(),
+		"demo-app",
+		"actor-user",
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		os.WriteFile(
+			path,
+			[]byte("## Preferences\n\n- Use actor memory."),
+			0o600,
+		),
+	)
+
+	runner := &runOptionsRunner{}
+	srv, err := New(
+		runner,
+		WithAppName("demo-app"),
+		WithMemoryFileStore(memoryStore),
+		WithRunOptionResolver(func(
+			ctx context.Context,
+			_ RunOptionInput,
+		) (context.Context, []agent.RunOption) {
+			return ctx, []agent.RunOption{
+				agent.MergeRuntimeState(
+					imemory.RuntimeState("actor-user"),
+				),
+			}
+		}),
+	)
+	require.NoError(t, err)
+
+	rsp, status := srv.ProcessMessage(
+		context.Background(),
+		gwproto.MessageRequest{
+			Channel:   "telegram",
+			From:      "scope-user",
+			SessionID: "telegram:thread:group1",
+			Text:      "hello",
+		},
+	)
+	require.Equal(t, http.StatusOK, status)
+	require.Equal(t, "ok", rsp.Reply)
+
+	opts := runner.Options()
+	require.Len(t, opts.InjectedContextMessages, 1)
+	require.Contains(t, opts.InjectedContextMessages[0].Content, "Use actor memory")
+	userID, ok := imemory.ResolveUserID(nil, opts.RuntimeState)
+	require.True(t, ok)
+	require.Equal(t, "actor-user", userID)
 }
 
 func TestServer_ProcessMessage_DebugRecorderWritesTrace(t *testing.T) {
@@ -2288,7 +2399,7 @@ func TestServer_ProcessMessage_NilServer(t *testing.T) {
 	t.Parallel()
 
 	var srv *Server
-	rsp, status := srv.ProcessMessage(nil, gwproto.MessageRequest{})
+	rsp, status := srv.ProcessMessage(context.TODO(), gwproto.MessageRequest{})
 	require.Equal(t, http.StatusInternalServerError, status)
 	require.NotNil(t, rsp.Error)
 	require.Equal(t, errTypeInternal, rsp.Error.Type)
@@ -2367,7 +2478,7 @@ func TestServer_CancelRequest_NilContext(t *testing.T) {
 	srv, err := New(r)
 	require.NoError(t, err)
 
-	canceled, apiErr, status := srv.CancelRequest(nil, "req-1")
+	canceled, apiErr, status := srv.CancelRequest(context.TODO(), "req-1")
 	require.True(t, canceled)
 	require.Nil(t, apiErr)
 	require.Equal(t, http.StatusOK, status)
@@ -2628,6 +2739,97 @@ func TestReplyAccumulator_IgnoresNilAndUnsupported(t *testing.T) {
 	acc.consumeDelta(nil)
 }
 
+func TestReplyAccumulator_CapturesUsage(t *testing.T) {
+	t.Parallel()
+
+	acc := newReplyAccumulator()
+	acc.Consume(&event.Event{
+		Response: &model.Response{
+			Object: model.ObjectTypeChatCompletion,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("final")},
+			},
+			Usage: &model.Usage{
+				PromptTokens:     12000,
+				CompletionTokens: 345,
+				TotalTokens:      12345,
+			},
+		},
+		RequestID: "req-1",
+	})
+
+	require.NotNil(t, acc.Usage)
+	require.Equal(t, 12000, acc.Usage.PromptTokens)
+	require.Equal(t, 345, acc.Usage.CompletionTokens)
+	require.Equal(t, 12345, acc.Usage.TotalTokens)
+}
+
+func TestReplyAccumulator_AggregatesUsageAcrossResponses(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	acc := newReplyAccumulator()
+	acc.Consume(&event.Event{
+		Response: &model.Response{
+			Object: model.ObjectTypeChatCompletion,
+			Choices: []model.Choice{
+				{
+					Message: model.Message{
+						ToolCalls: []model.ToolCall{{ID: "call-1"}},
+					},
+				},
+			},
+			Usage: &model.Usage{
+				PromptTokens:     100,
+				CompletionTokens: 50,
+				TotalTokens:      150,
+			},
+		},
+		RequestID: "req-1",
+	})
+	acc.Consume(&event.Event{
+		Response: &model.Response{
+			Object: model.ObjectTypeChatCompletion,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("final")},
+			},
+			Usage: &model.Usage{
+				PromptTokens:     200,
+				CompletionTokens: 30,
+				TotalTokens:      230,
+			},
+		},
+		RequestID: "req-1",
+	})
+
+	require.Equal(t, "final", acc.Text)
+	require.NotNil(t, acc.Usage)
+	require.Equal(t, 300, acc.Usage.PromptTokens)
+	require.Equal(t, 80, acc.Usage.CompletionTokens)
+	require.Equal(t, 380, acc.Usage.TotalTokens)
+}
+
+func TestReplyAccumulator_IgnoresUsageWithoutTokenCounts(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	acc := newReplyAccumulator()
+	acc.Consume(&event.Event{
+		Response: &model.Response{
+			Object: model.ObjectTypeChatCompletion,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("final")},
+			},
+			Usage: &model.Usage{},
+		},
+		RequestID: "req-1",
+	})
+
+	require.Nil(t, acc.Usage)
+}
+
 func TestServer_StreamMessage_Success(t *testing.T) {
 	t.Parallel()
 
@@ -2651,6 +2853,12 @@ func TestServer_StreamMessage_Success(t *testing.T) {
 						{
 							Delta: model.Message{Content: " me"},
 						},
+					},
+					Done: true,
+					Usage: &model.Usage{
+						PromptTokens:     12000,
+						CompletionTokens: 345,
+						TotalTokens:      12345,
 					},
 				},
 			},
@@ -2707,12 +2915,16 @@ func TestServer_StreamMessage_Success(t *testing.T) {
 		events[4].Type,
 	)
 	require.Equal(t, "help me", events[4].Reply)
+	require.NotNil(t, events[4].Usage)
+	require.Equal(t, 12345, events[4].Usage.TotalTokens)
 	require.Equal(
 		t,
 		gwproto.StreamEventTypeRunCompleted,
 		events[5].Type,
 	)
 	require.Equal(t, "req-1", events[5].RequestID)
+	require.NotNil(t, events[5].Usage)
+	require.Equal(t, 12345, events[5].Usage.TotalTokens)
 }
 
 func TestServer_StreamMessage_RunError(t *testing.T) {
@@ -3452,7 +3664,7 @@ func TestServer_StreamMessage_EarlyResponses(t *testing.T) {
 
 	var nilSrv *Server
 	stream, apiErr, status := nilSrv.StreamMessage(
-		nil,
+		context.TODO(),
 		gwproto.MessageRequest{},
 	)
 	require.Nil(t, stream)
@@ -3792,7 +4004,7 @@ func TestSendProgressUpdateAndHelpers(t *testing.T) {
 		),
 	)
 	require.Len(t, collected, 2)
-	require.Equal(t, "stream canceled", contextErrMessage(nil))
+	require.Equal(t, "stream canceled", contextErrMessage(context.Background()))
 	require.Equal(
 		t,
 		context.Canceled.Error(),
