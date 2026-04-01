@@ -319,6 +319,12 @@ func TestGenerator_DefinitionName(t *testing.T) {
 		t.Errorf("expected non-empty definition name for named struct")
 	}
 
+	builtinType := reflect.TypeOf(int(0))
+	defNameBuiltin := gen.definitionName(builtinType)
+	if defNameBuiltin != "int" {
+		t.Errorf("expected builtin definition name int, got %s", defNameBuiltin)
+	}
+
 	// Test with anonymous struct (no name, no package path).
 	anonType := reflect.TypeOf(struct{ Field string }{})
 	defName2 := gen.definitionName(anonType)
@@ -330,6 +336,54 @@ func TestGenerator_DefinitionName(t *testing.T) {
 	defName3 := gen.definitionName(anonType)
 	if defName2 == defName3 {
 		t.Errorf("expected unique definition names for multiple anonymous structs")
+	}
+}
+
+func TestMakeNullable(t *testing.T) {
+	nilSchema := makeNullable(nil)
+	if nilSchema["type"] != "null" {
+		t.Fatalf("expected nil schema to become null, got %v", nilSchema)
+	}
+
+	baseSchema := map[string]any{"type": "string"}
+	nullableSchema := makeNullable(baseSchema)
+	anyOf, ok := nullableSchema["anyOf"].([]any)
+	if !ok || len(anyOf) != 2 {
+		t.Fatalf("expected anyOf nullable schema, got %v", nullableSchema)
+	}
+
+	alreadyNullable := map[string]any{
+		"anyOf": []any{
+			map[string]any{"type": "string"},
+			map[string]any{"type": "null"},
+		},
+	}
+	if !reflect.DeepEqual(makeNullable(alreadyNullable), alreadyNullable) {
+		t.Fatalf("expected already nullable schema to be returned as-is")
+	}
+}
+
+func TestHasNullableAnyOf(t *testing.T) {
+	if hasNullableAnyOf(map[string]any{"type": "string"}) {
+		t.Fatalf("expected schema without anyOf to be non-nullable")
+	}
+
+	if hasNullableAnyOf(map[string]any{
+		"anyOf": []any{
+			"invalid",
+			map[string]any{"type": "string"},
+		},
+	}) {
+		t.Fatalf("expected anyOf without null branch to be non-nullable")
+	}
+
+	if !hasNullableAnyOf(map[string]any{
+		"anyOf": []any{
+			map[string]any{"type": "string"},
+			map[string]any{"type": "null"},
+		},
+	}) {
+		t.Fatalf("expected anyOf with null branch to be nullable")
 	}
 }
 
