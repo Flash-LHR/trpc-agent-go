@@ -66,6 +66,19 @@ func (f *fakeJudgeRunner) Close() error {
 
 var _ runner.Runner = (*fakeJudgeRunner)(nil)
 
+type errorJudgeRunner struct {
+	err error
+}
+
+func (e *errorJudgeRunner) Run(_ context.Context, _ string, _ string, _ model.Message,
+	_ ...agent.RunOption) (<-chan *event.Event, error) {
+	return nil, e.err
+}
+
+func (e *errorJudgeRunner) Close() error {
+	return nil
+}
+
 func buildEvalMetric(providerName string, numSamples int) *metric.EvalMetric {
 	return &metric.EvalMetric{
 		Threshold: 0.5,
@@ -87,6 +100,37 @@ func TestJudgeWithRunner_JudgeRunnerNil(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestJudge_MissingRequiredFields(t *testing.T) {
+	_, err := Judge(context.Background(), []model.Message{}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing required fields in eval metric")
+}
+
+func TestJudge_UsesRunnerWhenConfigured(t *testing.T) {
+	finalResponse := &model.Response{
+		Choices: []model.Choice{{Message: model.Message{Content: "ok"}}},
+		Done:    true,
+	}
+	evalMetric := &metric.EvalMetric{
+		Criterion: &criterion.Criterion{
+			LLMJudge: &criterionllm.LLMCriterion{
+				JudgeRunnerOptions: &criterionllm.JudgeRunnerOptions{
+					Runner: &fakeJudgeRunner{
+						events: []*event.Event{
+							event.NewResponseEvent("inv", "judge", finalResponse),
+						},
+					},
+				},
+			},
+		},
+	}
+	got, err := Judge(context.Background(), []model.Message{{Role: model.RoleUser, Content: "prompt"}}, evalMetric)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "ok", got.Choices[0].Message.Content)
+	assert.NotSame(t, finalResponse, got)
+}
+
 func TestJudgeWithRunner_EventError(t *testing.T) {
 	r := &fakeJudgeRunner{
 		events: []*event.Event{
@@ -100,6 +144,16 @@ func TestJudgeWithRunner_EventError(t *testing.T) {
 		[]model.Message{{Role: model.RoleUser, Content: "prompt"}},
 	)
 	require.Error(t, err)
+}
+
+func TestJudgeWithRunner_RunError(t *testing.T) {
+	_, err := judgeWithRunner(
+		context.Background(),
+		&errorJudgeRunner{err: assert.AnError},
+		[]model.Message{{Role: model.RoleUser, Content: "prompt"}},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "runner run")
 }
 
 func TestJudge_UnknownProvider(t *testing.T) {
@@ -132,6 +186,19 @@ func TestJudge_ModelErrors(t *testing.T) {
 	evalMetric = buildEvalMetric("llm-no-final-provider", 1)
 	_, err = Judge(context.Background(), []model.Message{}, evalMetric)
 	require.Error(t, err)
+}
+
+func TestJudge_UsesDefaultGenerationWhenUnset(t *testing.T) {
+	provider.Register("llm-default-generation-provider", func(_ *provider.Options) (model.Model, error) {
+		return &fakeModel{responses: []*model.Response{{
+			Choices: []model.Choice{{Message: model.Message{Content: "ok"}}},
+			Done:    true,
+		}}}, nil
+	})
+	evalMetric := buildEvalMetric("llm-default-generation-provider", 1)
+	evalMetric.Criterion.LLMJudge.JudgeModel.Generation = nil
+	_, err := Judge(context.Background(), []model.Message{{Role: model.RoleUser, Content: "prompt"}}, evalMetric)
+	require.NoError(t, err)
 }
 
 func TestJudge_PassesVariantToProvider(t *testing.T) {

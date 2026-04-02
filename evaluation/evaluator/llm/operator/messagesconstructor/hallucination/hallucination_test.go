@@ -11,6 +11,7 @@ package hallucination
 import (
 	"context"
 	"testing"
+	"text/template"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -169,6 +170,126 @@ func TestConstructMessagesRequiresSegmentedSentences(t *testing.T) {
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no segmented sentences found in response")
+}
+
+func TestConstructMessagesGroundingContextError(t *testing.T) {
+	constructor := New()
+	actual := &evalset.Invocation{
+		UserContent:   &model.Message{Content: "hi"},
+		FinalResponse: &model.Message{Content: "hello"},
+		Tools: []*evalset.Tool{{
+			Name:   "bad_tool",
+			Result: make(chan int),
+		}},
+	}
+	_, err := constructor.ConstructMessages(
+		context.Background(),
+		[]*evalset.Invocation{actual},
+		nil,
+		buildEvalMetricWithRunner(&fakeJudgeRunner{}),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extract grounding context")
+}
+
+func TestConstructMessagesPropagatesSegmentationJudgeError(t *testing.T) {
+	constructor := New()
+	runner := &fakeJudgeRunner{
+		events: []*event.Event{
+			event.NewResponseEvent("inv", "judge", &model.Response{
+				Error: &model.ResponseError{Message: "bad"},
+				Done:  true,
+			}),
+		},
+	}
+	actual := &evalset.Invocation{
+		UserContent:   &model.Message{Content: "hi"},
+		FinalResponse: &model.Message{Content: "hello"},
+	}
+	_, err := constructor.ConstructMessages(
+		context.Background(),
+		[]*evalset.Invocation{actual},
+		nil,
+		buildEvalMetricWithRunner(runner),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "execute segmentation judge")
+}
+
+func TestConstructMessagesRejectsWhitespaceOnlySentences(t *testing.T) {
+	constructor := New()
+	runner := &fakeJudgeRunner{
+		events: []*event.Event{
+			event.NewResponseEvent("inv", "judge", &model.Response{
+				Choices: []model.Choice{{
+					Message: model.Message{Content: "<sentence>   </sentence>"},
+				}},
+				Done: true,
+			}),
+		},
+	}
+	actual := &evalset.Invocation{
+		UserContent:   &model.Message{Content: "hi"},
+		FinalResponse: &model.Message{Content: "hello"},
+	}
+	_, err := constructor.ConstructMessages(
+		context.Background(),
+		[]*evalset.Invocation{actual},
+		nil,
+		buildEvalMetricWithRunner(runner),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no non-empty segmented sentences found in response")
+}
+
+func TestConstructMessagesValidatorTemplateError(t *testing.T) {
+	original := validatorPromptTemplate
+	validatorPromptTemplate = template.Must(template.New("validatorPrompt").Funcs(template.FuncMap{
+		"boom": func() (string, error) {
+			return "", assert.AnError
+		},
+	}).Parse(`{{boom}}`))
+	t.Cleanup(func() {
+		validatorPromptTemplate = original
+	})
+	constructor := New()
+	runner := &fakeJudgeRunner{
+		events: []*event.Event{
+			event.NewResponseEvent("inv", "judge", &model.Response{
+				Choices: []model.Choice{{
+					Message: model.Message{Content: "<sentence>hello</sentence>"},
+				}},
+				Done: true,
+			}),
+		},
+	}
+	actual := &evalset.Invocation{
+		UserContent:   &model.Message{Content: "hi"},
+		FinalResponse: &model.Message{Content: "hello"},
+	}
+	_, err := constructor.ConstructMessages(
+		context.Background(),
+		[]*evalset.Invocation{actual},
+		nil,
+		buildEvalMetricWithRunner(runner),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "execute validator prompt template")
+}
+
+func TestBuildSegmentedSentencesTemplateError(t *testing.T) {
+	original := segmentationPromptTemplate
+	segmentationPromptTemplate = template.Must(template.New("segmentationPrompt").Funcs(template.FuncMap{
+		"boom": func() (string, error) {
+			return "", assert.AnError
+		},
+	}).Parse(`{{boom}}`))
+	t.Cleanup(func() {
+		segmentationPromptTemplate = original
+	})
+	_, err := buildSegmentedSentences(context.Background(), "hello", &metric.EvalMetric{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "execute segmentation prompt template")
 }
 
 func buildEvalMetricWithRunner(judgeRunner runner.Runner) *metric.EvalMetric {

@@ -68,6 +68,29 @@ func TestExtractGroundingContextWithoutArtifacts(t *testing.T) {
 	assert.Equal(t, "No validation context was captured.", text)
 }
 
+func TestExtractGroundingContextNilInvocation(t *testing.T) {
+	text, err := ExtractGroundingContext(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "No validation context was captured.", text)
+}
+
+func TestExtractGroundingContextIgnoresEmptyArtifacts(t *testing.T) {
+	actual := &evalset.Invocation{
+		ContextMessages: []*model.Message{
+			{Role: model.RoleSystem, Content: "   "},
+		},
+		IntermediateResponses: []*model.Message{
+			{Role: model.RoleAssistant, Content: ""},
+		},
+		Tools: []*evalset.Tool{
+			nil,
+		},
+	}
+	text, err := ExtractGroundingContext(actual)
+	require.NoError(t, err)
+	assert.Equal(t, "No validation context was captured.", text)
+}
+
 func TestExtractGroundingContextToolMarshalError(t *testing.T) {
 	actual := &evalset.Invocation{
 		Tools: []*evalset.Tool{
@@ -80,4 +103,23 @@ func TestExtractGroundingContextToolMarshalError(t *testing.T) {
 	_, err := ExtractGroundingContext(actual)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "marshal tool bad_tool arguments")
+}
+
+func TestExtractGroundingContextToolResultMarshalError(t *testing.T) {
+	actual := &evalset.Invocation{
+		Tools: []*evalset.Tool{
+			{
+				Name:   "bad_tool",
+				Result: make(chan int),
+			},
+		},
+	}
+	_, err := ExtractGroundingContext(actual)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marshal tool bad_tool result")
+}
+
+func TestMarshalGroundingSectionError(t *testing.T) {
+	_, err := marshalGroundingSection(make(chan int))
+	require.Error(t, err)
 }

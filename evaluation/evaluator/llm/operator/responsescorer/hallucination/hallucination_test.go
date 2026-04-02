@@ -70,6 +70,26 @@ Verdict: yes
 	assert.Equal(t, 1.0, result.Score)
 }
 
+func TestScoreBasedOnResponseFallsBackToVerdictNo(t *testing.T) {
+	scorer := New()
+	response := &model.Response{
+		Choices: []model.Choice{{
+			Message: model.Message{Content: `
+ID:
+Reason: The tool output does not support the sentence.
+Label:
+Verdict: no
+`},
+		}},
+	}
+	result, err := scorer.ScoreBasedOnResponse(context.Background(), response, nil)
+	require.NoError(t, err)
+	require.Len(t, result.RubricScores, 1)
+	assert.Equal(t, "1", result.RubricScores[0].ID)
+	assert.Equal(t, 0.0, result.RubricScores[0].Score)
+	assert.Equal(t, 0.0, result.Score)
+}
+
 func TestScoreBasedOnResponseUnexpectedLabel(t *testing.T) {
 	scorer := New()
 	response := &model.Response{
@@ -94,4 +114,18 @@ func TestScoreBasedOnResponseRequiresBlocks(t *testing.T) {
 	}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no sentence blocks found")
+}
+
+func TestScoreBasedOnResponseRequiresResponse(t *testing.T) {
+	scorer := New()
+	_, err := scorer.ScoreBasedOnResponse(context.Background(), nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "response is nil")
+}
+
+func TestScoreBasedOnResponseRequiresChoices(t *testing.T) {
+	scorer := New()
+	_, err := scorer.ScoreBasedOnResponse(context.Background(), &model.Response{}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no choices in response")
 }
