@@ -18,8 +18,8 @@ import (
 const (
 	appName               = "failover-chat-demo"
 	agentName             = "failover-chat-agent"
-	defaultPrimaryModel   = "gpt-10.2"
-	defaultBackupModel    = "deepseek-v3.2"
+	defaultPrimaryModel   = "gpt-4o-mini"
+	defaultBackupModel    = "deepseek-chat"
 	defaultPrimaryBaseURL = "https://api.openai.com/v1"
 	defaultBackupBaseURL  = "https://api.deepseek.com/v1"
 )
