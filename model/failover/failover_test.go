@@ -14,6 +14,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -300,6 +301,52 @@ func TestGenerateContentUsesNonIterCandidate(t *testing.T) {
 	assert.Equal(t, "hello", responses[0].Choices[0].Message.Content)
 }
 
+func TestGenerateContentCancelsAbandonedChannelCandidateOnFallback(t *testing.T) {
+	primaryStopped := make(chan struct{})
+	primary := &cancelAwareChannelModel{
+		name: "primary",
+		response: &model.Response{
+			Error: &model.ResponseError{
+				Message: "primary failed",
+				Type:    model.ErrorTypeStreamError,
+			},
+			Model: "primary",
+			Done:  true,
+		},
+		stopped: primaryStopped,
+	}
+	backup := &scriptedModel{
+		name: "backup",
+		responses: []*model.Response{
+			{
+				Model: "backup",
+				Choices: []model.Choice{
+					{
+						Message: model.Message{
+							Role:    model.RoleAssistant,
+							Content: "from backup",
+						},
+					},
+				},
+				Done: true,
+			},
+		},
+	}
+	llm, err := New(WithCandidates(primary, backup))
+	require.NoError(t, err)
+	responses := collectChannelResponses(t, llm, &model.Request{
+		Messages: []model.Message{model.NewUserMessage("hello")},
+	})
+	require.Len(t, responses, 1)
+	assert.Equal(t, "backup", responses[0].Model)
+	assert.Equal(t, "from backup", responses[0].Choices[0].Message.Content)
+	select {
+	case <-primaryStopped:
+	case <-time.After(time.Second):
+		t.Fatal("expected primary candidate context to be canceled")
+	}
+}
+
 func TestGenerateContentIterFallsBackOnFunctionLevelError(t *testing.T) {
 	primary := &scriptedIterModel{
 		name: "primary",
@@ -581,6 +628,42 @@ func (m *scriptedModel) GenerateContent(
 }
 
 func (m *scriptedModel) Info() model.Info {
+	return model.Info{Name: m.name}
+}
+
+type cancelAwareChannelModel struct {
+	name     string
+	response *model.Response
+	stopped  chan struct{}
+}
+
+func (m *cancelAwareChannelModel) GenerateContent(
+	ctx context.Context,
+	request *model.Request,
+) (<-chan *model.Response, error) {
+	ch := make(chan *model.Response, 1)
+	go func() {
+		defer close(ch)
+		signalStopped := func() {
+			select {
+			case <-m.stopped:
+			default:
+				close(m.stopped)
+			}
+		}
+		select {
+		case ch <- m.response:
+		case <-ctx.Done():
+			signalStopped()
+			return
+		}
+		<-ctx.Done()
+		signalStopped()
+	}()
+	return ch, nil
+}
+
+func (m *cancelAwareChannelModel) Info() model.Info {
 	return model.Info{Name: m.name}
 }
 

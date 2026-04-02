@@ -100,6 +100,7 @@ type attempt struct {
 	candidate model.Model
 	seq       model.Seq[*model.Response]
 	failures  []failureRecord
+	cancel    context.CancelFunc
 }
 
 func (m *failoverModel) prepareAttempt(
@@ -114,15 +115,18 @@ func (m *failoverModel) prepareAttempt(
 		if err != nil {
 			return nil, err
 		}
-		seq, err := sequenceForCandidate(ctx, m.candidates[i], candidateRequest)
+		attemptCtx, cancel := context.WithCancel(ctx)
+		seq, err := sequenceForCandidate(attemptCtx, m.candidates[i], candidateRequest)
 		if err == nil {
 			return &attempt{
 				index:     i,
 				candidate: m.candidates[i],
 				seq:       seq,
 				failures:  currentFailures,
+				cancel:    cancel,
 			}, nil
 		}
+		cancel()
 		currentFailures = appendFailure(
 			currentFailures,
 			m.candidates[i].Info().Name,
@@ -181,6 +185,9 @@ func (m *failoverModel) runAttempts(
 			nextAttempt = preparedAttempt
 			return false
 		})
+		if currentAttempt.cancel != nil {
+			currentAttempt.cancel()
+		}
 		if nextAttempt == nil {
 			return
 		}
