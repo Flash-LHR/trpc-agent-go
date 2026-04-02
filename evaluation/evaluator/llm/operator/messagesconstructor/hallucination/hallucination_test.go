@@ -96,8 +96,8 @@ func TestConstructMessagesBuildsValidatorPromptFromSegmentedSentences(t *testing
 	assert.Contains(t, messages[0].Content, "User prompt:")
 	assert.Contains(t, messages[0].Content, "What is the weather in Paris?")
 	assert.Contains(t, messages[0].Content, "Cite tool outputs only.")
-	assert.Contains(t, messages[0].Content, "Intermediate responses:")
-	assert.Contains(t, messages[0].Content, "Let me check the live weather feed.")
+	assert.NotContains(t, messages[0].Content, "Intermediate responses:")
+	assert.NotContains(t, messages[0].Content, "Let me check the live weather feed.")
 	assert.Contains(t, messages[0].Content, "tool_calls:")
 	assert.Contains(t, messages[0].Content, "\"id\": \"tool-1\"")
 	assert.Contains(t, messages[0].Content, "\"temperatureC\": 18")
@@ -107,6 +107,55 @@ func TestConstructMessagesBuildsValidatorPromptFromSegmentedSentences(t *testing
 	assert.Contains(t, messages[0].Content, "<sentence id=\"2\">")
 	assert.Contains(t, messages[0].Content, "It is 18C.")
 	assert.Contains(t, messages[0].Content, "supported|unsupported|contradictory|disputed|not_applicable")
+}
+
+func TestConstructMessagesUsesGroundingFromAllActuals(t *testing.T) {
+	constructor := New()
+	runner := &fakeJudgeRunner{
+		events: []*event.Event{
+			event.NewResponseEvent("inv", "judge", &model.Response{
+				Choices: []model.Choice{{
+					Message: model.Message{Content: "<sentence>AuroraPad X2 was released in 2024.</sentence>"},
+				}},
+				Done: true,
+			}),
+		},
+	}
+	actuals := []*evalset.Invocation{
+		{
+			UserContent: &model.Message{Content: "Look up AuroraPad X2."},
+			Tools: []*evalset.Tool{
+				{
+					ID:        "tool-1",
+					Name:      "product_catalog_lookup",
+					Arguments: map[string]any{"product": "AuroraPad X2"},
+					Result:    map[string]any{"releaseYear": 2024},
+				},
+			},
+			IntermediateResponses: []*model.Message{
+				{Role: model.RoleAssistant, Content: "I found the release year."},
+			},
+		},
+		{
+			UserContent:   &model.Message{Content: "Summarize the result."},
+			FinalResponse: &model.Message{Content: "AuroraPad X2 was released in 2024."},
+		},
+	}
+	messages, err := constructor.ConstructMessages(
+		context.Background(),
+		actuals,
+		nil,
+		buildEvalMetricWithRunner(runner),
+	)
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	assert.Equal(t, 1, runner.runCalls)
+	assert.Contains(t, runner.lastMessage.Content, "AuroraPad X2 was released in 2024.")
+	assert.Contains(t, messages[0].Content, "Look up AuroraPad X2.")
+	assert.Contains(t, messages[0].Content, "\"releaseYear\": 2024")
+	assert.Contains(t, messages[0].Content, "Summarize the result.")
+	assert.NotContains(t, messages[0].Content, "Intermediate responses:")
+	assert.NotContains(t, messages[0].Content, "I found the release year.")
 }
 
 func TestConstructMessagesWithoutArtifacts(t *testing.T) {

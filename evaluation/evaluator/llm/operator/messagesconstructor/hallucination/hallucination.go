@@ -26,7 +26,8 @@ import (
 )
 
 var (
-	segmentationPrompt = `
+	noValidationContext = "No validation context was captured."
+	segmentationPrompt  = `
 # Mission
 
 Segment the final answer into sentence-level or bullet-level claims.
@@ -130,7 +131,7 @@ func (e *hallucinationMessagesConstructor) ConstructMessages(ctx context.Context
 		return nil, fmt.Errorf("actuals is empty")
 	}
 	actual := actuals[len(actuals)-1]
-	groundingContext, err := content.ExtractGroundingContext(actual)
+	groundingContext, err := buildValidationContext(actuals)
 	if err != nil {
 		return nil, fmt.Errorf("extract grounding context: %w", err)
 	}
@@ -155,6 +156,24 @@ func (e *hallucinationMessagesConstructor) ConstructMessages(ctx context.Context
 			Content: buf.String(),
 		},
 	}, nil
+}
+
+func buildValidationContext(actuals []*evalset.Invocation) (string, error) {
+	contexts := make([]string, 0, len(actuals))
+	for i, actual := range actuals {
+		groundingContext, err := content.ExtractGroundingContext(actual)
+		if err != nil {
+			return "", fmt.Errorf("actual %d: %w", i, err)
+		}
+		if groundingContext == noValidationContext {
+			continue
+		}
+		contexts = append(contexts, groundingContext)
+	}
+	if len(contexts) == 0 {
+		return noValidationContext, nil
+	}
+	return strings.Join(contexts, "\n\n"), nil
 }
 
 func buildSegmentedSentences(ctx context.Context, finalResponse string, evalMetric *metric.EvalMetric) (string, error) {

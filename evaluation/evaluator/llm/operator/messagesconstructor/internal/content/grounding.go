@@ -34,15 +34,12 @@ func ExtractGroundingContext(actual *evalset.Invocation) (string, error) {
 	if actual == nil {
 		return "No validation context was captured.", nil
 	}
-	sections := make([]string, 0, 5)
+	sections := make([]string, 0, 4)
 	if userPrompt := strings.TrimSpace(ExtractTextFromContent(actual.UserContent)); userPrompt != "" {
 		sections = append(sections, "User prompt:\n"+userPrompt)
 	}
 	if messages := formatGroundingMessages(actual.ContextMessages); messages != "" {
 		sections = append(sections, "Context messages:\n"+messages)
-	}
-	if responses := formatIntermediateResponses(actual.IntermediateResponses); responses != "" {
-		sections = append(sections, "Intermediate responses:\n"+responses)
 	}
 	toolCalls, toolOutputs, err := formatGroundingTools(actual.Tools)
 	if err != nil {
@@ -70,19 +67,6 @@ func formatGroundingMessages(messages []*model.Message) string {
 		builder.WriteString("- [")
 		builder.WriteString(string(message.Role))
 		builder.WriteString("] ")
-		builder.WriteString(text)
-		builder.WriteString("\n")
-	}
-	return strings.TrimSpace(builder.String())
-}
-
-func formatIntermediateResponses(messages []*model.Message) string {
-	var builder strings.Builder
-	for _, message := range messages {
-		text := strings.TrimSpace(ExtractTextFromContent(message))
-		if text == "" {
-			continue
-		}
 		builder.WriteString(text)
 		builder.WriteString("\n")
 	}
