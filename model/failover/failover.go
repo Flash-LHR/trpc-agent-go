@@ -248,5 +248,8 @@ func hasFailoverResponseError(response *model.Response) bool {
 	if response == nil || response.Error == nil {
 		return false
 	}
-	return response.Error.Message != "" || response.Error.Type != ""
+	return response.Error.Message != "" ||
+		response.Error.Type != "" ||
+		response.Error.Param != nil ||
+		response.Error.Code != nil
 }

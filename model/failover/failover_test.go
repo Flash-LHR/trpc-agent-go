@@ -142,6 +142,30 @@ func TestHasFailoverResponseError(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "error code present",
+			response: &model.Response{
+				Error: &model.ResponseError{
+					Code: func() *string {
+						s := "rate_limit"
+						return &s
+					}(),
+				},
+			},
+			want: true,
+		},
+		{
+			name: "error param present",
+			response: &model.Response{
+				Error: &model.ResponseError{
+					Param: func() *string {
+						s := "messages"
+						return &s
+					}(),
+				},
+			},
+			want: true,
+		},
+		{
 			name: "error struct empty",
 			response: &model.Response{
 				Error: &model.ResponseError{},
