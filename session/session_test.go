@@ -90,6 +90,59 @@ func TestWithEventTime(t *testing.T) {
 	}
 }
 
+func TestWithGetSessionEventPage(t *testing.T) {
+	option := WithGetSessionEventPage(20, 50)
+	opts := &Options{}
+	option(opts)
+
+	require.NotNil(t, opts.EventPage)
+	assert.Equal(t, 20, opts.EventPage.Offset)
+	assert.Equal(t, 50, opts.EventPage.Limit)
+}
+
+func TestValidateGetSessionOptions(t *testing.T) {
+	t.Run("no page", func(t *testing.T) {
+		err := ValidateGetSessionOptions(&Options{}, false)
+		require.NoError(t, err)
+	})
+
+	t.Run("unsupported backend", func(t *testing.T) {
+		err := ValidateGetSessionOptions(&Options{
+			EventPage: &EventPage{Offset: 0, Limit: 10},
+		}, false)
+		require.ErrorIs(t, err, ErrEventPageUnsupported)
+	})
+
+	t.Run("invalid page", func(t *testing.T) {
+		err := ValidateGetSessionOptions(&Options{
+			EventPage: &EventPage{Offset: -1, Limit: 0},
+		}, true)
+		require.ErrorIs(t, err, ErrInvalidEventPage)
+	})
+
+	t.Run("conflicts with event filters", func(t *testing.T) {
+		err := ValidateGetSessionOptions(&Options{
+			EventNum:  5,
+			EventPage: &EventPage{Offset: 0, Limit: 10},
+		}, true)
+		require.ErrorIs(t, err, ErrEventPageConflictsWithEventFilters)
+	})
+
+	t.Run("valid page", func(t *testing.T) {
+		err := ValidateGetSessionOptions(&Options{
+			EventPage: &EventPage{Offset: 0, Limit: 10},
+		}, true)
+		require.NoError(t, err)
+	})
+}
+
+func TestValidateListSessionsOptions(t *testing.T) {
+	err := ValidateListSessionsOptions(&Options{
+		EventPage: &EventPage{Offset: 0, Limit: 10},
+	})
+	require.ErrorIs(t, err, ErrEventPageOnlyForGetSession)
+}
+
 func TestWithSummaryFilterKey(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -2257,6 +2310,63 @@ func TestSession_Clone_ServiceMeta(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSession_Clone_WithTracksAndNilSummary(t *testing.T) {
+	original := &Session{
+		ID:      "session-tracks",
+		AppName: "app",
+		UserID:  "user",
+		Tracks: map[Track]*TrackEvents{
+			"track-empty": {
+				Track:  "track-empty",
+				Events: nil,
+			},
+			"track-data": {
+				Track: "track-data",
+				Events: []TrackEvent{
+					{Track: "track-data", Payload: json.RawMessage(`"payload"`), Timestamp: time.Now()},
+				},
+			},
+		},
+		Summaries: map[string]*Summary{
+			"empty": nil,
+			"full":  {Summary: "copied"},
+		},
+		State: StateMap{},
+	}
+
+	cloned := original.Clone()
+	require.NotNil(t, cloned)
+	require.NotNil(t, cloned.Tracks)
+	require.Contains(t, cloned.Tracks, Track("track-empty"))
+	require.Contains(t, cloned.Tracks, Track("track-data"))
+	assert.Nil(t, cloned.Summaries["empty"])
+	require.NotNil(t, cloned.Summaries["full"])
+	assert.Equal(t, "copied", cloned.Summaries["full"].Summary)
+}
+
+func TestSession_HasStateKeyWithPrefix_EmptyStateMap(t *testing.T) {
+	sess := &Session{State: StateMap{}}
+	assert.False(t, sess.HasStateKeyWithPrefix("foo:"))
+}
+
+func TestApplyEventStateDelta_InitializesStateAndCopiesNilValue(t *testing.T) {
+	sess := &Session{}
+	ev := createTestEvent(model.RoleUser, "test", time.Now(), StateMap{"key": nil})
+
+	sess.ApplyEventStateDelta(ev)
+
+	require.NotNil(t, sess.State)
+	value, ok := sess.State["key"]
+	require.True(t, ok)
+	assert.Nil(t, value)
+}
+
+func TestWithListSessionOnlyMeta(t *testing.T) {
+	opt := &Options{}
+	WithListSessionOnlyMeta()(opt)
+	assert.True(t, opt.ListSessionOnlyMeta)
 }
 
 // TestSession_SnapshotTracksState tests the SnapshotTracksState method.

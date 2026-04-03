@@ -534,9 +534,9 @@ func (s *Server) resolveRunOptions(
 	ctx context.Context,
 	run preparedMessageRun,
 ) (context.Context, []agent.RunOption) {
-	var extra []agent.RunOption
+	extra := []agent.RunOption(nil)
 	if s != nil && s.runOptionResolver != nil {
-		resolvedCtx, resolvedExtra := s.runOptionResolver(
+		resolvedCtx, resolvedOpts := s.runOptionResolver(
 			ctx,
 			RunOptionInput{
 				Inbound:   run.inbound,
@@ -553,17 +553,14 @@ func (s *Server) resolveRunOptions(
 		if resolvedCtx != nil {
 			ctx = resolvedCtx
 		}
-		extra = resolvedExtra
+		extra = resolvedOpts
 	}
-
-	extraCfg := agent.NewRunOptions(extra...)
 	runOpts := s.runOptions(
 		ctx,
 		run.userID,
 		run.sessionID,
 		run.requestID,
 		run.requestSystemPrompt,
-		extraCfg.RuntimeState,
 	)
 	if len(extra) == 0 {
 		return ctx, runOpts
@@ -578,7 +575,6 @@ func (s *Server) runOptions(
 	sessionID string,
 	requestID string,
 	requestSystemPrompt string,
-	runtimeState map[string]any,
 ) []agent.RunOption {
 	runOpts := make([]agent.RunOption, 0, 1)
 	if requestID != "" {
@@ -589,7 +585,6 @@ func (s *Server) runOptions(
 		userID,
 		sessionID,
 		requestSystemPrompt,
-		runtimeState,
 	); len(messages) > 0 {
 		runOpts = append(
 			runOpts,
@@ -732,7 +727,15 @@ func mergeGatewayUsage(
 		return cloneGatewayUsage(accumulated)
 	}
 	if accumulated == nil {
-		return cloneGatewayUsage(usage)
+		cloned := cloneGatewayUsage(usage)
+		if cloned != nil {
+			cloned.LastPromptTokens = usage.PromptTokens
+		}
+		return cloned
+	}
+	lastPrompt := accumulated.LastPromptTokens
+	if usage.PromptTokens > 0 {
+		lastPrompt = usage.PromptTokens
 	}
 	return &gwproto.Usage{
 		PromptTokens: accumulated.PromptTokens +
@@ -741,6 +744,7 @@ func mergeGatewayUsage(
 			usage.CompletionTokens,
 		TotalTokens: accumulated.TotalTokens +
 			usage.TotalTokens,
+		LastPromptTokens: lastPrompt,
 	}
 }
 

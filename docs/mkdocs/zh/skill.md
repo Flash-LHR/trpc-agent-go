@@ -792,7 +792,7 @@ svc := inmemory.NewSessionService(
 _ = svc
 ```
 
-`AppendEventHook` 的接口说明见 `docs/mkdocs/zh/session.md`，也可以参考
+`AppendEventHook` 的接口说明见 [Session 文档](session/index.md)，也可以参考
 可运行示例 `examples/session/hook`。
 
 说明：
@@ -1050,18 +1050,33 @@ agent := llmagent.New(
   即便模型未显式设置 `save_as_artifacts` / `outputs.save`：
   - `llmagent.WithSkillRunForceSaveArtifacts(true)`
 
+可选行为（内联输出限额）：
+- 代码侧可配置 `skill_run` 返回多少内联文本：
+  - `llmagent.WithSkillRunOutputLimits(toolskill.RunOutputLimits{StdoutStderrBytes: 128 * 1024, PrimaryOutputBytes: 128 * 1024})`
+- 这个配置只影响 `stdout`、`stderr` 和 `primary_output`。
+  `output_files` / `outputs` 仍然使用工作区文件收集上限
+  （默认 4 MiB/文件）。
+
 输出：
 - `stdout`、`stderr`、`exit_code`、`timed_out`、`duration_ms`
+  - `stdout` / `stderr` 更适合日志和短状态文本。它们会受可配置的
+    内联上限控制（默认各 16 KiB）。
+    如果模型需要读取大段或结构化文本，优先用 `output_files` 或
+    `outputs`。
 - `staged_inputs`（可选）：本次执行前从对话自动 stage 进
   `work/inputs/` 的文件列表
 - `primary_output`（可选）：包含 `name`、`ref`、`content`、`mime_type`、
   `size_bytes`、`truncated`
   - 便捷字段：指向“最合适的”小型文本输出文件（若存在）。当只有一个主要输出时
     优先使用它。
+  - 只有不超过配置上限的文本文件才会进入 `primary_output`
+    （默认 32 KiB）。
 - `output_files`：文件列表（`name`、`ref`、`content`、`mime_type`、
   `size_bytes`、`truncated`）
   - `ref` 是稳定的 `workspace://<name>` 引用，可传给其它工具使用
   - 非文本文件的 `content` 会被省略。
+  - 对于大文本或结构化输出，优先走这条通道；文件收集遵循工作区
+    收集上限，而不是较小的 stdout/stderr 内联预算。
   - 当 `omit_inline_content=true` 时，所有文件的 `content` 会被省略。可用
     `ref` 配合 `read_file` 按需读取文本内容。
   - `size_bytes` 表示磁盘上的文件大小；`truncated=true` 表示收集内容触发了
@@ -1258,6 +1273,46 @@ agent := llmagent.New(
   形成“概览 → 正文/文档”的渐进式上下文。
 - 执行隔离：脚本以工作区为边界，输出文件由通配符精确收集，避免
   将脚本源码或非必要文件带入模型上下文。
+
+## 执行器环境变量注入
+
+当执行器运行在远端（容器、云函数等）时，宿主进程的环境变量不会
+自动传递。`codeexecutor.NewEnvInjectingCodeExecutor` 可以包装
+任意 `CodeExecutor`，在每次 `RunProgram` / `StartProgram`
+调用前，从 `context` 动态读取环境变量并合并到
+`RunProgramSpec.Env`。
+
+```go
+import "trpc.group/trpc-go/trpc-agent-go/codeexecutor"
+
+wrapped := codeexecutor.NewEnvInjectingCodeExecutor(exec,
+    func(ctx context.Context) map[string]string {
+        // 从 ctx 中读取调用方提供的环境变量。
+        // 来源由业务自行决定：RuntimeState、请求头、DB 查询等。
+        return map[string]string{"GITHUB_TOKEN": "..."}
+    },
+)
+
+agent := llmagent.New(
+    "skills-assistant",
+    llmagent.WithSkills(repo),
+    llmagent.WithCodeExecutor(wrapped),  // 用 wrapped 代替原始 exec
+)
+```
+
+行为：
+
+- 覆盖所有走 `Engine.Runner()` 的执行路径：`skill_run`、
+  `workspace_exec`、交互式会话。
+- provider 返回的 key **不覆盖** tool 显式传入的 `env`。
+- 每次 `RunProgram` 调用时求值，不在调用间共享状态。
+- provider 返回 `nil` 时零开销跳过。
+- 也可以只包装 Engine 层：
+  `codeexecutor.NewEnvInjectingEngine(eng, provider)`。
+
+典型场景：多用户 Agent 服务中，每个用户通过 AG-UI `state` 或
+HTTP header 传入自己的 token，provider 从请求上下文中读取后注入
+执行器，LLM 无需感知。
 
 ## 故障排查
 

@@ -20,10 +20,10 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
-	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/conversation"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/delivery"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/gateway"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
@@ -35,9 +35,10 @@ func TestRunOptionResolversMergeRuntimeState(t *testing.T) {
 	extensions, err := conversation.MergeRequestExtension(
 		nil,
 		conversation.Annotation{
-			HistoryMode: conversation.HistoryModeShared,
-			ActorID:     "user1",
-			ActorLabel:  "Alice",
+			HistoryMode:   conversation.HistoryModeShared,
+			StorageUserID: "chat-scope",
+			ActorID:       "user1",
+			ActorLabel:    "Alice",
 			ActorLabels: map[string]string{
 				"user1": "alice.dev",
 			},
@@ -64,7 +65,7 @@ func TestRunOptionResolversMergeRuntimeState(t *testing.T) {
 		context.Background(),
 		input,
 	)
-	_, conversationOpts := buildConversationRunOptionResolver(
+	ctx, conversationOpts := buildConversationRunOptionResolver(
 		"demo-app",
 		nil,
 		conversation.HistoryOptions{},
@@ -80,6 +81,11 @@ func TestRunOptionResolversMergeRuntimeState(t *testing.T) {
 	for _, opt := range conversationOpts {
 		opt(&cfg)
 	}
+	require.Equal(
+		t,
+		"chat-scope",
+		conversationscope.StorageUserIDFromContext(ctx, ""),
+	)
 
 	require.Equal(
 		t,
@@ -94,9 +100,10 @@ func TestRunOptionResolversMergeRuntimeState(t *testing.T) {
 	require.Equal(
 		t,
 		conversation.Annotation{
-			HistoryMode: conversation.HistoryModeShared,
-			ActorID:     "user1",
-			ActorLabel:  "Alice",
+			HistoryMode:   conversation.HistoryModeShared,
+			StorageUserID: "chat-scope",
+			ActorID:       "user1",
+			ActorLabel:    "Alice",
 			ActorLabels: map[string]string{
 				"user1": "alice.dev",
 			},
@@ -108,9 +115,6 @@ func TestRunOptionResolversMergeRuntimeState(t *testing.T) {
 		includeContentsNone,
 		cfg.RuntimeState[graph.CfgKeyIncludeContents],
 	)
-	userID, ok := imemory.ResolveUserID(nil, cfg.RuntimeState)
-	require.True(t, ok)
-	require.Equal(t, "user1", userID)
 }
 
 func TestBuildConversationRunOptionResolverSharedHistory(
@@ -118,13 +122,14 @@ func TestBuildConversationRunOptionResolverSharedHistory(
 ) {
 	t.Parallel()
 
-	sessSvc := sessioninmemory.NewSessionService()
+	baseSessSvc := sessioninmemory.NewSessionService()
+	sessSvc := conversationscope.WrapSessionService(baseSessSvc)
 	key := session.Key{
 		AppName:   "demo-app",
-		UserID:    "scope-user",
+		UserID:    "chat-scope",
 		SessionID: "session-1",
 	}
-	sess, err := sessSvc.CreateSession(
+	sess, err := baseSessSvc.CreateSession(
 		context.Background(),
 		key,
 		nil,
@@ -153,7 +158,7 @@ func TestBuildConversationRunOptionResolverSharedHistory(
 	))
 	require.NoError(
 		t,
-		sessSvc.AppendEvent(context.Background(), sess, userEvt),
+		baseSessSvc.AppendEvent(context.Background(), sess, userEvt),
 	)
 
 	assistantEvt := event.NewResponseEvent(
@@ -168,15 +173,16 @@ func TestBuildConversationRunOptionResolverSharedHistory(
 	assistantEvt.Timestamp = time.Now().Add(time.Second)
 	require.NoError(
 		t,
-		sessSvc.AppendEvent(context.Background(), sess, assistantEvt),
+		baseSessSvc.AppendEvent(context.Background(), sess, assistantEvt),
 	)
 
 	extensions, err := conversation.MergeRequestExtension(
 		nil,
 		conversation.Annotation{
-			HistoryMode: conversation.HistoryModeShared,
-			ActorID:     "u-1",
-			ActorLabel:  "Alice",
+			HistoryMode:   conversation.HistoryModeShared,
+			StorageUserID: "chat-scope",
+			ActorID:       "u-1",
+			ActorLabel:    "Alice",
 			ActorLabels: map[string]string{
 				"u-1": "alice.dev",
 			},
@@ -184,17 +190,22 @@ func TestBuildConversationRunOptionResolverSharedHistory(
 	)
 	require.NoError(t, err)
 
-	_, runOpts := buildConversationRunOptionResolver(
+	ctx, runOpts := buildConversationRunOptionResolver(
 		"demo-app",
 		sessSvc,
 		conversation.HistoryOptions{},
 	)(
 		context.Background(),
 		gateway.RunOptionInput{
-			UserID:     key.UserID,
+			UserID:     "canonical-user",
 			SessionID:  key.SessionID,
 			Extensions: extensions,
 		},
+	)
+	require.Equal(
+		t,
+		"chat-scope",
+		conversationscope.StorageUserIDFromContext(ctx, ""),
 	)
 
 	cfg := agent.RunOptions{}
@@ -213,9 +224,6 @@ func TestBuildConversationRunOptionResolverSharedHistory(
 		includeContentsNone,
 		cfg.RuntimeState[graph.CfgKeyIncludeContents],
 	)
-	userID, ok := imemory.ResolveUserID(nil, cfg.RuntimeState)
-	require.True(t, ok)
-	require.Equal(t, "u-1", userID)
 }
 
 func TestBuildConversationRunOptionResolver_EdgeCases(t *testing.T) {
@@ -277,51 +285,8 @@ func TestBuildConversationRunOptionResolver_EdgeCases(t *testing.T) {
 			},
 			cfg.RuntimeState[conversation.RuntimeStateKey],
 		)
-		userID, ok := imemory.ResolveUserID(nil, cfg.RuntimeState)
-		require.True(t, ok)
-		require.Equal(t, "u-1", userID)
 		require.Nil(t, cfg.InjectedContextMessages)
-		_, ok = cfg.RuntimeState[graph.CfgKeyIncludeContents]
+		_, ok := cfg.RuntimeState[graph.CfgKeyIncludeContents]
 		require.False(t, ok)
-	})
-
-	t.Run("shared mode without actor keeps conversation runtime state only", func(t *testing.T) {
-		t.Parallel()
-
-		extensions, err := conversation.MergeRequestExtension(
-			nil,
-			conversation.Annotation{
-				HistoryMode: conversation.HistoryModeShared,
-			},
-		)
-		require.NoError(t, err)
-
-		_, runOpts := buildConversationRunOptionResolver(
-			"demo-app",
-			nil,
-			conversation.HistoryOptions{},
-		)(
-			context.Background(),
-			gateway.RunOptionInput{Extensions: extensions},
-		)
-		require.Len(t, runOpts, 1)
-
-		cfg := agent.RunOptions{}
-		runOpts[0](&cfg)
-		require.Equal(
-			t,
-			conversation.Annotation{
-				HistoryMode: conversation.HistoryModeShared,
-			},
-			cfg.RuntimeState[conversation.RuntimeStateKey],
-		)
-		require.Equal(
-			t,
-			includeContentsNone,
-			cfg.RuntimeState[graph.CfgKeyIncludeContents],
-		)
-		_, ok := imemory.ResolveUserID(nil, cfg.RuntimeState)
-		require.False(t, ok)
-		require.Nil(t, cfg.InjectedContextMessages)
 	})
 }

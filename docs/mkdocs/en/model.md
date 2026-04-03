@@ -1488,6 +1488,9 @@ model := openai.New("deepseek-chat",
 
 The framework automatically calculates "maxInputTokens" based on the model's context window:
 
+!!! note "Context Window Registration"
+    Both Token Tailoring and session summary `WithContextThreshold` rely on the framework's built-in model context window registry. The registry covers many popular models, but may not include every model — especially private deployments or newer releases. If your model is not recognized, register it at startup with `model.RegisterModelContextWindow("my-model", 32768)` or `model.RegisterModelContextWindows(map[string]int{...})`. See the [Session Summary documentation](session.md#session-summary) for a full example.
+
 ```
 safetyMargin = contextWindow × 10%
 calculatedMax = contextWindow - 2048 (output reserve) - 512 (protocol overhead) - safetyMargin
@@ -2362,3 +2365,41 @@ provider.Register("custom-provider", func(opts *provider.Options) (model.Model, 
 
 customModel, err := provider.Model("custom-provider", "custom-model")
 ```
+
+## Model Failover
+
+`model/failover` provides a priority-ordered fallback wrapper for models. It can compose multiple `model.Model` instances into a primary/backup chain and automatically switch to the next candidate when the current one is unavailable. This is useful for scenarios such as primary/backup domains, gateways, or model providers.
+
+**Quick Start**:
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/model/failover"
+    "trpc.group/trpc-go/trpc-agent-go/model/openai"
+)
+
+primary := openai.New(
+    "gpt-4o-mini",
+    openai.WithBaseURL("https://api.openai.com/v1"),
+)
+backup := openai.New(
+    "deepseek-chat",
+    openai.WithBaseURL("https://api.deepseek.com/v1"),
+)
+
+llm, err := failover.New(
+    failover.WithCandidates(primary, backup),
+)
+if err != nil {
+    return err
+}
+```
+
+`failover.New(...)` returns a regular `model.Model`, so it can be passed directly to places that accept `model.Model`, such as `llmagent.WithModel(...)`. For a complete example, see [examples/model/failover](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/model/failover).
+
+**Switching Rules**:
+
+- Candidates are tried in the order provided to `WithCandidates(...)`.
+- Switching is allowed only before the first non-error chunk is received.
+- If the current candidate returns an `error` directly before that point, or returns an error response with `Response.Error`, the wrapper continues with the next candidate.
+- Once any non-error chunk has been returned to the caller, later streaming failures are surfaced directly instead of replaying the request on the backup candidate.

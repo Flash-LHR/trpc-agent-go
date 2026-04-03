@@ -27,6 +27,7 @@ type StartStepInput struct {
 	NodeID             string
 	StartedAt          time.Time
 	PredecessorStepIDs []string
+	AppliedSurfaceIDs  []string
 	Input              *trace.Snapshot
 }
 
@@ -120,6 +121,7 @@ func (c *Capture) StartStep(in StartStepInput) string {
 		NodeID:             in.NodeID,
 		StartedAt:          in.StartedAt,
 		PredecessorStepIDs: slices.Clone(in.PredecessorStepIDs),
+		AppliedSurfaceIDs:  slices.Clone(in.AppliedSurfaceIDs),
 		Input:              cloneSnapshot(in.Input),
 	}
 	c.steps = append(c.steps, step)
@@ -164,6 +166,20 @@ func (c *Capture) FinishStep(
 	c.steps[idx].EndedAt = endedAt
 	c.steps[idx].Output = cloneSnapshot(output)
 	c.steps[idx].Error = errText
+}
+
+// SetStepAppliedSurfaceIDs updates the applied surface ids of one recorded step.
+func (c *Capture) SetStepAppliedSurfaceIDs(stepID string, surfaceIDs []string) {
+	if c == nil || stepID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	idx, ok := c.stepIndexByID[stepID]
+	if !ok {
+		return
+	}
+	c.steps[idx].AppliedSurfaceIDs = slices.Clone(surfaceIDs)
 }
 
 // PredecessorsForInvocation returns the current invocation predecessors for the next real step.

@@ -355,6 +355,9 @@ func (s *Service) GetSession(
 		return nil, err
 	}
 	opt := applyOptions(opts...)
+	if err := session.ValidateGetSessionOptions(opt, false); err != nil {
+		return nil, err
+	}
 
 	hctx := &session.GetSessionContext{
 		Context: ctx,
@@ -434,9 +437,12 @@ func (s *Service) ListSessions(
 		return nil, err
 	}
 	opt := applyOptions(opts...)
+	if err := session.ValidateListSessionsOptions(opt); err != nil {
+		return nil, err
+	}
 	eventLimit := s.getEffectiveEventLimit(opt.EventNum)
 
-	hashidxSessions, err := s.hashidxClient.ListSessions(ctx, userKey, eventLimit, opt.EventTime)
+	hashidxSessions, err := s.hashidxClient.ListSessions(ctx, userKey, eventLimit, opt.EventTime, opt.ListSessionOnlyMeta)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions (hashidx): %w", err)
 	}
@@ -446,7 +452,7 @@ func (s *Service) ListSessions(
 		return hashidxSessions, nil
 	}
 
-	zsetSessions, err := s.zsetClient.ListSessions(ctx, userKey, eventLimit, opt.EventTime)
+	zsetSessions, err := s.zsetClient.ListSessions(ctx, userKey, eventLimit, opt.EventTime, opt.ListSessionOnlyMeta)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions (zset): %w", err)
 	}

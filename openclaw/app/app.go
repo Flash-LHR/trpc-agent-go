@@ -50,6 +50,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/channel"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/admin"
 	ocbrowser "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/browser"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationtool"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/cron"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
@@ -650,6 +651,7 @@ func NewRuntime(
 			AddSessionSummary: opts.AddSessionSummary,
 			MaxHistoryRuns:    opts.MaxHistoryRuns,
 			PreloadMemory:     opts.PreloadMemory,
+			GenerationConfig:  opts.GenerationConfig,
 			Instruction:       prompts.Instruction,
 			SystemPrompt:      prompts.SystemPrompt,
 
@@ -668,6 +670,7 @@ func NewRuntime(
 			SkillsToolingGuide: opts.SkillsToolingGuide,
 			KnowledgesConfig:   opts.KnowledgesConfig,
 			StateDir:           resolvedStateDir,
+			MemoryFileStore:    fileMemoryStore,
 
 			EnableLocalExec:     opts.EnableLocalExec,
 			EnableOpenClawTools: opts.EnableOpenClawTools,
@@ -688,8 +691,9 @@ func NewRuntime(
 	}
 	rt.toolSets = toolSets
 
+	bridgedSessionSvc := conversationscope.WrapSessionService(sessionSvc)
 	runnerOpts := []runner.Option{
-		runner.WithSessionService(sessionSvc),
+		runner.WithSessionService(bridgedSessionSvc),
 		runner.WithPlugins(conversation.Plugin{}),
 	}
 	runnerOpts = appendMemoryServiceRunnerOption(runnerOpts, memSvc)
@@ -743,7 +747,7 @@ func NewRuntime(
 		gateway.WithRunOptionResolver(
 			buildConversationRunOptionResolver(
 				opts.AppName,
-				sessionSvc,
+				bridgedSessionSvc,
 				conversation.HistoryOptions{
 					AddSessionSummary: opts.AddSessionSummary,
 					MaxHistoryRuns:    opts.MaxHistoryRuns,
@@ -1076,6 +1080,7 @@ func run(ctx context.Context, args []string) error {
 			AddSessionSummary: opts.AddSessionSummary,
 			MaxHistoryRuns:    opts.MaxHistoryRuns,
 			PreloadMemory:     opts.PreloadMemory,
+			GenerationConfig:  opts.GenerationConfig,
 			Instruction:       prompts.Instruction,
 			SystemPrompt:      prompts.SystemPrompt,
 
@@ -1094,6 +1099,7 @@ func run(ctx context.Context, args []string) error {
 			SkillsToolingGuide: opts.SkillsToolingGuide,
 			KnowledgesConfig:   opts.KnowledgesConfig,
 			StateDir:           resolvedStateDir,
+			MemoryFileStore:    fileMemoryStore,
 
 			EnableLocalExec:     opts.EnableLocalExec,
 			EnableOpenClawTools: opts.EnableOpenClawTools,
@@ -1112,8 +1118,9 @@ func run(ctx context.Context, args []string) error {
 		}
 	}
 
+	bridgedSessionSvc := conversationscope.WrapSessionService(sessionSvc)
 	runnerOpts := []runner.Option{
-		runner.WithSessionService(sessionSvc),
+		runner.WithSessionService(bridgedSessionSvc),
 		runner.WithPlugins(conversation.Plugin{}),
 	}
 	runnerOpts = appendMemoryServiceRunnerOption(runnerOpts, memSvc)
@@ -1165,7 +1172,7 @@ func run(ctx context.Context, args []string) error {
 		gateway.WithRunOptionResolver(
 			buildConversationRunOptionResolver(
 				opts.AppName,
-				sessionSvc,
+				bridgedSessionSvc,
 				conversation.HistoryOptions{
 					AddSessionSummary: opts.AddSessionSummary,
 					MaxHistoryRuns:    opts.MaxHistoryRuns,
@@ -1888,6 +1895,12 @@ func newAgent(
 		),
 		llmagent.WithEnableParallelTools(cfg.EnableParallelTools),
 	}
+	if cfg.GenerationConfig != nil {
+		opts = append(
+			opts,
+			llmagent.WithGenerationConfig(*cfg.GenerationConfig),
+		)
+	}
 	opts = append(opts, llmagent.WithSkills(repo))
 	opts = append(
 		opts,
@@ -1928,6 +1941,11 @@ func newAgent(
 	}
 
 	callbacks := tool.NewCallbacks()
+	registerMemoryFileToolCallback(
+		callbacks,
+		cfg.MemoryFileStore,
+		cfg.StateDir,
+	)
 	callbacks.RegisterToolResultMessages(openClawToolResultMessages)
 	opts = append(opts, llmagent.WithToolCallbacks(callbacks))
 
@@ -2105,6 +2123,7 @@ type agentConfig struct {
 	AddSessionSummary bool
 	MaxHistoryRuns    int
 	PreloadMemory     int
+	GenerationConfig  *model.GenerationConfig
 	Instruction       string
 	SystemPrompt      string
 
@@ -2122,6 +2141,8 @@ type agentConfig struct {
 	KnowledgesConfig   map[string]*yaml.Node
 
 	StateDir string
+
+	MemoryFileStore *memoryfile.Store
 
 	EnableLocalExec bool
 

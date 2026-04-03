@@ -10,6 +10,7 @@ package structure
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -232,6 +233,42 @@ func TestExport_NormalizesAndSortsSnapshot(t *testing.T) {
 	assert.Equal(t, []ToolRef{{ID: "a"}, {ID: "b"}}, snapshot.Surfaces[2].Value.Tools)
 }
 
+func TestCloneSurfaceValue_ClonesModelHeaders(t *testing.T) {
+	value := SurfaceValue{
+		Model: &ModelRef{
+			Provider: "openai",
+			Name:     "gpt-5.2",
+			Headers:  map[string]string{"X-Test": "1"},
+		},
+	}
+	cloned := cloneSurfaceValue(value)
+	require.NotNil(t, cloned.Model)
+	require.NotSame(t, value.Model, cloned.Model)
+	require.Equal(t, map[string]string{"X-Test": "1"}, cloned.Model.Headers)
+	cloned.Model.Headers["X-Test"] = "2"
+	assert.Equal(t, "1", value.Model.Headers["X-Test"])
+}
+
+func TestCloneSurfaceValue_ClonesEmptyModelHeaders(t *testing.T) {
+	value := SurfaceValue{
+		Model: &ModelRef{
+			Name:    "gpt-5.2",
+			Headers: map[string]string{},
+		},
+	}
+	cloned := cloneSurfaceValue(value)
+	require.NotNil(t, cloned.Model)
+	require.NotNil(t, cloned.Model.Headers)
+	cloned.Model.Headers["X-Test"] = "1"
+	assert.Empty(t, value.Model.Headers)
+}
+
+func TestModelRef_JSONOmitsEmptyFields(t *testing.T) {
+	data, err := json.Marshal(ModelRef{Name: "gpt-5.2"})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"Name":"gpt-5.2"}`, string(data))
+}
+
 func TestExport_RejectsDuplicateNodeID(t *testing.T) {
 	_, err := Export(context.Background(), &customExporterAgent{
 		testAgent: &testAgent{name: "root"},
@@ -372,6 +409,10 @@ func TestValidateSurfaceValue_CoversAdditionalBranches(t *testing.T) {
 			},
 		},
 	}
+	require.NoError(t, validateSurfaceValue(SurfaceTypeInstruction, SurfaceValue{
+		Text:         stringPtr("instruction"),
+		PromptSyntax: promptSyntaxPtr(PromptSyntaxDoubleBrace),
+	}))
 	require.NoError(t, validateSurfaceValue(SurfaceTypeFewShot, SurfaceValue{FewShot: fewShot}))
 	require.Error(t, validateSurfaceValue(SurfaceTypeFewShot, SurfaceValue{
 		Text:    stringPtr("invalid"),
@@ -381,8 +422,8 @@ func TestValidateSurfaceValue_CoversAdditionalBranches(t *testing.T) {
 		Model: &ModelRef{Name: "gpt"},
 	}))
 	require.Error(t, validateSurfaceValue(SurfaceTypeModel, SurfaceValue{
-		Model: &ModelRef{Name: "gpt"},
-		Tools: []ToolRef{{ID: "echo"}},
+		Model:        &ModelRef{Name: "gpt"},
+		PromptSyntax: promptSyntaxPtr(PromptSyntaxSingleBrace),
 	}))
 	require.NoError(t, validateSurfaceValue(SurfaceTypeTool, SurfaceValue{
 		Tools: []ToolRef{{ID: "echo"}},
@@ -608,6 +649,10 @@ func TestExport_PropagatesExporterError(t *testing.T) {
 }
 
 func stringPtr(value string) *string {
+	return &value
+}
+
+func promptSyntaxPtr(value PromptSyntax) *PromptSyntax {
 	return &value
 }
 

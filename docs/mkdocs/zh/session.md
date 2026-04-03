@@ -282,14 +282,13 @@ summarizer := summary.NewSummarizer(
 
 **上下文注入机制：**
 
-启用摘要后，框架会将摘要作为独立的系统消息插入到第一个现有系统消息之后，同时包含摘要时间点之后的所有增量事件，保证完整上下文：
+启用摘要后，框架会将摘要合并到已有系统消息中；如果原来没有系统消息，则会前置插入一条新的系统消息。同时保留摘要时间点之后的所有增量事件，保证完整上下文：
 
-```
+```text
 When AddSessionSummary = true:
 ┌─────────────────────────────────────────┐
-│ Existing System Message (optional)      │ ← 如果存在
-├─────────────────────────────────────────┤
-│ Session Summary (system message)        │ ← 插入到第一个系统消息之后
+│ System Prompt                           │ ← 若已存在系统消息，则与摘要合并；
+│ (merged with Session Summary)           │    否则前置插入新的系统消息
 ├─────────────────────────────────────────┤
 │ Event 1 (after summary)                 │ ┐
 │ Event 2                                 │ │
@@ -1864,18 +1863,40 @@ llmagent.WithAddSessionSummary(true)
 
 **工作方式：**
 
-- 会话摘要作为独立的系统消息插入到第一个现有系统消息之后（如果没有系统消息则前置添加）
+- 会话摘要会合并到已有系统消息中；如果没有系统消息，则前置添加一条新的系统消息
 - 包含摘要时间点之后的**所有增量事件**（不截断）
 - 保证完整上下文：浓缩历史 + 完整新对话
 - **`WithMaxHistoryRuns` 参数被忽略**
 
+**可选：Prompt 侧上下文压缩**
+
+当开启 `WithEnableContextCompaction(true)` 时，框架会在真正调用模型前增加一层轻量压缩：
+
+- 只压缩旧 request 中过长的 `tool result`
+- 只替换正文，仍保留 `ToolID` 和 `ToolName`
+- 当前 request 永远不压
+- 最近 `ContextCompactionKeepRecentRequests` 个已完成 request 会完整保留
+- 如果同时开启了 `WithAddSessionSummary(true)`，并且压完后请求仍接近 context window，会在 LLM 调用前同步执行一次 `CreateSessionSummary(...)` 并重建 request
+- 模型层的 token tailoring 仍然作为最后兜底
+
+```go
+agent := llmagent.New(
+    "my-agent",
+    llmagent.WithModel(modelInstance),
+    llmagent.WithAddSessionSummary(true),
+    llmagent.WithEnableContextCompaction(true),
+    llmagent.WithContextCompactionThresholdRatio(0.7),
+    llmagent.WithContextCompactionToolResultMaxTokens(1024),
+    llmagent.WithContextCompactionKeepRecentRequests(1),
+)
+```
+
 **上下文结构：**
 
-```
+```text
 ┌─────────────────────────────────────────┐
-│ System Prompt                           │
-├─────────────────────────────────────────┤
-│ Session Summary (system message)        │ ← Compressed history
+│ System Prompt                           │ ← 若已存在系统消息，则与摘要合并；
+│ (merged with Session Summary)           │    否则前置插入新的系统消息
 ├─────────────────────────────────────────┤
 │ Event 1 (after summary)                 │ ┐
 │ Event 2                                 │ │
@@ -1899,6 +1920,8 @@ llmagent.WithMaxHistoryRuns(10)  // 限制历史轮次
 - 不添加摘要消息
 - 只包含最近 `MaxHistoryRuns` 轮对话
 - `MaxHistoryRuns=0` 时不限制，包含所有历史
+- 如果开启 `WithEnableContextCompaction(true)`，保留下来的旧 request 中超长 `tool result` 仍可在 request projection 阶段被压缩
+- 这个模式下不会触发 pre-LLM 的同步摘要重试
 
 **上下文结构：**
 
@@ -1917,6 +1940,8 @@ llmagent.WithMaxHistoryRuns(10)  // 限制历史轮次
 
 #### 模式选择建议
 
+如果你的长会话里经常出现搜索结果、日志、代码扫描输出这类长 `tool result`，建议开启 `EnableContextCompaction=true`。如果你还希望在接近 context window 时多一次同步摘要兜底，再配合 `AddSessionSummary=true` 一起使用。
+
 | 场景                   | 推荐配置                                         | 说明                       |
 | ---------------------- | ------------------------------------------------ | -------------------------- |
 | 长期会话（客服、助手） | `AddSessionSummary=true`                         | 保持完整上下文，优化 token |
@@ -1932,9 +1957,30 @@ llmagent.WithMaxHistoryRuns(10)  // 限制历史轮次
 
 **触发条件：**
 
+- **`WithContextThreshold(opts ...ContextThresholdOption)`**：零配置触发器，在每次评估时动态感知当前模型的 context window。根据 context window 的比例（默认 50%）自动计算 token 阈值，当用户切换模型时自动适配，无需重建 Summarizer。这是大多数场景下的推荐选项，类似 Codex CLI 和 Claude Code 的 auto-compact 行为。示例：`WithContextThreshold()` 零配置使用，或 `WithContextThreshold(summary.WithContextThresholdRatio(0.6))` 自定义比例。
 - **`WithEventThreshold(eventCount int)`**：当自上次摘要后的事件数量超过阈值时触发摘要。示例：`WithEventThreshold(20)` 在自上次摘要后新增 20 个事件后触发。
 - **`WithTokenThreshold(tokenCount int)`**：当自上次摘要后的 token 数量超过阈值时触发摘要。示例：`WithTokenThreshold(4000)` 在自上次摘要后新增 4000 个 token 后触发。
 - **`WithTimeThreshold(interval time.Duration)`**：当自上次事件后经过的时间超过间隔时触发摘要。示例：`WithTimeThreshold(5*time.Minute)` 在 5 分钟无活动后触发。
+
+!!! note "Context Window 注册"
+    `WithContextThreshold` 和 Token Tailoring 都依赖框架内置的模型 context window 注册表。注册表已包含大量常见模型（OpenAI、Anthropic、Google、DeepSeek、Qwen 等），但不一定覆盖所有模型——特别是私有部署、微调变体或较新发布的模型。如果你的模型未被识别（context window 解析为 0 或回退到默认值），请在启动时手动注册：
+
+    ```go
+    import "trpc.group/trpc-go/trpc-agent-go/model"
+
+    func init() {
+        // 注册单个模型
+        model.RegisterModelContextWindow("my-custom-model", 32768)
+
+        // 或批量注册多个模型
+        model.RegisterModelContextWindows(map[string]int{
+            "my-custom-model-32k":  32768,
+            "my-custom-model-128k": 131072,
+        })
+    }
+    ```
+
+    模型名匹配不区分大小写，注册表也支持前缀匹配（例如注册 `"my-model"` 会匹配 `"my-model-v2"`）。
 
 **组合条件：**
 

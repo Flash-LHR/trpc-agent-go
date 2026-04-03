@@ -813,7 +813,7 @@ svc := inmemory.NewSessionService(
 _ = svc
 ```
 
-See `docs/mkdocs/en/session.md` (“AppendEventHook”) for the hook API, and
+See [Session docs](session/index.md) (“AppendEventHook”) for the hook API, and
 `examples/session/hook` for a runnable example.
 
 Notes:
@@ -1086,19 +1086,35 @@ Optional behavior (force artifact persistence):
   / `outputs.save`:
   - `llmagent.WithSkillRunForceSaveArtifacts(true)`
 
+Optional behavior (inline output limits):
+- In code, you can customize how much inline text `skill_run` returns:
+  - `llmagent.WithSkillRunOutputLimits(toolskill.RunOutputLimits{StdoutStderrBytes: 128 * 1024, PrimaryOutputBytes: 128 * 1024})`
+- This changes only `stdout`, `stderr`, and `primary_output`.
+  `output_files` / `outputs` still use the workspace collector limits
+  (default 4 MiB/file).
+
 Output:
 - `stdout`, `stderr`, `exit_code`, `timed_out`, `duration_ms`
+  - `stdout` / `stderr` are for logs and short status text. They may be
+    truncated at the configured inline limit (default 16 KiB each).
+    For large or structured text that the model must read, prefer
+    `output_files` or `outputs`.
 - `staged_inputs` (optional): files staged from the conversation into
   `work/inputs/` for this run
 - `primary_output` (optional) with `name`, `ref`, `content`, `mime_type`,
   `size_bytes`, `truncated`
   - Convenience pointer to the "best" small text output file (when one
     exists). Prefer this when there is a single main output.
+  - Only text files within the configured size limit (default 32 KiB)
+    are considered for `primary_output`.
 - `output_files` with `name`, `ref`, `content`, `mime_type`, `size_bytes`,
   `truncated`
   - `ref` is a stable `workspace://<name>` reference that can be passed
     to other tools
   - For non-text files, `content` is omitted.
+  - Prefer this path for large or structured text outputs; file
+    collection uses workspace collector limits instead of the smaller
+    stdout/stderr inline budget.
   - When `omit_inline_content=true`, `content` is omitted for all files.
     Use `ref` with `read_file` to fetch text content on demand.
   - `size_bytes` is the file size on disk; `truncated=true` means the
@@ -1295,6 +1311,48 @@ Common spans:
   (system message by default, or tool results when enabled).
 - Isolation: Scripts run within a workspace boundary and only selected
   output files are brought back, not the script source.
+
+## Executor Environment Variable Injection
+
+When the executor runs remotely (containers, cloud functions, etc.),
+host environment variables are not automatically available.
+`codeexecutor.NewEnvInjectingCodeExecutor` wraps any `CodeExecutor`
+so that a provider function is called on every `RunProgram` /
+`StartProgram` to merge extra env vars into `RunProgramSpec.Env`.
+
+```go
+import "trpc.group/trpc-go/trpc-agent-go/codeexecutor"
+
+wrapped := codeexecutor.NewEnvInjectingCodeExecutor(exec,
+    func(ctx context.Context) map[string]string {
+        // Read caller-supplied env from ctx.
+        // Source is up to you: RuntimeState, request headers, DB, etc.
+        return map[string]string{"GITHUB_TOKEN": "..."}
+    },
+)
+
+agent := llmagent.New(
+    "skills-assistant",
+    llmagent.WithSkills(repo),
+    llmagent.WithCodeExecutor(wrapped),  // use wrapped instead of raw exec
+)
+```
+
+Behavior:
+
+- Covers all paths through `Engine.Runner()`: `skill_run`,
+  `workspace_exec`, and interactive sessions.
+- Provider-returned keys **never override** keys already set in
+  the tool's `env` argument.
+- Evaluated on each `RunProgram` call; no state shared between calls.
+- Zero overhead when the provider returns `nil`.
+- You can also wrap at the Engine level:
+  `codeexecutor.NewEnvInjectingEngine(eng, provider)`.
+
+Typical use case: in a multi-user agent service, each user passes
+their tokens via AG-UI `state` or HTTP headers; the provider reads
+them from the request context and injects them into the executor
+transparently — the LLM never sees the credentials.
 
 ## Troubleshooting
 

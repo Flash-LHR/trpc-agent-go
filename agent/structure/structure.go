@@ -86,14 +86,33 @@ type Surface struct {
 	Value     SurfaceValue
 }
 
+// SurfaceID returns the stable surface id for one node and surface type.
+func SurfaceID(nodeID string, surfaceType SurfaceType) string {
+	return nodeID + "#" + string(surfaceType)
+}
+
 // SurfaceValue is a discriminated union keyed by SurfaceType.
 type SurfaceValue struct {
-	Text    *string
-	FewShot []FewShotExample
-	Model   *ModelRef
-	Tools   []ToolRef
-	Skills  []SkillRef
+	Text         *string
+	PromptSyntax *PromptSyntax
+	FewShot      []FewShotExample
+	Model        *ModelRef
+	Tools        []ToolRef
+	Skills       []SkillRef
 }
+
+// PromptSyntax describes how a prompt text surface should interpret placeholders.
+type PromptSyntax string
+
+const (
+	// PromptSyntaxMixedBrace represents mixed-mode placeholders where both
+	// {name} and {{name}} are recognized in the same template.
+	PromptSyntaxMixedBrace PromptSyntax = "mixed_brace"
+	// PromptSyntaxSingleBrace represents single-brace placeholders such as {name}.
+	PromptSyntaxSingleBrace PromptSyntax = "single_brace"
+	// PromptSyntaxDoubleBrace represents double-brace placeholders such as {{name}}.
+	PromptSyntaxDoubleBrace PromptSyntax = "double_brace"
+)
 
 // FewShotExample is one few-shot example group.
 type FewShotExample struct {
@@ -108,7 +127,12 @@ type FewShotMessage struct {
 
 // ModelRef is a stable model reference.
 type ModelRef struct {
-	Name string
+	Provider string            `json:",omitempty"`
+	Name     string            `json:",omitempty"`
+	Variant  string            `json:",omitempty"`
+	BaseURL  string            `json:",omitempty"`
+	APIKey   string            `json:",omitempty"`
+	Headers  map[string]string `json:",omitempty"`
 }
 
 // ToolRef is a stable tool declaration snapshot.

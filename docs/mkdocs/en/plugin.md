@@ -447,6 +447,62 @@ operations. It is useful for debugging and performance profiling.
 request. This is useful for organization-wide policies or shared behavior that
 should apply to all agents managed by a Runner.
 
+### ToolCallID
+
+`toolcallid.New()` from `plugin/toolcallid` rewrites the final `ToolCall.ID`
+returned by the model into the tool call ID used by the framework. This plugin
+is useful when a provider or model does not reliably guarantee that
+`ToolCall.ID` is unique enough.
+
+A typical setup looks like this:
+
+```go
+import (
+	"trpc.group/trpc-go/trpc-agent-go/plugin/toolcallid"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
+)
+
+runnerInstance := runner.NewRunner(
+	"my-app",
+	agentInstance,
+	runner.WithPlugins(
+		toolcallid.New(),
+	),
+)
+defer runnerInstance.Close()
+```
+
+The plugin runs in `AfterModel` and rewrites the final available tool call ID
+before later processing continues.
+
+If another plugin depends on the final `ToolCall.ID` in `AfterModel`,
+`toolcallid.New()` should be registered first.
+
+For a complete runnable example, see
+[examples/toolcallid](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/toolcallid).
+
+### MessageMerger
+
+`messagemerger.New(opts...)` from `plugin/messagemerger` merges consecutive `system`, `user`, and `assistant` messages before every model request. This is useful when a third-party backend requires a strict alternating chat transcript and rejects adjacent same-role messages such as `user,user` or `assistant,assistant`.
+
+The plugin intentionally does **not** merge `tool` messages, so per-call fields such as `tool_id` and `tool_name` remain intact. The inserted text separator can be configured with `messagemerger.WithSeparator(...)`.
+
+A typical setup looks like this:
+
+```go
+merger := messagemerger.New(
+	messagemerger.WithName("strict_sequence_normalizer"),
+)
+runnerInstance := runner.NewRunner(
+	"my-app",
+	agentInstance,
+	runner.WithPlugins(merger),
+)
+defer runnerInstance.Close()
+```
+
+Full example: [examples/plugin/messagemerger](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/plugin/messagemerger).
+
 ### Guardrail
 
 `guardrail.New(...)` from `plugin/guardrail` is the top-level plugin that wires one or more guardrail capabilities into the runner.
@@ -752,10 +808,10 @@ The example includes verified scenarios for:
 - A clearly unsafe request that is blocked
 - A defensive analysis request that is allowed
 
-The repository currently includes Logging, GlobalInstruction, and Guardrail as
-built-in plugins. Tool Approval, Prompt Injection, and Unsafe Intent are
-currently built-in capabilities under the Guardrail plugin. Additional plugins
-can be implemented as custom plugins.
+The repository currently includes Logging, GlobalInstruction, ToolCallID, and
+Guardrail as built-in plugins. Tool Approval, Prompt Injection, and Unsafe
+Intent are currently built-in capabilities under the Guardrail plugin.
+Additional plugins can be implemented as custom plugins.
 
 ## Writing Your Own Plugin
 

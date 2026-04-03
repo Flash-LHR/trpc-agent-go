@@ -283,15 +283,12 @@ Notes:
 
 **Context Injection Mechanism:**
 
-After enabling summary, the framework prepends the summary as a system message to the LLM input, while including all incremental events after the summary timestamp to ensure complete context:
+After enabling summary, the framework merges the summary into the existing system message when one exists, or prepends a new system message when none exists. It also includes all incremental events after the summary timestamp to ensure complete context:
 
-```
+```text
 ┌─────────────────────────────────────────┐
-│ System Prompt                           │
-├─────────────────────────────────────────┤
-│ Session Summary (system message)        │ ← Compressed version of historical conversations
-│ - Updated at: 2024-01-10 14:30          │   (events before updated_at)
-│ - Includes: Event1 ~ Event20            │
+│ System Prompt                           │ ← Existing system prompt, if present,
+│ (merged with Session Summary)           │    now merged with summary content
 ├─────────────────────────────────────────┤
 │ Event 21 (user message)                 │ ┐
 │ Event 22 (assistant response)           │ │
@@ -1781,26 +1778,49 @@ The framework provides two distinct modes for managing conversation context sent
 
 **Mode 1: With Summary (`WithAddSessionSummary(true)`)**
 
-- The session summary is inserted as a separate system message after the first existing system message (or prepended if no system message exists).
+- The session summary is merged into the existing system message when one is already present, or prepended as a new system message when none exists.
 - **All incremental events** after the summary timestamp are included (no truncation).
 - This ensures complete context: condensed history (summary) + all new conversations since summarization.
 - `WithMaxHistoryRuns` is **ignored** in this mode.
+
+**Optional: Prompt-side context compaction**
+
+When `WithEnableContextCompaction(true)` is enabled, the framework adds a lightweight Phase 1 compaction pass before the LLM call:
+
+- Historical oversized tool results from older requests are replaced with a placeholder while keeping `ToolID` and `ToolName`.
+- The current request is never compacted.
+- The latest `ContextCompactionKeepRecentRequests` completed requests are kept intact.
+- If `WithAddSessionSummary(true)` is also enabled and the rebuilt request still approaches the model context window, the framework performs one synchronous `CreateSessionSummary(...)` retry before calling the model.
+- Model-layer token tailoring remains the final fallback.
+
+```go
+llmAgent := llmagent.New(
+    "my-agent",
+    llmagent.WithModel(summaryModel),
+    llmagent.WithAddSessionSummary(true),
+    llmagent.WithEnableContextCompaction(true),
+    llmagent.WithContextCompactionThresholdRatio(0.7),
+    llmagent.WithContextCompactionToolResultMaxTokens(1024),
+    llmagent.WithContextCompactionKeepRecentRequests(1),
+)
+```
 
 **Mode 2: Without Summary (`WithAddSessionSummary(false)`)**
 
 - No summary is prepended.
 - Only the **most recent `MaxHistoryRuns` conversation turns** are included.
 - When `MaxHistoryRuns=0` (default), no limit is applied and all history is included.
+- If `WithEnableContextCompaction(true)` is enabled, oversized tool results in older retained requests can still be compacted during request projection.
+- The pre-LLM synchronous summary retry is disabled in this mode.
 - Use this mode for short sessions or when you want direct control over context window size.
 
 **Context Construction Details:**
 
-```
+```text
 When AddSessionSummary = true:
 ┌─────────────────────────────────────┐
-│ Existing System Message (optional)  │ ← If present
-├─────────────────────────────────────┤
-│ Session Summary (system message)    │ ← Inserted after first system message
+│ System Prompt                       │ ← Existing system prompt, if present,
+│ (merged with Session Summary)       │    now merged with summary content
 ├─────────────────────────────────────┤
 │ Event 1 (after summary timestamp)   │ ┐
 │ Event 2                             │ │ All incremental
@@ -1823,6 +1843,8 @@ When AddSessionSummary = false:
 **Best Practices:**
 
 - For long-running sessions, use `WithAddSessionSummary(true)` to maintain full context while managing token usage.
+- Enable `WithEnableContextCompaction(true)` when long sessions contain large tool outputs such as search results, logs, or code scans.
+- Pair `WithEnableContextCompaction(true)` with `WithAddSessionSummary(true)` when you also want the pre-LLM synchronous summary retry.
 - For short sessions or when testing, use `WithAddSessionSummary(false)` with appropriate `MaxHistoryRuns`.
 - The Runner automatically enqueues async summary jobs after appending events to the session.
 
@@ -1834,9 +1856,30 @@ Configure the summarizer behavior with the following options:
 
 **Trigger Conditions:**
 
+- **`WithContextThreshold(opts ...ContextThresholdOption)`**: Zero-configuration trigger that dynamically resolves the model's context window at evaluation time. It calculates a token threshold as a fraction of the context window (default 50%), adapting automatically when the user switches models mid-session. This is the recommended option for most use cases, similar to the auto-compact behavior in Codex CLI and Claude Code. Example: `WithContextThreshold()` for zero-config, or `WithContextThreshold(summary.WithContextThresholdRatio(0.6))` for custom ratio.
 - **`WithEventThreshold(eventCount int)`**: Trigger summarization when the number of new events since last summary exceeds the threshold. Example: `WithEventThreshold(20)` triggers when 20+ new events have occurred since last summary.
 - **`WithTokenThreshold(tokenCount int)`**: Trigger summarization when the new token count since last summary exceeds the threshold. Example: `WithTokenThreshold(4000)` triggers when 4000+ new tokens have been added since last summary.
 - **`WithTimeThreshold(interval time.Duration)`**: Trigger summarization when time elapsed since the last event exceeds the interval. Example: `WithTimeThreshold(5*time.Minute)` triggers after 5 minutes of inactivity.
+
+!!! note "Context Window Registration"
+    `WithContextThreshold` and Token Tailoring both rely on the framework's built-in model context window registry. The registry includes many popular models (OpenAI, Anthropic, Google, DeepSeek, Qwen, etc.), but may not cover every model — especially private deployments, fine-tuned variants, or newer releases. If your model is not recognized (context window resolves to 0 or falls back to the default), register it manually at startup:
+
+    ```go
+    import "trpc.group/trpc-go/trpc-agent-go/model"
+
+    func init() {
+        // Register a single model.
+        model.RegisterModelContextWindow("my-custom-model", 32768)
+
+        // Or register multiple models at once.
+        model.RegisterModelContextWindows(map[string]int{
+            "my-custom-model-32k": 32768,
+            "my-custom-model-128k": 131072,
+        })
+    }
+    ```
+
+    Model names are matched case-insensitively, and the registry also supports prefix matching (e.g., registering `"my-model"` will match `"my-model-v2"`).
 
 **Composite Conditions:**
 
