@@ -94,6 +94,31 @@ func TestLLMAgent_SurfacePatch_ModelOverridesLegacyRunOptions(t *testing.T) {
 	require.Equal(t, patchedModel, inv.Model)
 }
 
+func TestLLMAgent_ExecutionTraceAppliedSurfaceIDs(t *testing.T) {
+	agt := New(
+		"test-agent",
+		WithModel(newDummyModel()),
+		WithInstruction("static instruction"),
+		WithGlobalInstruction("static system prompt"),
+	)
+	inv := agent.NewInvocation(
+		agent.WithInvocationTraceNodeID("test-agent"),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithExecutionTraceEnabled(true),
+		)),
+	)
+	agt.setupInvocation(inv)
+	require.Equal(
+		t,
+		[]string{
+			"test-agent#instruction",
+			"test-agent#global_instruction",
+			"test-agent#model",
+		},
+		agt.ExecutionTraceAppliedSurfaceIDs(inv),
+	)
+}
+
 func TestLLMAgent_RunOptions_OverrideStaticInstructionAndSystemPrompt(
 	t *testing.T,
 ) {

@@ -490,6 +490,7 @@ func (f *Flow) runOneStep(
 		traceSnapshotFromMessages(llmRequest.Messages),
 		nil,
 	)
+	agent.SetExecutionTraceStepAppliedSurfaceIDs(invocation, stepID)
 	var span oteltrace.Span
 	var modelName string
 	if invocation.Model != nil {
