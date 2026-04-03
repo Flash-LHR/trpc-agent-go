@@ -119,6 +119,27 @@ func TestLLMAgent_ExecutionTraceAppliedSurfaceIDs(t *testing.T) {
 	)
 }
 
+func TestLLMAgent_ExecutionTraceAppliedSurfaceIDs_UsesFilteredToolSnapshot(t *testing.T) {
+	agt := New(
+		"test-agent",
+		WithModel(newDummyModel()),
+		WithTools([]tool.Tool{
+			dummyTool{decl: &tool.Declaration{Name: "user_tool"}},
+		}),
+	)
+	inv := agent.NewInvocation(
+		agent.WithInvocationTraceNodeID("test-agent"),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithExecutionTraceEnabled(true),
+		)),
+	)
+	agt.setupInvocation(inv)
+	inv.SetState("llmflow:has_filtered_user_tools", false)
+	require.NotContains(t, agt.ExecutionTraceAppliedSurfaceIDs(inv), "test-agent#tool")
+	inv.SetState("llmflow:has_filtered_user_tools", true)
+	require.Contains(t, agt.ExecutionTraceAppliedSurfaceIDs(inv), "test-agent#tool")
+}
+
 func TestLLMAgent_RunOptions_OverrideStaticInstructionAndSystemPrompt(
 	t *testing.T,
 ) {

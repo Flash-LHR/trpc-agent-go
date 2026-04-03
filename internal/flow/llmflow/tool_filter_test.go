@@ -263,6 +263,35 @@ func TestGetFilteredTools_NoFilter(t *testing.T) {
 	}
 }
 
+func TestGetFilteredTools_CachesFilteredUserToolPresence(t *testing.T) {
+	f := New(nil, nil, Options{})
+	userTool := &mockTool{name: "user_tool"}
+	frameworkTool := &mockTool{name: "framework_tool"}
+	mockAgent := &mockAgentWithUserTools{
+		name:      "test-agent",
+		allTools:  []tool.Tool{userTool, frameworkTool},
+		userTools: []tool.Tool{userTool},
+	}
+	inv := agent.NewInvocation()
+	inv.Agent = mockAgent
+	inv.AgentName = "test-agent"
+	inv.RunOptions.ToolFilter = tool.NewIncludeToolNamesFilter("framework_tool")
+	filtered := f.getFilteredTools(context.Background(), inv)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(filtered))
+	}
+	if filtered[0].Declaration().Name != "framework_tool" {
+		t.Fatalf("expected framework_tool, got %s", filtered[0].Declaration().Name)
+	}
+	hasUserTools, ok := InvocationHasFilteredUserTools(inv)
+	if !ok {
+		t.Fatal("expected filtered user tool state to be cached")
+	}
+	if hasUserTools {
+		t.Fatal("expected no filtered user tools after invocation filter")
+	}
+}
+
 // TestGetFilteredTools_WithToolFilter tests tool filtering using FilterFunc.
 func TestGetFilteredTools_WithToolFilter(t *testing.T) {
 	f := New(nil, nil, Options{})
