@@ -210,6 +210,43 @@ func TestExecutionTraceHelpers_RecordAppliedSurfaceIDs(t *testing.T) {
 	assert.Equal(t, []string{"assistant#instruction", "assistant#model"}, executionTrace.Steps[0].AppliedSurfaceIDs)
 }
 
+func TestExecutionTraceHelpers_SetAppliedSurfaceIDs_IgnoresNilAgent(t *testing.T) {
+	inv := NewInvocation(
+		WithInvocationAgent(&mockAgent{name: "assistant"}),
+		WithInvocationRunOptions(RunOptions{ExecutionTraceEnabled: true}),
+		WithInvocationMessage(model.NewUserMessage("hello")),
+	)
+	stepID := StartExecutionTraceStep(
+		inv,
+		InvocationTraceNodeID(inv),
+		&atrace.Snapshot{Text: "input"},
+		nil,
+	)
+	require.NotEmpty(t, stepID)
+	inv.Agent = nil
+	SetExecutionTraceStepAppliedSurfaceIDs(inv, stepID)
+	FinishExecutionTraceStep(inv, stepID, &atrace.Snapshot{Text: "output"}, nil)
+	executionTrace := BuildExecutionTrace(inv, atrace.TraceStatusCompleted)
+	require.NotNil(t, executionTrace)
+	require.Len(t, executionTrace.Steps, 1)
+	assert.Empty(t, executionTrace.Steps[0].AppliedSurfaceIDs)
+}
+
+func TestExecutionTraceHelpers_SetAppliedSurfaceIDs_IgnoresEmptyStepID(t *testing.T) {
+	inv := NewInvocation(
+		WithInvocationAgent(&surfaceReportingTestAgent{
+			mockAgent:  mockAgent{name: "assistant"},
+			surfaceIDs: []string{"assistant#instruction"},
+		}),
+		WithInvocationRunOptions(RunOptions{ExecutionTraceEnabled: true}),
+		WithInvocationMessage(model.NewUserMessage("hello")),
+	)
+	SetExecutionTraceStepAppliedSurfaceIDs(inv, "")
+	executionTrace := BuildExecutionTrace(inv, atrace.TraceStatusCompleted)
+	require.NotNil(t, executionTrace)
+	assert.Empty(t, executionTrace.Steps)
+}
+
 func TestInvocationSurfaceRootNodeID_LifecycleAndFallback(t *testing.T) {
 	var nilInv *Invocation
 	SetInvocationSurfaceRootNodeID(nilInv, "workflow/team/coordinator")

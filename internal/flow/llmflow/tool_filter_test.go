@@ -13,6 +13,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -133,6 +134,43 @@ func (m *mockAgentWithoutUserTools) SubAgents() []agent.Agent {
 }
 
 func (m *mockAgentWithoutUserTools) FindSubAgent(string) agent.Agent {
+	return nil
+}
+
+type mockAgentWithInvocationToolSurface struct {
+	allTools       []tool.Tool
+	userToolNames  map[string]bool
+	name           string
+	surfaceCallCnt int
+}
+
+func (m *mockAgentWithInvocationToolSurface) Run(context.Context, *agent.Invocation) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event)
+	close(ch)
+	return ch, nil
+}
+
+func (m *mockAgentWithInvocationToolSurface) Tools() []tool.Tool {
+	return m.allTools
+}
+
+func (m *mockAgentWithInvocationToolSurface) InvocationToolSurface(
+	context.Context,
+	*agent.Invocation,
+) ([]tool.Tool, map[string]bool) {
+	m.surfaceCallCnt++
+	return m.allTools, m.userToolNames
+}
+
+func (m *mockAgentWithInvocationToolSurface) Info() agent.Info {
+	return agent.Info{Name: m.name}
+}
+
+func (m *mockAgentWithInvocationToolSurface) SubAgents() []agent.Agent {
+	return nil
+}
+
+func (m *mockAgentWithInvocationToolSurface) FindSubAgent(string) agent.Agent {
 	return nil
 }
 
@@ -261,6 +299,13 @@ func TestGetFilteredTools_NoFilter(t *testing.T) {
 	if len(filtered) != 2 {
 		t.Errorf("expected 2 tools, got %d", len(filtered))
 	}
+	hasUserTools, ok := InvocationHasFilteredUserTools(inv)
+	if !ok {
+		t.Fatal("expected filtered user tool state to be cached without a filter")
+	}
+	if !hasUserTools {
+		t.Fatal("expected cached state to report user tools when the snapshot still includes them")
+	}
 }
 
 func TestGetFilteredTools_CachesFilteredUserToolPresence(t *testing.T) {
@@ -290,6 +335,60 @@ func TestGetFilteredTools_CachesFilteredUserToolPresence(t *testing.T) {
 	if hasUserTools {
 		t.Fatal("expected no filtered user tools after invocation filter")
 	}
+}
+
+func TestInvocationHasFilteredUserTools_NilInvocation(t *testing.T) {
+	hasUserTools, ok := InvocationHasFilteredUserTools(nil)
+	if ok {
+		t.Fatal("expected nil invocation not to report cached user tools")
+	}
+	if hasUserTools {
+		t.Fatal("expected nil invocation to report no cached user tools")
+	}
+}
+
+func TestHasTrackedUserTool_CoversTrackingBranches(t *testing.T) {
+	require.False(t, hasTrackedUserTool(nil, false, nil))
+	require.True(
+		t,
+		hasTrackedUserTool([]tool.Tool{&mockTool{name: "user_tool"}}, false, nil),
+	)
+	require.False(
+		t,
+		hasTrackedUserTool(
+			[]tool.Tool{&mockTool{name: "framework_tool"}},
+			true,
+			map[string]bool{"user_tool": true},
+		),
+	)
+	require.True(
+		t,
+		hasTrackedUserTool(
+			[]tool.Tool{&mockTool{name: "user_tool"}},
+			true,
+			map[string]bool{"user_tool": true},
+		),
+	)
+}
+
+func TestGetFilteredTools_UsesInvocationToolSurfaceProvider(t *testing.T) {
+	f := New(nil, nil, Options{})
+	mockAgent := &mockAgentWithInvocationToolSurface{
+		name:     "test-agent",
+		allTools: []tool.Tool{&mockTool{name: "user_tool"}, &mockTool{name: "framework_tool"}},
+		userToolNames: map[string]bool{
+			"user_tool": true,
+		},
+	}
+	inv := agent.NewInvocation()
+	inv.Agent = mockAgent
+	inv.AgentName = "test-agent"
+	filtered := f.getFilteredTools(context.Background(), inv)
+	require.Len(t, filtered, 2)
+	require.Equal(t, 1, mockAgent.surfaceCallCnt)
+	hasUserTools, ok := InvocationHasFilteredUserTools(inv)
+	require.True(t, ok)
+	require.True(t, hasUserTools)
 }
 
 // TestGetFilteredTools_WithToolFilter tests tool filtering using FilterFunc.
