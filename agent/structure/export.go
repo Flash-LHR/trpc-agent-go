@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -200,6 +201,9 @@ func cloneSurfaceValue(value SurfaceValue) SurfaceValue {
 	}
 	if value.Model != nil {
 		modelRef := *value.Model
+		if len(value.Model.Headers) > 0 {
+			modelRef.Headers = maps.Clone(value.Model.Headers)
+		}
 		cloned.Model = &modelRef
 	}
 	return cloned

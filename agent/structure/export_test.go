@@ -232,6 +232,22 @@ func TestExport_NormalizesAndSortsSnapshot(t *testing.T) {
 	assert.Equal(t, []ToolRef{{ID: "a"}, {ID: "b"}}, snapshot.Surfaces[2].Value.Tools)
 }
 
+func TestCloneSurfaceValue_ClonesModelHeaders(t *testing.T) {
+	value := SurfaceValue{
+		Model: &ModelRef{
+			Provider: "openai",
+			Name:     "gpt-5.2",
+			Headers:  map[string]string{"X-Test": "1"},
+		},
+	}
+	cloned := cloneSurfaceValue(value)
+	require.NotNil(t, cloned.Model)
+	require.NotSame(t, value.Model, cloned.Model)
+	require.Equal(t, map[string]string{"X-Test": "1"}, cloned.Model.Headers)
+	cloned.Model.Headers["X-Test"] = "2"
+	assert.Equal(t, "1", value.Model.Headers["X-Test"])
+}
+
 func TestExport_RejectsDuplicateNodeID(t *testing.T) {
 	_, err := Export(context.Background(), &customExporterAgent{
 		testAgent: &testAgent{name: "root"},

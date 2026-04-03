@@ -122,7 +122,12 @@ type FewShotMessage struct {
 
 // ModelRef is a stable model reference.
 type ModelRef struct {
-	Name string
+	Provider string
+	Name     string
+	Variant  string
+	BaseURL  string
+	APIKey   string
+	Headers  map[string]string
 }
 
 // ToolRef is a stable tool declaration snapshot.
