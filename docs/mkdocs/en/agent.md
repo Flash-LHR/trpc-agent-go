@@ -485,6 +485,7 @@ Notes:
 
 - The retry applies only to the current tool call. It does not rerun the whole Agent.
 - It is disabled by default, so existing behavior stays unchanged unless you opt in.
+- It currently applies only to `CallableTool`; `StreamableTool` is not retried yet.
 - The default retry rule covers common transient raw errors such as `io.EOF`, `io.ErrUnexpectedEOF`, and network timeouts.
 - If you also want to retry result-level failures, customize `tool.RetryPolicy.RetryOn`.
 

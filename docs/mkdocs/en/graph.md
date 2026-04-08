@@ -1549,6 +1549,7 @@ Notes:
 
 - The retry applies only to the current tool call. It does not rerun the whole ToolsNode.
 - It is disabled by default, so the ToolsNode keeps its existing behavior unless you opt in.
+- It currently applies only to `CallableTool`; `StreamableTool` is not retried yet.
 - The default retry rule covers common transient raw errors. If you also want to retry result-level failures, customize `tool.RetryPolicy.RetryOn`.
 - Runnable example: [examples/graph/tool_call_retry](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/graph/tool_call_retry).
 

@@ -10,7 +10,7 @@ The Tool system is a core component of the tRPC-Agent-Go framework, enabling Age
 - **🌊 Streaming Responses**: Supports both real-time streaming responses and normal responses.
 - **⚡ Parallel Execution**: Tool invocations support parallel execution to improve performance.
 - **🔄 MCP Protocol**: Full support for STDIO, SSE, and Streamable HTTP transports.
-- **🔁 Tool Call Retry**: Supports retrying a tool call in LLMAgent and Graph ToolsNode.
+- **🔁 Tool Call Retry**: Supports retrying callable tool calls in LLMAgent and Graph ToolsNode.
 - **🛠️ Configuration Support**: Provides configuration options and filter support.
 - **🧹 Arguments Repair**: Optionally enable `agent.WithToolCallArgumentsJSONRepairEnabled(true)` to best-effort repair `tool_calls` `arguments`, improving robustness for tool execution and external parsing.
 
@@ -416,7 +416,7 @@ When a tool call may fail because of a transient issue, you can configure retry 
 - a short timeout;
 - an intermittent failure from an external service.
 
-This feature is disabled by default. When enabled, the framework retries only the current tool call. It does not rerun the whole Agent or the whole Graph workflow.
+This feature is disabled by default. It currently applies only to `CallableTool`, and `StreamableTool` is not retried yet. When enabled, the framework retries only the current tool call. It does not rerun the whole Agent or the whole Graph workflow.
 
 ### Basic Configuration
 

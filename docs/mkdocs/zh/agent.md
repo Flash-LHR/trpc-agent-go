@@ -456,6 +456,7 @@ agent := llmagent.New(
 说明：
 
 - 默认关闭；未配置时行为与历史版本保持一致。
+- 当前仅对 `CallableTool` 生效；`StreamableTool` 暂不支持。
 - 重试只作用于当前这次工具调用，不会重跑整个 Agent。
 - 默认判定只重试常见瞬时 raw error，如 `io.EOF`、`io.ErrUnexpectedEOF`、网络超时。
 - 如果需要把结果级失败也纳入重试，可通过 `tool.RetryPolicy.RetryOn` 自定义。

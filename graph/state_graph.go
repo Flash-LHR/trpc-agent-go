@@ -354,7 +354,7 @@ func WithToolCallbacks(callbacks *tool.Callbacks) Option {
 	}
 }
 
-// WithToolCallRetryPolicy sets single tool-call retry policy for tool nodes.
+// WithToolCallRetryPolicy sets callable tool-call retry policy for tool nodes.
 func WithToolCallRetryPolicy(policy *tool.RetryPolicy) Option {
 	return func(node *Node) {
 		node.toolCallRetryPolicy = policy
@@ -4844,7 +4844,7 @@ type toolCallsConfig struct {
 	// ToolCallbacks specifies tool callbacks to use.
 	// If nil, callbacks will be extracted from State.
 	ToolCallbacks *tool.Callbacks
-	// RetryPolicy specifies single tool-call retry policy for this tools node.
+	// RetryPolicy specifies callable tool-call retry policy for this tools node.
 	RetryPolicy *tool.RetryPolicy
 }
 

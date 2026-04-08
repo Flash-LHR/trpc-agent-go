@@ -1614,6 +1614,7 @@ stateGraph.AddToolsNode(
 说明：
 
 - 默认关闭；未配置时 ToolsNode 行为不变。
+- 当前仅对 `CallableTool` 生效；`StreamableTool` 暂不支持。
 - 重试只作用于当前这次工具调用，不会重跑整个 ToolsNode。
 - 默认判定只重试常见瞬时 raw error；如果需要覆盖结果级失败，可通过 `tool.RetryPolicy.RetryOn` 自定义。
 - 可运行示例见 [examples/graph/tool_call_retry](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/graph/tool_call_retry)。

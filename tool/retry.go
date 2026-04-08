@@ -37,7 +37,7 @@ type RetryInfo struct {
 	ResultError bool
 }
 
-// RetryPolicy defines retry behavior for a single tool call.
+// RetryPolicy defines retry behavior for a single callable tool call.
 type RetryPolicy struct {
 	// MaxAttempts is the total number of attempts, including the first try.
 	MaxAttempts int

@@ -410,7 +410,7 @@ toolCallID, ok := agent.GetRuntimeStateValueFromContext[string](
 - 临时超时；
 - 外部服务偶发异常。
 
-这项能力默认关闭。开启后，框架只会重试当前这次工具调用，不会重跑整个 Agent 或整轮 Graph 工作流。
+这项能力默认关闭。当前仅对 `CallableTool` 生效，`StreamableTool` 暂不支持。开启后，框架只会重试当前这次工具调用，不会重跑整个 Agent 或整轮 Graph 工作流。
 
 ### 基本配置
 
