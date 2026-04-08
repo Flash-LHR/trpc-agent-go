@@ -18,6 +18,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -471,6 +472,7 @@ type Runtime struct {
 	sessionSvc        closeFunc
 	memorySvc         closeFunc
 	cronSvc           closeFunc
+	skillsWatch       closeFunc
 	toolSets          []tool.ToolSet
 	telemetryShutdown func(context.Context) error
 }
@@ -627,9 +629,10 @@ func NewRuntime(
 	extraTools = append(extraTools, openClawTools.tools...)
 
 	var (
-		toolSets   []tool.ToolSet
-		ag         agent.Agent
-		skillsRepo *ocskills.Repository
+		toolSets    []tool.ToolSet
+		ag          agent.Agent
+		skillsRepo  *ocskills.Repository
+		skillsWatch *ocskills.WatchService
 	)
 	if agentType == agentTypeClaudeCode {
 		ag, err = newClaudeCodeAgent(opts)
@@ -646,7 +649,7 @@ func NewRuntime(
 				Err:  fmt.Errorf("create toolsets failed: %w", err),
 			}
 		}
-		ag, skillsRepo, err = newAgent(mdl, agentConfig{
+		agentCfg := agentConfig{
 			AppName:                 opts.AppName,
 			AddSessionSummary:       opts.AddSessionSummary,
 			EnableContextCompaction: opts.EnableContextCompaction,
@@ -663,16 +666,19 @@ func NewRuntime(
 			SkillsAllowBundled: splitCSV(
 				opts.SkillsAllowBundled,
 			),
-			SkillConfigs:       opts.SkillConfigs,
-			SkillConfigKeys:    resolveSkillConfigKeys(opts),
-			SkillsLoadMode:     opts.SkillsLoadMode,
-			SkillsMaxLoaded:    opts.SkillsMaxLoaded,
-			SkillsToolResults:  opts.SkillsToolResults,
-			SkillsSkipFallback: opts.SkillsSkipFallback,
-			SkillsToolingGuide: opts.SkillsToolingGuide,
-			KnowledgesConfig:   opts.KnowledgesConfig,
-			StateDir:           resolvedStateDir,
-			MemoryFileStore:    fileMemoryStore,
+			SkillConfigs:        opts.SkillConfigs,
+			SkillConfigKeys:     resolveSkillConfigKeys(opts),
+			SkillsWatch:         opts.SkillsWatch,
+			SkillsWatchBundled:  opts.SkillsWatchBundled,
+			SkillsWatchDebounce: opts.SkillsWatchDebounce,
+			SkillsLoadMode:      opts.SkillsLoadMode,
+			SkillsMaxLoaded:     opts.SkillsMaxLoaded,
+			SkillsToolResults:   opts.SkillsToolResults,
+			SkillsSkipFallback:  opts.SkillsSkipFallback,
+			SkillsToolingGuide:  opts.SkillsToolingGuide,
+			KnowledgesConfig:    opts.KnowledgesConfig,
+			StateDir:            resolvedStateDir,
+			MemoryFileStore:     fileMemoryStore,
 
 			EnableLocalExec:     opts.EnableLocalExec,
 			EnableOpenClawTools: opts.EnableOpenClawTools,
@@ -682,7 +688,21 @@ func NewRuntime(
 			ToolSets:      opts.ToolSets,
 
 			RefreshToolSetsOnRun: opts.RefreshToolSetsOnRun,
-		}, extraTools, toolSets)
+		}
+		ag, skillsRepo, err = newAgent(
+			mdl,
+			agentCfg,
+			extraTools,
+			toolSets,
+		)
+		if err == nil {
+			cwd, _ := os.Getwd()
+			skillsWatch = newSkillsWatchService(
+				cwd,
+				agentCfg,
+				skillsRepo,
+			)
+		}
 	}
 	if err != nil {
 		closeToolSets(toolSets)
@@ -692,6 +712,7 @@ func NewRuntime(
 		}
 	}
 	rt.toolSets = toolSets
+	rt.skillsWatch = skillsWatch
 
 	bridgedSessionSvc := conversationscope.WrapSessionService(sessionSvc)
 	runnerOpts := []runner.Option{
@@ -870,6 +891,8 @@ func NewRuntime(
 			opts.AdminAddr,
 			adminURL,
 			skillsRepo,
+			skillsWatch,
+			fileMemoryStore,
 		))
 		rt.Admin = AdminSurface{
 			Handler: adminSvc.Handler(),
@@ -893,6 +916,11 @@ func (r *Runtime) Close() error {
 	}
 	if r.cronRunner != nil {
 		_ = r.cronRunner.Close()
+	}
+	if r.skillsWatch != nil {
+		if err := r.skillsWatch.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	closeToolSets(r.toolSets)
 	closeMemoryService(r.memorySvc)
@@ -1055,12 +1083,21 @@ func run(ctx context.Context, args []string) error {
 	extraTools = append(extraTools, openClawTools.tools...)
 
 	var (
-		toolSets   []tool.ToolSet
-		ag         agent.Agent
-		skillsRepo *ocskills.Repository
+		toolSets    []tool.ToolSet
+		ag          agent.Agent
+		skillsRepo  *ocskills.Repository
+		skillsWatch *ocskills.WatchService
 	)
 	defer func() {
 		closeToolSets(toolSets)
+	}()
+	defer func() {
+		if skillsWatch == nil {
+			return
+		}
+		if err := skillsWatch.Close(); err != nil {
+			log.Warnf("close skills watch failed: %v", err)
+		}
 	}()
 	if agentType == agentTypeClaudeCode {
 		ag, err = newClaudeCodeAgent(opts)
@@ -1077,7 +1114,7 @@ func run(ctx context.Context, args []string) error {
 				Err:  fmt.Errorf("create toolsets failed: %w", err),
 			}
 		}
-		ag, skillsRepo, err = newAgent(mdl, agentConfig{
+		agentCfg := agentConfig{
 			AppName:                 opts.AppName,
 			AddSessionSummary:       opts.AddSessionSummary,
 			EnableContextCompaction: opts.EnableContextCompaction,
@@ -1094,16 +1131,19 @@ func run(ctx context.Context, args []string) error {
 			SkillsAllowBundled: splitCSV(
 				opts.SkillsAllowBundled,
 			),
-			SkillConfigs:       opts.SkillConfigs,
-			SkillConfigKeys:    resolveSkillConfigKeys(opts),
-			SkillsLoadMode:     opts.SkillsLoadMode,
-			SkillsMaxLoaded:    opts.SkillsMaxLoaded,
-			SkillsToolResults:  opts.SkillsToolResults,
-			SkillsSkipFallback: opts.SkillsSkipFallback,
-			SkillsToolingGuide: opts.SkillsToolingGuide,
-			KnowledgesConfig:   opts.KnowledgesConfig,
-			StateDir:           resolvedStateDir,
-			MemoryFileStore:    fileMemoryStore,
+			SkillConfigs:        opts.SkillConfigs,
+			SkillConfigKeys:     resolveSkillConfigKeys(opts),
+			SkillsWatch:         opts.SkillsWatch,
+			SkillsWatchBundled:  opts.SkillsWatchBundled,
+			SkillsWatchDebounce: opts.SkillsWatchDebounce,
+			SkillsLoadMode:      opts.SkillsLoadMode,
+			SkillsMaxLoaded:     opts.SkillsMaxLoaded,
+			SkillsToolResults:   opts.SkillsToolResults,
+			SkillsSkipFallback:  opts.SkillsSkipFallback,
+			SkillsToolingGuide:  opts.SkillsToolingGuide,
+			KnowledgesConfig:    opts.KnowledgesConfig,
+			StateDir:            resolvedStateDir,
+			MemoryFileStore:     fileMemoryStore,
 
 			EnableLocalExec:     opts.EnableLocalExec,
 			EnableOpenClawTools: opts.EnableOpenClawTools,
@@ -1113,7 +1153,21 @@ func run(ctx context.Context, args []string) error {
 			ToolSets:      opts.ToolSets,
 
 			RefreshToolSetsOnRun: opts.RefreshToolSetsOnRun,
-		}, extraTools, toolSets)
+		}
+		ag, skillsRepo, err = newAgent(
+			mdl,
+			agentCfg,
+			extraTools,
+			toolSets,
+		)
+		if err == nil {
+			cwd, _ := os.Getwd()
+			skillsWatch = newSkillsWatchService(
+				cwd,
+				agentCfg,
+				skillsRepo,
+			)
+		}
 	}
 	if err != nil {
 		return &exitError{
@@ -1319,6 +1373,8 @@ func run(ctx context.Context, args []string) error {
 			adminBinding.addr,
 			adminBinding.url,
 			skillsRepo,
+			skillsWatch,
+			fileMemoryStore,
 		))
 		adminSrv = &http.Server{
 			Handler:           adminSvc.Handler(),
@@ -1887,10 +1943,16 @@ func newAgent(
 		)
 	}
 
+	genConfig := model.GenerationConfig{Stream: true}
+	if cfg.GenerationConfig != nil {
+		genConfig = *cfg.GenerationConfig
+	}
+
 	opts := []llmagent.Option{
 		llmagent.WithModel(mdl),
 		llmagent.WithInstruction(instruction),
 		llmagent.WithGlobalInstruction(strings.TrimSpace(cfg.SystemPrompt)),
+		llmagent.WithGenerationConfig(genConfig),
 		llmagent.WithAddSessionSummary(cfg.AddSessionSummary),
 		llmagent.WithEnableContextCompaction(cfg.EnableContextCompaction),
 		llmagent.WithContextCompactionOversizedToolResultMaxTokens(cfg.ContextCompactionOversizedToolResultMaxTokens),
@@ -1900,12 +1962,6 @@ func newAgent(
 			conversation.ProjectEventMessage,
 		),
 		llmagent.WithEnableParallelTools(cfg.EnableParallelTools),
-	}
-	if cfg.GenerationConfig != nil {
-		opts = append(
-			opts,
-			llmagent.WithGenerationConfig(*cfg.GenerationConfig),
-		)
 	}
 	opts = append(opts, llmagent.WithSkills(repo))
 	opts = append(
@@ -2135,18 +2191,21 @@ type agentConfig struct {
 	Instruction                                   string
 	SystemPrompt                                  string
 
-	SkillsRoot         string
-	SkillsExtraDirs    []string
-	SkillsDebug        bool
-	SkillsAllowBundled []string
-	SkillConfigs       map[string]ocskills.SkillConfig
-	SkillConfigKeys    []string
-	SkillsLoadMode     string
-	SkillsMaxLoaded    int
-	SkillsToolResults  bool
-	SkillsSkipFallback bool
-	SkillsToolingGuide *string
-	KnowledgesConfig   map[string]*yaml.Node
+	SkillsRoot          string
+	SkillsExtraDirs     []string
+	SkillsDebug         bool
+	SkillsAllowBundled  []string
+	SkillConfigs        map[string]ocskills.SkillConfig
+	SkillConfigKeys     []string
+	SkillsWatch         bool
+	SkillsWatchBundled  bool
+	SkillsWatchDebounce time.Duration
+	SkillsLoadMode      string
+	SkillsMaxLoaded     int
+	SkillsToolResults   bool
+	SkillsSkipFallback  bool
+	SkillsToolingGuide  *string
+	KnowledgesConfig    map[string]*yaml.Node
 
 	StateDir string
 
@@ -2233,6 +2292,9 @@ func buildOpenClawTools(
 		octool.WithCommandPolicy(
 			octool.NewChatCommandSafetyPolicy(),
 		),
+		octool.WithOutputRedactor(
+			octool.NewChatCommandOutputRedactor(),
+		),
 	)
 	router := outbound.NewRouter()
 	cronTool := cron.NewTool(nil)
@@ -2299,6 +2361,30 @@ func resolveSkillRoots(cwd string, cfg agentConfig) []string {
 	}
 	roots = append(roots, cfg.SkillsExtraDirs...)
 	return roots
+}
+
+func newSkillsWatchService(
+	cwd string,
+	cfg agentConfig,
+	repo *ocskills.Repository,
+) *ocskills.WatchService {
+	if repo == nil {
+		return nil
+	}
+
+	return ocskills.NewWatchService(
+		repo,
+		resolveSkillRoots(cwd, cfg),
+		ocskills.WatchConfig{
+			Enabled:      cfg.SkillsWatch,
+			Debounce:     cfg.SkillsWatchDebounce,
+			WatchBundled: cfg.SkillsWatchBundled,
+			BundledRoot: resolveBundledSkillsRoot(
+				cwd,
+				cfg.StateDir,
+			),
+		},
+	)
 }
 
 func resolveWorkspaceSkillsRoot(cwd, raw string) string {
@@ -2401,6 +2487,35 @@ func newMockModel(_ registry.ModelSpec) (model.Model, error) {
 	return &echoModel{name: "mock-echo"}, nil
 }
 
+func recordDebugOpenAIChatRequestJSON(
+	ctx context.Context,
+	raw []byte,
+	marshalErr error,
+) {
+	if debugrecorder.TraceFromContext(ctx) == nil {
+		return
+	}
+
+	err := marshalErr
+	if err == nil && len(raw) > 0 {
+		var payload any
+		err = json.Unmarshal(raw, &payload)
+		if err == nil {
+			err = debugrecorder.RecordModelRequest(
+				ctx,
+				debugrecorder.ProviderOpenAIChatCompletions,
+				payload,
+			)
+		}
+	}
+	if err != nil {
+		log.Warnf(
+			"debug recorder failed to capture chat request: %v",
+			err,
+		)
+	}
+}
+
 func newOpenAIModel(spec registry.ModelSpec) (model.Model, error) {
 	name := strings.TrimSpace(spec.Name)
 	if name == "" {
@@ -2416,6 +2531,14 @@ func newOpenAIModel(spec registry.ModelSpec) (model.Model, error) {
 	opts := []openai.Option{
 		openai.WithVariant(variant),
 		openai.WithOmitFileContentParts(true),
+	}
+	if spec.DebugRecorderEnabled {
+		opts = append(
+			opts,
+			openai.WithChatRequestJSONCallback(
+				recordDebugOpenAIChatRequestJSON,
+			),
+		)
 	}
 	if baseURL != "" {
 		opts = append(opts, openai.WithBaseURL(baseURL))
@@ -2440,11 +2563,12 @@ func modelFromOptions(opts runOptions) (model.Model, error) {
 	}
 
 	spec := registry.ModelSpec{
-		Type:          mode,
-		Name:          opts.OpenAIModel,
-		BaseURL:       baseURL,
-		OpenAIVariant: opts.OpenAIVariant,
-		Config:        opts.ModelConfig,
+		Type:                 mode,
+		Name:                 opts.OpenAIModel,
+		BaseURL:              baseURL,
+		OpenAIVariant:        opts.OpenAIVariant,
+		DebugRecorderEnabled: opts.DebugRecorderEnabled,
+		Config:               opts.ModelConfig,
 	}
 	return f(spec)
 }

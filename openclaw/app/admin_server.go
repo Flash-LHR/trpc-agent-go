@@ -123,6 +123,8 @@ func buildAdminConfig(
 	adminAddr string,
 	adminURL string,
 	skillsRepo *ocskills.Repository,
+	skillsWatch *ocskills.WatchService,
+	memoryFiles admin.MemoryFileStore,
 ) admin.Config {
 	return admin.Config{
 		AppName:        opts.AppName,
@@ -146,7 +148,13 @@ func buildAdminConfig(
 		DebugDir:       debugDir,
 		Channels:       channelIDs(channels),
 		GatewayRoutes:  routes,
-		Skills:         buildAdminSkillsProvider(opts, stateDir, skillsRepo),
+		Skills: buildAdminSkillsProvider(
+			opts,
+			stateDir,
+			skillsRepo,
+			skillsWatch,
+		),
+		MemoryFiles: memoryFiles,
 		Browser: buildBrowserAdminConfig(
 			opts.ToolProviders,
 			browserManaged,
@@ -260,6 +268,7 @@ type adminSkillsProvider struct {
 	mu           sync.RWMutex
 	configPath   string
 	repo         *ocskills.Repository
+	watch        *ocskills.WatchService
 	roots        []string
 	bundledRoot  string
 	configKeys   []string
@@ -271,6 +280,7 @@ func buildAdminSkillsProvider(
 	opts runOptions,
 	stateDir string,
 	repo *ocskills.Repository,
+	watch *ocskills.WatchService,
 ) admin.SkillsStatusProvider {
 	cwd, _ := os.Getwd()
 	cfg := agentConfig{
@@ -281,6 +291,7 @@ func buildAdminSkillsProvider(
 	return &adminSkillsProvider{
 		configPath:   strings.TrimSpace(opts.ConfigPath),
 		repo:         repo,
+		watch:        watch,
 		roots:        resolveSkillRoots(cwd, cfg),
 		bundledRoot:  resolveBundledSkillsRoot(cwd, stateDir),
 		configKeys:   resolveSkillConfigKeys(opts),
