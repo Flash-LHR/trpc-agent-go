@@ -6,6 +6,7 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
+// Package toolretry executes retryable single tool calls.
 package toolretry
 
 import (
@@ -54,63 +55,116 @@ func Execute(ctx context.Context, input ExecuteInput) Result {
 		}
 	}
 	policy := input.Policy
+	maxAttempts := resolveMaxAttempts(policy)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if result, done := contextResult(ctx); done {
+			return result
+		}
+		outcome := executeAttempt(ctx, input)
+		if isSuccessfulAttempt(outcome) {
+			return Result{Result: outcome.RawResult}
+		}
+		if shouldReturnAttempt(policy, attempt, maxAttempts, input.IsTerminalError, outcome) {
+			return finalizeAttempt(outcome)
+		}
+		shouldRetry, err := evaluateRetry(ctx, input, policy, attempt, maxAttempts, outcome)
+		if err != nil {
+			return Result{Result: outcome.RawResult, Error: joinPolicyEvaluationError(outcome.RawError, err)}
+		}
+		if !shouldRetry {
+			return finalizeAttempt(outcome)
+		}
+		if err := sleepWithPolicy(ctx, *policy, attempt); err != nil {
+			return Result{Result: outcome.RawResult, Error: err}
+		}
+	}
+	return Result{}
+}
+
+type attemptOutcome struct {
+	RawResult   any
+	RawError    error
+	ResultError bool
+}
+
+func resolveMaxAttempts(policy *tool.RetryPolicy) int {
 	maxAttempts := 1
 	if policy != nil && policy.MaxAttempts > 1 {
 		maxAttempts = policy.MaxAttempts
 	}
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return Result{Error: ctxErr}
-		}
-		rawResult, rawErr := input.Call(ctx, input.Arguments)
-		resultError := false
-		if input.ResultError != nil {
-			resultError = input.ResultError(rawResult)
-		}
-		if rawErr == nil && !resultError {
-			return Result{Result: rawResult}
-		}
-		if policy == nil || attempt == maxAttempts {
-			if resultError && rawErr == nil {
-				return Result{Result: rawResult}
-			}
-			return Result{Result: rawResult, Error: rawErr}
-		}
-		if input.IsTerminalError != nil && rawErr != nil && input.IsTerminalError(rawErr) {
-			return Result{Result: rawResult, Error: rawErr}
-		}
-		info := &tool.RetryInfo{
-			ToolName:    input.ToolName,
-			ToolCallID:  input.ToolCallID,
-			Arguments:   cloneBytes(input.Arguments),
-			Attempt:     attempt,
-			MaxAttempts: maxAttempts,
-			Result:      rawResult,
-			Error:       rawErr,
-			ResultError: resultError,
-		}
-		retryOn := policy.RetryOn
-		if retryOn == nil {
-			retryOn = tool.DefaultRetryOn
-		}
-		shouldRetry, err := retryOn(ctx, info)
-		if err != nil {
-			return Result{
-				Result: rawResult,
-				Error:  joinPolicyEvaluationError(rawErr, err),
-			}
-		}
-		if !shouldRetry {
-			if resultError && rawErr == nil {
-				return Result{Result: rawResult}
-			}
-			return Result{Result: rawResult, Error: rawErr}
-		}
-		if err := sleepWithPolicy(ctx, *policy, attempt); err != nil {
-			return Result{Result: rawResult, Error: err}
-		}
+	return maxAttempts
+}
+
+func contextResult(ctx context.Context) (Result, bool) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return Result{Error: ctxErr}, true
 	}
-	return Result{}
+	return Result{}, false
+}
+
+func executeAttempt(ctx context.Context, input ExecuteInput) attemptOutcome {
+	rawResult, rawErr := input.Call(ctx, input.Arguments)
+	resultError := false
+	if input.ResultError != nil {
+		resultError = input.ResultError(rawResult)
+	}
+	return attemptOutcome{
+		RawResult:   rawResult,
+		RawError:    rawErr,
+		ResultError: resultError,
+	}
+}
+
+func isSuccessfulAttempt(outcome attemptOutcome) bool {
+	return outcome.RawError == nil && !outcome.ResultError
+}
+
+func shouldReturnAttempt(
+	policy *tool.RetryPolicy,
+	attempt int,
+	maxAttempts int,
+	isTerminalError TerminalErrorFunc,
+	outcome attemptOutcome,
+) bool {
+	if policy == nil || attempt == maxAttempts {
+		return true
+	}
+	if isTerminalError != nil && outcome.RawError != nil && isTerminalError(outcome.RawError) {
+		return true
+	}
+	return false
+}
+
+func finalizeAttempt(outcome attemptOutcome) Result {
+	if outcome.ResultError && outcome.RawError == nil {
+		return Result{Result: outcome.RawResult}
+	}
+	return Result{Result: outcome.RawResult, Error: outcome.RawError}
+}
+
+func evaluateRetry(
+	ctx context.Context,
+	input ExecuteInput,
+	policy *tool.RetryPolicy,
+	attempt int,
+	maxAttempts int,
+	outcome attemptOutcome,
+) (bool, error) {
+	info := &tool.RetryInfo{
+		ToolName:    input.ToolName,
+		ToolCallID:  input.ToolCallID,
+		Arguments:   cloneBytes(input.Arguments),
+		Attempt:     attempt,
+		MaxAttempts: maxAttempts,
+		Result:      outcome.RawResult,
+		Error:       outcome.RawError,
+		ResultError: outcome.ResultError,
+	}
+	retryOn := policy.RetryOn
+	if retryOn == nil {
+		retryOn = tool.DefaultRetryOn
+	}
+	return retryOn(ctx, info)
 }
 
 func sleepWithPolicy(

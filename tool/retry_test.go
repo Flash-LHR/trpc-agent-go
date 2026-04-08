@@ -61,3 +61,35 @@ func TestDefaultRetryOn_DoesNotRetryNonTransientFailures(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, retry)
 }
+
+func TestDefaultRetryOn_DoesNotRetryWhenContextIsDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	retry, err := tool.DefaultRetryOn(ctx, &tool.RetryInfo{
+		Error: retryNetError{timeout: true},
+	})
+	require.NoError(t, err)
+	require.False(t, retry)
+}
+
+func TestDefaultRetryOn_DoesNotRetryWhenInfoIsIncomplete(t *testing.T) {
+	retry, err := tool.DefaultRetryOn(context.Background(), nil)
+	require.NoError(t, err)
+	require.False(t, retry)
+	retry, err = tool.DefaultRetryOn(context.Background(), &tool.RetryInfo{})
+	require.NoError(t, err)
+	require.False(t, retry)
+}
+
+func TestDefaultRetryOn_RetriesEOFAndTemporaryErrors(t *testing.T) {
+	retry, err := tool.DefaultRetryOn(context.Background(), &tool.RetryInfo{
+		Error: io.EOF,
+	})
+	require.NoError(t, err)
+	require.True(t, retry)
+	retry, err = tool.DefaultRetryOn(context.Background(), &tool.RetryInfo{
+		Error: retryNetError{temporary: true},
+	})
+	require.NoError(t, err)
+	require.True(t, retry)
+}
