@@ -210,6 +210,8 @@ type Options struct {
 	ModelCallbacks *model.Callbacks
 	// ToolCallbacks contains callbacks for tool operations.
 	ToolCallbacks *tool.Callbacks
+	// ToolCallRetryPolicy configures single tool-call retry behavior.
+	ToolCallRetryPolicy *tool.RetryPolicy
 	// Knowledge is the knowledge base for the agent.
 	// If provided, the knowledge search tool will be automatically added.
 	Knowledge knowledge.Knowledge
@@ -823,6 +825,13 @@ func WithModelCallbacks(callbacks *model.Callbacks) Option {
 func WithToolCallbacks(callbacks *tool.Callbacks) Option {
 	return func(opts *Options) {
 		opts.ToolCallbacks = callbacks
+	}
+}
+
+// WithToolCallRetryPolicy sets the retry policy for single tool calls.
+func WithToolCallRetryPolicy(policy *tool.RetryPolicy) Option {
+	return func(opts *Options) {
+		opts.ToolCallRetryPolicy = policy
 	}
 }
 

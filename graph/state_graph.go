@@ -38,6 +38,7 @@ import (
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	itool "trpc.group/trpc-go/trpc-agent-go/internal/tool"
 	"trpc.group/trpc-go/trpc-agent-go/internal/toolcall"
+	"trpc.group/trpc-go/trpc-agent-go/internal/toolretry"
 	"trpc.group/trpc-go/trpc-agent-go/internal/util"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -350,6 +351,13 @@ func WithNodeCallbacks(callbacks *NodeCallbacks) Option {
 func WithToolCallbacks(callbacks *tool.Callbacks) Option {
 	return func(node *Node) {
 		node.toolCallbacks = callbacks
+	}
+}
+
+// WithToolCallRetryPolicy sets single tool-call retry policy for tool nodes.
+func WithToolCallRetryPolicy(policy *tool.RetryPolicy) Option {
+	return func(node *Node) {
+		node.toolCallRetryPolicy = policy
 	}
 }
 
@@ -2140,6 +2148,7 @@ func newToolsNodeRuntime(
 	parallel := node.enableParallelTools
 	// Capture tool callbacks configured on the node.
 	configuredCallbacks := node.toolCallbacks
+	configuredRetryPolicy := node.toolCallRetryPolicy
 
 	return func(ctx context.Context, state State) (any, error) {
 		ctx, span, startedSpan := startNodeSpan(ctx, itelemetry.NewWorkflowSpanName("execute_tools_node"))
@@ -2186,6 +2195,7 @@ func newToolsNodeRuntime(
 			State:          state,
 			EnableParallel: parallel,
 			ToolCallbacks:  toolCallbacks,
+			RetryPolicy:    configuredRetryPolicy,
 		})
 		if err != nil {
 			if workflow != nil {
@@ -3763,7 +3773,14 @@ func runTool(
 	t tool.Tool,
 	state State,
 ) (context.Context, any, []byte, error) {
-	_, _, finalCtx, _, result, modifiedArgs, err := runToolWithEventContexts(ctx, toolCall, toolCallbacks, t, state)
+	_, _, finalCtx, _, result, modifiedArgs, err := runToolWithEventContexts(
+		ctx,
+		toolCall,
+		toolCallbacks,
+		t,
+		state,
+		nil,
+	)
 	return finalCtx, result, modifiedArgs, err
 }
 
@@ -3773,6 +3790,7 @@ func runToolWithEventContexts(
 	toolCallbacks *tool.Callbacks,
 	t tool.Tool,
 	state State,
+	retryPolicy *tool.RetryPolicy,
 ) (context.Context, *agent.Invocation, context.Context, *agent.Invocation, any, []byte, error) {
 	ctx = context.WithValue(ctx, tool.ContextKeyToolCallID{}, toolCall.ID)
 	if invocation, ok := agent.InvocationFromContext(ctx); ok && jsonrepair.IsToolCallArgumentsJSONRepairEnabled(invocation) {
@@ -3815,8 +3833,27 @@ func runToolWithEventContexts(
 	if err != nil {
 		return startCtx, startInvocation, ctx, startInvocation, nil, toolCall.Function.Arguments, err
 	}
-
-	result, toolErr := callableTool.Call(ctx, toolCall.Function.Arguments)
+	var result any
+	var toolErr error
+	if retryPolicy == nil {
+		result, toolErr = callableTool.Call(ctx, toolCall.Function.Arguments)
+	} else {
+		runResult := toolretry.Execute(ctx, toolretry.ExecuteInput{
+			ToolName:   toolCall.Function.Name,
+			ToolCallID: toolCall.ID,
+			Arguments:  toolCall.Function.Arguments,
+			Policy:     retryPolicy,
+			Call:       callableTool.Call,
+			ResultError: func(result any) bool {
+				return extractResultError(result)
+			},
+			IsTerminalError: func(err error) bool {
+				return IsInterruptError(err)
+			},
+		})
+		result = runResult.Result
+		toolErr = runResult.Error
+	}
 	completeInvocation := startInvocation
 
 	ctx, customResult, err = runAfterToolPluginCallbacks(
@@ -3873,6 +3910,20 @@ func runToolWithEventContexts(
 			fmt.Errorf("tool %s call failed: %w", toolCall.Function.Name, toolErr)
 	}
 	return startCtx, startInvocation, ctx, completeInvocation, result, toolCall.Function.Arguments, nil
+}
+
+func extractResultError(result any) bool {
+	if result == nil {
+		return false
+	}
+	type resultErrorGetter interface {
+		RetryResultError() bool
+	}
+	rg, ok := result.(resultErrorGetter)
+	if !ok {
+		return false
+	}
+	return rg.RetryResultError()
 }
 
 // extractModelInput extracts the model input from state and instruction.
@@ -4793,6 +4844,8 @@ type toolCallsConfig struct {
 	// ToolCallbacks specifies tool callbacks to use.
 	// If nil, callbacks will be extracted from State.
 	ToolCallbacks *tool.Callbacks
+	// RetryPolicy specifies single tool-call retry policy for this tools node.
+	RetryPolicy *tool.RetryPolicy
 }
 
 // processToolCalls executes all tool calls and returns the resulting messages.
@@ -4814,6 +4867,7 @@ func processToolCalls(ctx context.Context, config toolCallsConfig) ([]model.Mess
 				Span:          config.Span,
 				ToolCallbacks: toolCallbacks,
 				State:         config.State,
+				RetryPolicy:   config.RetryPolicy,
 			})
 			if err != nil {
 				return nil, err
@@ -4851,6 +4905,7 @@ func processToolCalls(ctx context.Context, config toolCallsConfig) ([]model.Mess
 				Span:          config.Span,
 				ToolCallbacks: toolCallbacks,
 				State:         config.State,
+				RetryPolicy:   config.RetryPolicy,
 			})
 			// On error, cancel siblings but still report result so collector can exit cleanly.
 			if err != nil {
@@ -4899,6 +4954,7 @@ type singleToolCallConfig struct {
 	Span          oteltrace.Span
 	ToolCallbacks *tool.Callbacks
 	State         State
+	RetryPolicy   *tool.RetryPolicy
 }
 
 // executeSingleToolCall executes a single tool call with event emission.
@@ -4943,6 +4999,7 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 		config.ToolCallbacks,
 		t,
 		config.State,
+		config.RetryPolicy,
 	)
 	eventInvocation := invocationFromContextOrFallback(
 		finalCtx,
