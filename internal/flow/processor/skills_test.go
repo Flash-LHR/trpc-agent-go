@@ -396,6 +396,19 @@ func TestSkillsRequestProcessor_CapabilityGuidance_CatalogOnly(t *testing.T) {
 	require.Contains(t, text, "catalog of possible capabilities")
 }
 
+func TestSkillsRequestProcessor_ToolFlagsResolverOverridesStaticFlags(t *testing.T) {
+	p := NewSkillsRequestProcessor(
+		&mockRepo{},
+		WithSkillToolFlags(skillprofile.Flags{Load: true}),
+		WithSkillToolFlagsResolver(func(*agent.Invocation) skillprofile.Flags {
+			return skillprofile.Flags{Run: true}
+		}),
+	)
+	flags := p.toolFlagsForInvocation(&agent.Invocation{})
+	require.False(t, flags.Load)
+	require.True(t, flags.Run)
+}
+
 func TestDefaultToolingAndWorkspaceGuidance_CatalogOnly(t *testing.T) {
 	text := defaultToolingAndWorkspaceGuidance(skillprofile.Flags{})
 	require.Contains(t, text, skillsToolingGuidanceHeader)
