@@ -1,0 +1,25 @@
+{
+  "trials": 3,
+  "variants": [
+    {
+      "name": "control",
+      "description": "The current default syncrun settings."
+    },
+    {
+      "name": "teacher-temp-0",
+      "description": "Makes the teacher deterministic to reduce expected-reference variance.",
+      "teacher_temperature": 0.0
+    },
+    {
+      "name": "max-rounds-2",
+      "description": "Stops earlier to reduce late-round overfitting.",
+      "max_rounds": 2
+    },
+    {
+      "name": "teacher-temp-0-max-rounds-2",
+      "description": "Combines deterministic teacher references with earlier stopping.",
+      "teacher_temperature": 0.0,
+      "max_rounds": 2
+    }
+  ]
+}

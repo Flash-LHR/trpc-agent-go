@@ -1,0 +1,82 @@
+[
+  {
+    "metricName": "llm_rubric_expected_response",
+    "threshold": 0.9,
+    "criterion": {
+      "llmJudge": {
+        "rubrics": [
+          {
+            "id": "1",
+            "description": "The answer stays aligned with the same decisive play focus as the teacher reference.",
+            "type": "FINAL_RESPONSE_QUALITY",
+            "content": {
+              "text": "Compared with the reference answer, the final answer must stay on the same current play and preserve the same decisive actor, action, or result when those details are explicit in the user prompt and the reference answer. Fail if it shifts to a different moment, becomes generic, or drops the core live-play focus."
+            }
+          },
+          {
+            "id": "2",
+            "description": "The answer keeps a similar level of grounded live detail as the teacher reference.",
+            "type": "FINAL_RESPONSE_QUALITY",
+            "content": {
+              "text": "Compared with the reference answer, the final answer should include a similarly useful grounded cue when the user prompt supports it, such as clock, score state, margin, result, or a decisive recent event. Do not require identical wording, but fail if the final answer becomes materially less informative or loses an obviously important cue present in the reference answer."
+            }
+          },
+          {
+            "id": "3",
+            "description": "The answer matches the teacher reference in live-call sharpness without requiring exact wording.",
+            "type": "FORMAT_COMPLIANCE",
+            "content": {
+              "text": "Compared with the reference answer, the final answer should sound comparably like a natural Chinese live basketball call: spoken, immediate, and ready for live audio. Do not require exact wording or sentence structure, but fail if it sounds much flatter, more recap-like, or more explanatory than the reference answer."
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "metricName": "final_response_length_compliance",
+    "threshold": 1.0
+  },
+  {
+    "metricName": "llm_rubric_response",
+    "threshold": 0.9,
+    "criterion": {
+      "llmJudge": {
+        "rubrics": [
+          {
+            "id": "1",
+            "description": "The answer directly comments on the current event instead of speaking in generic filler.",
+            "type": "FINAL_RESPONSE_QUALITY",
+            "content": {
+              "text": "The final answer must comment on the current event in the JSON input. It should preserve the core actor and core action when the event clearly centers on a player or team action. Fail if it sounds generic, canned, or disconnected from the current event."
+            }
+          },
+          {
+            "id": "2",
+            "description": "The answer uses one decisive live-context cue when it sharpens the call.",
+            "type": "FINAL_RESPONSE_QUALITY",
+            "content": {
+              "text": "When the JSON input provides a clear live-context cue such as score state, clock, game-ending result, or a decisive recent event, the final answer should use at least one such cue when it sharpens the call. Fail if the answer ignores obviously important live context or drifts into unrelated details."
+            }
+          },
+          {
+            "id": "3",
+            "description": "The answer sounds like natural Chinese live basketball commentary.",
+            "type": "FORMAT_COMPLIANCE",
+            "content": {
+              "text": "The final answer should read like one natural Chinese live basketball commentary line. It should feel spoken, sharp, and ready for live audio rather than analysis, recap, or explanatory prose."
+            }
+          },
+          {
+            "id": "4",
+            "description": "The answer stays on the current moment and avoids recap, analysis, or JSON-like restatement.",
+            "type": "FORMAT_COMPLIANCE",
+            "content": {
+              "text": "The final answer should stay centered on the current moment. Fail if it turns into broad recap, tactical analysis, background explanation, or awkward restatement of JSON field names and metadata."
+            }
+          }
+        ]
+      }
+    }
+  }
+]

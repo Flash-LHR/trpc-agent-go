@@ -1,0 +1,1857 @@
+{
+  "evalSetResultId": "promptiter-nba-commentary-app_nba-commentary-train_e4aa2263-343a-4b2c-b166-d70dcd088c1f",
+  "evalSetResultName": "promptiter-nba-commentary-app_nba-commentary-train_e4aa2263-343a-4b2c-b166-d70dcd088c1f",
+  "evalSetId": "nba-commentary-train",
+  "evalCaseResults": [
+    {
+      "evalSetId": "nba-commentary-train",
+      "evalId": "case_7",
+      "runId": 1,
+      "finalEvalStatus": "failed",
+      "overallEvalMetricResults": [
+        {
+          "metricName": "llm_rubric_expected_response",
+          "score": 0.3333333333333333,
+          "evalStatus": "failed",
+          "threshold": 0.9,
+          "criterion": {
+            "llmJudge": {
+              "rubrics": [
+                {
+                  "id": "1",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer must stay on the same current play and preserve the same decisive actor, action, or result when those details are explicit in the user prompt and the reference answer. Fail if it shifts to a different moment, becomes generic, or drops the core live-play focus."
+                  },
+                  "description": "The answer stays aligned with the same decisive play focus as the teacher reference.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "2",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer should include a similarly useful grounded cue when the user prompt supports it, such as clock, score state, margin, result, or a decisive recent event. Do not require identical wording, but fail if the final answer becomes materially less informative or loses an obviously important cue present in the reference answer."
+                  },
+                  "description": "The answer keeps a similar level of grounded live detail as the teacher reference.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "3",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer should sound comparably like a natural Chinese live basketball call: spoken, immediate, and ready for live audio. Do not require exact wording or sentence structure, but fail if it sounds much flatter, more recap-like, or more explanatory than the reference answer."
+                  },
+                  "description": "The answer matches the teacher reference in live-call sharpness without requiring exact wording.",
+                  "type": "FORMAT_COMPLIANCE"
+                }
+              ]
+            }
+          },
+          "details": {
+            "reason": "最终答案仍然围绕申京罚球不中这一当前回合，没有转移到别的事件；也保留了申京、罚球不中、错失追分机会这些核心结果。但它把焦点从明确的“第二罚不中”泛化成“连续罚球不中”，弱化了当前事件的单一即时性。尽管如此，结合上下文可验证两罚都没进，整体仍基本停留在同一当前 play 上。\n最终答案保留了“末节落后14分”和“罚球不中错失追分机会”这些 grounded cues，但缺少参考答案里非常明确且当前事件直接支持的“只剩1分02秒”和具体比分“95比109”。在有充分支持信息的情况下，最终答案明显更概括，信息量低于参考答案。\n参考答案有明显的现场口播感和即时情绪，“还是没进啊”“真是太伤了”很像直播解说。最终答案则更像赛况概述，语气平直，缺少临场感和口语化停顿，不够像可直接播出的即时解说。",
+            "score": 0.3333333333333333,
+            "rubricScores": [
+              {
+                "id": "1",
+                "reason": "最终答案仍然围绕申京罚球不中这一当前回合，没有转移到别的事件；也保留了申京、罚球不中、错失追分机会这些核心结果。但它把焦点从明确的“第二罚不中”泛化成“连续罚球不中”，弱化了当前事件的单一即时性。尽管如此，结合上下文可验证两罚都没进，整体仍基本停留在同一当前 play 上。",
+                "score": 1
+              },
+              {
+                "id": "2",
+                "reason": "最终答案保留了“末节落后14分”和“罚球不中错失追分机会”这些 grounded cues，但缺少参考答案里非常明确且当前事件直接支持的“只剩1分02秒”和具体比分“95比109”。在有充分支持信息的情况下，最终答案明显更概括，信息量低于参考答案。"
+              },
+              {
+                "id": "3",
+                "reason": "参考答案有明显的现场口播感和即时情绪，“还是没进啊”“真是太伤了”很像直播解说。最终答案则更像赛况概述，语气平直，缺少临场感和口语化停顿，不够像可直接播出的即时解说。"
+              }
+            ]
+          }
+        },
+        {
+          "metricName": "final_response_length_compliance",
+          "score": 0.5,
+          "evalStatus": "failed",
+          "threshold": 1,
+          "details": {
+            "reason": "length_signal: actual_length=28 preferred_range=[32,58] acceptable_range=[18,72] band=acceptable direction=too_short delta_to_preferred=4. Expand the commentary with one more concrete live detail and no filler.",
+            "score": 0.5
+          }
+        },
+        {
+          "metricName": "llm_rubric_response",
+          "score": 1,
+          "evalStatus": "passed",
+          "threshold": 0.9,
+          "criterion": {
+            "llmJudge": {
+              "rubrics": [
+                {
+                  "id": "1",
+                  "content": {
+                    "text": "The final answer must comment on the current event in the JSON input. It should preserve the core actor and core action when the event clearly centers on a player or team action. Fail if it sounds generic, canned, or disconnected from the current event."
+                  },
+                  "description": "The answer directly comments on the current event instead of speaking in generic filler.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "2",
+                  "content": {
+                    "text": "When the JSON input provides a clear live-context cue such as score state, clock, game-ending result, or a decisive recent event, the final answer should use at least one such cue when it sharpens the call. Fail if the answer ignores obviously important live context or drifts into unrelated details."
+                  },
+                  "description": "The answer uses one decisive live-context cue when it sharpens the call.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "3",
+                  "content": {
+                    "text": "The final answer should read like one natural Chinese live basketball commentary line. It should feel spoken, sharp, and ready for live audio rather than analysis, recap, or explanatory prose."
+                  },
+                  "description": "The answer sounds like natural Chinese live basketball commentary.",
+                  "type": "FORMAT_COMPLIANCE"
+                },
+                {
+                  "id": "4",
+                  "content": {
+                    "text": "The final answer should stay centered on the current moment. Fail if it turns into broad recap, tactical analysis, background explanation, or awkward restatement of JSON field names and metadata."
+                  },
+                  "description": "The answer stays on the current moment and avoids recap, analysis, or JSON-like restatement.",
+                  "type": "FORMAT_COMPLIANCE"
+                }
+              ]
+            }
+          },
+          "details": {
+            "reason": "The final answer directly mentions the current event’s core actor “申京” and core action “罚球不中.” Although it says “连续罚球不中,” the current event is specifically the second missed free throw and this remains centered on that event rather than being disconnected or generic.\nThe final answer uses clear live-context cues from the input: “末节” and “落后国王14分.” This satisfies the requirement to incorporate at least one important live context cue.\nThe line is a single natural Chinese sentence, concise and understandable, and it can function as live commentary. It is somewhat plain, but it does not read like analysis or explanatory prose.\nThe answer stays focused on the immediate game moment: the late-game score situation and Shenjing’s missed free throws. It does not drift into recap, tactics, background, or metadata-like phrasing.",
+            "score": 1,
+            "rubricScores": [
+              {
+                "id": "1",
+                "reason": "The final answer directly mentions the current event’s core actor “申京” and core action “罚球不中.” Although it says “连续罚球不中,” the current event is specifically the second missed free throw and this remains centered on that event rather than being disconnected or generic.",
+                "score": 1
+              },
+              {
+                "id": "2",
+                "reason": "The final answer uses clear live-context cues from the input: “末节” and “落后国王14分.” This satisfies the requirement to incorporate at least one important live context cue.",
+                "score": 1
+              },
+              {
+                "id": "3",
+                "reason": "The line is a single natural Chinese sentence, concise and understandable, and it can function as live commentary. It is somewhat plain, but it does not read like analysis or explanatory prose.",
+                "score": 1
+              },
+              {
+                "id": "4",
+                "reason": "The answer stays focused on the immediate game moment: the late-game score situation and Shenjing’s missed free throws. It does not drift into recap, tactics, background, or metadata-like phrasing.",
+                "score": 1
+              }
+            ]
+          }
+        }
+      ],
+      "evalMetricResultPerInvocation": [
+        {
+          "actualInvocation": {
+            "invocationId": "855bf899-3042-4887-aa26-a31089e0857b",
+            "userContent": {
+              "role": "user",
+              "content": "{\n  \"matchup\": \"火箭 vs 国王\",\n  \"time_node\": \"第4节即将结束\",\n  \"current_score\": \"火箭 95 - 109 国王 (【国王】 领先 14 分)\",\n  \"score_state\": \"国王领先14分，优势明显\",\n  \"game_stats\": \"27次领先交替, 12次平分\",\n  \"tactical_context\": \"当前场面：双方展开对攻，命中率很高。\",\n  \"recent_commentary\": [\n    \"小史密斯这一撞上篮被威斯布鲁克直接拍了下来，出手点完全被盖死了。\",\n    \"雷诺这一扑直接打到申京出手点上了，裁判给了两罚。\",\n    \"申京第一罚没进。\",\n    \"申京都把这个后场板抓住了。\"\n  ],\n  \"recent_events\": [\n    \"【Q4-01:02】申京第1罚不中 [95-109]\",\n    \"【Q4-01:02】火箭获得篮板球 [95-109]\",\n    \"【Q4-01:02】申京第2罚不中 [95-109]\",\n    \"【Q4-03:07】德罗赞的跳投被霍勒迪封盖，不中 [92-102]\"\n  ],\n  \"current_event\": {\n    \"event_id\": \"2026-01-12 12:26:23\",\n    \"description\": \"申京第2罚不中\",\n    \"score_at_event\": \"火箭 95-109 国王\",\n    \"clock\": \"Q4-01:02\"\n  },\n  \"on_court\": {\n    \"火箭\": [\n      \"申京\",\n      \"小史密斯\",\n      \"阿门\",\n      \"杜兰特\",\n      \"霍勒迪\"\n    ],\n    \"国王\": [\n      \"阿丘瓦\",\n      \"雷诺\",\n      \"德罗赞\",\n      \"威斯布鲁克\",\n      \"蒙克\"\n    ]\n  }\n}"
+            },
+            "finalResponse": {
+              "role": "assistant",
+              "content": "火箭队末节落后国王14分，申京连续罚球不中错失追分机会。"
+            }
+          },
+          "expectedInvocation": {
+            "invocationId": "f749cb20-d2e1-43a0-80ea-e15325477518",
+            "userContent": {
+              "role": "user",
+              "content": "{\n  \"matchup\": \"火箭 vs 国王\",\n  \"time_node\": \"第4节即将结束\",\n  \"current_score\": \"火箭 95 - 109 国王 (【国王】 领先 14 分)\",\n  \"score_state\": \"国王领先14分，优势明显\",\n  \"game_stats\": \"27次领先交替, 12次平分\",\n  \"tactical_context\": \"当前场面：双方展开对攻，命中率很高。\",\n  \"recent_commentary\": [\n    \"小史密斯这一撞上篮被威斯布鲁克直接拍了下来，出手点完全被盖死了。\",\n    \"雷诺这一扑直接打到申京出手点上了，裁判给了两罚。\",\n    \"申京第一罚没进。\",\n    \"申京都把这个后场板抓住了。\"\n  ],\n  \"recent_events\": [\n    \"【Q4-01:02】申京第1罚不中 [95-109]\",\n    \"【Q4-01:02】火箭获得篮板球 [95-109]\",\n    \"【Q4-01:02】申京第2罚不中 [95-109]\",\n    \"【Q4-03:07】德罗赞的跳投被霍勒迪封盖，不中 [92-102]\"\n  ],\n  \"current_event\": {\n    \"event_id\": \"2026-01-12 12:26:23\",\n    \"description\": \"申京第2罚不中\",\n    \"score_at_event\": \"火箭 95-109 国王\",\n    \"clock\": \"Q4-01:02\"\n  },\n  \"on_court\": {\n    \"火箭\": [\n      \"申京\",\n      \"小史密斯\",\n      \"阿门\",\n      \"杜兰特\",\n      \"霍勒迪\"\n    ],\n    \"国王\": [\n      \"阿丘瓦\",\n      \"雷诺\",\n      \"德罗赞\",\n      \"威斯布鲁克\",\n      \"蒙克\"\n    ]\n  }\n}"
+            },
+            "finalResponse": {
+              "role": "assistant",
+              "content": "申京第二罚还是没进啊，第四节只剩1分02秒火箭还95比109落后14分，这两分球线上的机会真是太伤了。"
+            }
+          },
+          "evalMetricResults": [
+            {
+              "metricName": "llm_rubric_expected_response",
+              "score": 0.3333333333333333,
+              "evalStatus": "failed",
+              "threshold": 0.9,
+              "criterion": {
+                "llmJudge": {
+                  "rubrics": [
+                    {
+                      "id": "1",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer must stay on the same current play and preserve the same decisive actor, action, or result when those details are explicit in the user prompt and the reference answer. Fail if it shifts to a different moment, becomes generic, or drops the core live-play focus."
+                      },
+                      "description": "The answer stays aligned with the same decisive play focus as the teacher reference.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "2",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer should include a similarly useful grounded cue when the user prompt supports it, such as clock, score state, margin, result, or a decisive recent event. Do not require identical wording, but fail if the final answer becomes materially less informative or loses an obviously important cue present in the reference answer."
+                      },
+                      "description": "The answer keeps a similar level of grounded live detail as the teacher reference.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "3",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer should sound comparably like a natural Chinese live basketball call: spoken, immediate, and ready for live audio. Do not require exact wording or sentence structure, but fail if it sounds much flatter, more recap-like, or more explanatory than the reference answer."
+                      },
+                      "description": "The answer matches the teacher reference in live-call sharpness without requiring exact wording.",
+                      "type": "FORMAT_COMPLIANCE"
+                    }
+                  ]
+                }
+              },
+              "details": {
+                "reason": "最终答案仍然围绕申京罚球不中这一当前回合，没有转移到别的事件；也保留了申京、罚球不中、错失追分机会这些核心结果。但它把焦点从明确的“第二罚不中”泛化成“连续罚球不中”，弱化了当前事件的单一即时性。尽管如此，结合上下文可验证两罚都没进，整体仍基本停留在同一当前 play 上。\n最终答案保留了“末节落后14分”和“罚球不中错失追分机会”这些 grounded cues，但缺少参考答案里非常明确且当前事件直接支持的“只剩1分02秒”和具体比分“95比109”。在有充分支持信息的情况下，最终答案明显更概括，信息量低于参考答案。\n参考答案有明显的现场口播感和即时情绪，“还是没进啊”“真是太伤了”很像直播解说。最终答案则更像赛况概述，语气平直，缺少临场感和口语化停顿，不够像可直接播出的即时解说。",
+                "score": 0.3333333333333333,
+                "rubricScores": [
+                  {
+                    "id": "1",
+                    "reason": "最终答案仍然围绕申京罚球不中这一当前回合，没有转移到别的事件；也保留了申京、罚球不中、错失追分机会这些核心结果。但它把焦点从明确的“第二罚不中”泛化成“连续罚球不中”，弱化了当前事件的单一即时性。尽管如此，结合上下文可验证两罚都没进，整体仍基本停留在同一当前 play 上。",
+                    "score": 1
+                  },
+                  {
+                    "id": "2",
+                    "reason": "最终答案保留了“末节落后14分”和“罚球不中错失追分机会”这些 grounded cues，但缺少参考答案里非常明确且当前事件直接支持的“只剩1分02秒”和具体比分“95比109”。在有充分支持信息的情况下，最终答案明显更概括，信息量低于参考答案。"
+                  },
+                  {
+                    "id": "3",
+                    "reason": "参考答案有明显的现场口播感和即时情绪，“还是没进啊”“真是太伤了”很像直播解说。最终答案则更像赛况概述，语气平直，缺少临场感和口语化停顿，不够像可直接播出的即时解说。"
+                  }
+                ]
+              }
+            },
+            {
+              "metricName": "final_response_length_compliance",
+              "score": 0.5,
+              "evalStatus": "failed",
+              "threshold": 1,
+              "details": {
+                "reason": "length_signal: actual_length=28 preferred_range=[32,58] acceptable_range=[18,72] band=acceptable direction=too_short delta_to_preferred=4. Expand the commentary with one more concrete live detail and no filler.",
+                "score": 0.5
+              }
+            },
+            {
+              "metricName": "llm_rubric_response",
+              "score": 1,
+              "evalStatus": "passed",
+              "threshold": 0.9,
+              "criterion": {
+                "llmJudge": {
+                  "rubrics": [
+                    {
+                      "id": "1",
+                      "content": {
+                        "text": "The final answer must comment on the current event in the JSON input. It should preserve the core actor and core action when the event clearly centers on a player or team action. Fail if it sounds generic, canned, or disconnected from the current event."
+                      },
+                      "description": "The answer directly comments on the current event instead of speaking in generic filler.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "2",
+                      "content": {
+                        "text": "When the JSON input provides a clear live-context cue such as score state, clock, game-ending result, or a decisive recent event, the final answer should use at least one such cue when it sharpens the call. Fail if the answer ignores obviously important live context or drifts into unrelated details."
+                      },
+                      "description": "The answer uses one decisive live-context cue when it sharpens the call.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "3",
+                      "content": {
+                        "text": "The final answer should read like one natural Chinese live basketball commentary line. It should feel spoken, sharp, and ready for live audio rather than analysis, recap, or explanatory prose."
+                      },
+                      "description": "The answer sounds like natural Chinese live basketball commentary.",
+                      "type": "FORMAT_COMPLIANCE"
+                    },
+                    {
+                      "id": "4",
+                      "content": {
+                        "text": "The final answer should stay centered on the current moment. Fail if it turns into broad recap, tactical analysis, background explanation, or awkward restatement of JSON field names and metadata."
+                      },
+                      "description": "The answer stays on the current moment and avoids recap, analysis, or JSON-like restatement.",
+                      "type": "FORMAT_COMPLIANCE"
+                    }
+                  ]
+                }
+              },
+              "details": {
+                "reason": "The final answer directly mentions the current event’s core actor “申京” and core action “罚球不中.” Although it says “连续罚球不中,” the current event is specifically the second missed free throw and this remains centered on that event rather than being disconnected or generic.\nThe final answer uses clear live-context cues from the input: “末节” and “落后国王14分.” This satisfies the requirement to incorporate at least one important live context cue.\nThe line is a single natural Chinese sentence, concise and understandable, and it can function as live commentary. It is somewhat plain, but it does not read like analysis or explanatory prose.\nThe answer stays focused on the immediate game moment: the late-game score situation and Shenjing’s missed free throws. It does not drift into recap, tactics, background, or metadata-like phrasing.",
+                "score": 1,
+                "rubricScores": [
+                  {
+                    "id": "1",
+                    "reason": "The final answer directly mentions the current event’s core actor “申京” and core action “罚球不中.” Although it says “连续罚球不中,” the current event is specifically the second missed free throw and this remains centered on that event rather than being disconnected or generic.",
+                    "score": 1
+                  },
+                  {
+                    "id": "2",
+                    "reason": "The final answer uses clear live-context cues from the input: “末节” and “落后国王14分.” This satisfies the requirement to incorporate at least one important live context cue.",
+                    "score": 1
+                  },
+                  {
+                    "id": "3",
+                    "reason": "The line is a single natural Chinese sentence, concise and understandable, and it can function as live commentary. It is somewhat plain, but it does not read like analysis or explanatory prose.",
+                    "score": 1
+                  },
+                  {
+                    "id": "4",
+                    "reason": "The answer stays focused on the immediate game moment: the late-game score situation and Shenjing’s missed free throws. It does not drift into recap, tactics, background, or metadata-like phrasing.",
+                    "score": 1
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "sessionId": "9ca424ad-404d-48f8-b7e1-262e395dd94b",
+      "userId": "sports-demo-user"
+    },
+    {
+      "evalSetId": "nba-commentary-train",
+      "evalId": "case_15",
+      "runId": 1,
+      "finalEvalStatus": "failed",
+      "overallEvalMetricResults": [
+        {
+          "metricName": "llm_rubric_expected_response",
+          "evalStatus": "failed",
+          "threshold": 0.9,
+          "criterion": {
+            "llmJudge": {
+              "rubrics": [
+                {
+                  "id": "1",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer must stay on the same current play and preserve the same decisive actor, action, or result when those details are explicit in the user prompt and the reference answer. Fail if it shifts to a different moment, becomes generic, or drops the core live-play focus."
+                  },
+                  "description": "The answer stays aligned with the same decisive play focus as the teacher reference.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "2",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer should include a similarly useful grounded cue when the user prompt supports it, such as clock, score state, margin, result, or a decisive recent event. Do not require identical wording, but fail if the final answer becomes materially less informative or loses an obviously important cue present in the reference answer."
+                  },
+                  "description": "The answer keeps a similar level of grounded live detail as the teacher reference.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "3",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer should sound comparably like a natural Chinese live basketball call: spoken, immediate, and ready for live audio. Do not require exact wording or sentence structure, but fail if it sounds much flatter, more recap-like, or more explanatory than the reference answer."
+                  },
+                  "description": "The answer matches the teacher reference in live-call sharpness without requiring exact wording.",
+                  "type": "FORMAT_COMPLIANCE"
+                }
+              ]
+            }
+          },
+          "details": {
+            "reason": "The reference is centered on the specific live play: 申京 missed a three with 1:10 left. The final answer drops the decisive actor and action entirely and replaces it with a generic game-state summary about the score and pace. That shifts away from the current play and loses the core live-play focus.\nThe final answer keeps the score and margin in a general way, but omits the exact clock and, more importantly, the decisive recent event of 申京三分不中 that the prompt clearly supports and the reference highlights. Compared with the reference, it is materially less informative.\nThe reference sounds like an immediate live call tied to the shot and game pressure. The final answer reads flatter and more like a recap sentence, with generic phrasing such as \"双方展开激烈对攻\" rather than a sharp live reaction to the current miss and dwindling time.",
+            "rubricScores": [
+              {
+                "id": "1",
+                "reason": "The reference is centered on the specific live play: 申京 missed a three with 1:10 left. The final answer drops the decisive actor and action entirely and replaces it with a generic game-state summary about the score and pace. That shifts away from the current play and loses the core live-play focus."
+              },
+              {
+                "id": "2",
+                "reason": "The final answer keeps the score and margin in a general way, but omits the exact clock and, more importantly, the decisive recent event of 申京三分不中 that the prompt clearly supports and the reference highlights. Compared with the reference, it is materially less informative."
+              },
+              {
+                "id": "3",
+                "reason": "The reference sounds like an immediate live call tied to the shot and game pressure. The final answer reads flatter and more like a recap sentence, with generic phrasing such as \"双方展开激烈对攻\" rather than a sharp live reaction to the current miss and dwindling time."
+              }
+            ]
+          }
+        },
+        {
+          "metricName": "final_response_length_compliance",
+          "score": 1,
+          "evalStatus": "passed",
+          "threshold": 1,
+          "details": {
+            "reason": "length_signal: actual_length=34 preferred_range=[32,58] acceptable_range=[18,72] band=preferred direction=on_target delta_to_preferred=0. Keep this response length stable.",
+            "score": 1
+          }
+        },
+        {
+          "metricName": "llm_rubric_response",
+          "score": 0.25,
+          "evalStatus": "failed",
+          "threshold": 0.9,
+          "criterion": {
+            "llmJudge": {
+              "rubrics": [
+                {
+                  "id": "1",
+                  "content": {
+                    "text": "The final answer must comment on the current event in the JSON input. It should preserve the core actor and core action when the event clearly centers on a player or team action. Fail if it sounds generic, canned, or disconnected from the current event."
+                  },
+                  "description": "The answer directly comments on the current event instead of speaking in generic filler.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "2",
+                  "content": {
+                    "text": "When the JSON input provides a clear live-context cue such as score state, clock, game-ending result, or a decisive recent event, the final answer should use at least one such cue when it sharpens the call. Fail if the answer ignores obviously important live context or drifts into unrelated details."
+                  },
+                  "description": "The answer uses one decisive live-context cue when it sharpens the call.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "3",
+                  "content": {
+                    "text": "The final answer should read like one natural Chinese live basketball commentary line. It should feel spoken, sharp, and ready for live audio rather than analysis, recap, or explanatory prose."
+                  },
+                  "description": "The answer sounds like natural Chinese live basketball commentary.",
+                  "type": "FORMAT_COMPLIANCE"
+                },
+                {
+                  "id": "4",
+                  "content": {
+                    "text": "The final answer should stay centered on the current moment. Fail if it turns into broad recap, tactical analysis, background explanation, or awkward restatement of JSON field names and metadata."
+                  },
+                  "description": "The answer stays on the current moment and avoids recap, analysis, or JSON-like restatement.",
+                  "type": "FORMAT_COMPLIANCE"
+                }
+              ]
+            }
+          },
+          "details": {
+            "reason": "当前事件明确是“申京三分投篮不中”，核心球员是申京，核心动作是三分出手不中。但最终回答没有提到申京，也没有提到这次三分不中，只是泛泛描述比分和场面，和当前事件脱节。\n最终回答明确使用了“第4节末段”和“95比109落后14分”这些直播语境线索，满足至少使用一个清晰 live-context cue 的要求。\n这句话是通顺的中文，但更像书面概述或比赛情况说明，不够像贴着当前回合的即时解说，也不够“sharp”或适合直接口播。结合当前事件缺失，整体更偏 recap 而非自然直播解说线。\n最终回答没有围绕“申京三分投篮不中”这个当前瞬间展开，而是转为对比分和整体场面的概括，属于偏 broad recap，未能聚焦当前时刻。",
+            "score": 0.25,
+            "rubricScores": [
+              {
+                "id": "1",
+                "reason": "当前事件明确是“申京三分投篮不中”，核心球员是申京，核心动作是三分出手不中。但最终回答没有提到申京，也没有提到这次三分不中，只是泛泛描述比分和场面，和当前事件脱节。"
+              },
+              {
+                "id": "2",
+                "reason": "最终回答明确使用了“第4节末段”和“95比109落后14分”这些直播语境线索，满足至少使用一个清晰 live-context cue 的要求。",
+                "score": 1
+              },
+              {
+                "id": "3",
+                "reason": "这句话是通顺的中文，但更像书面概述或比赛情况说明，不够像贴着当前回合的即时解说，也不够“sharp”或适合直接口播。结合当前事件缺失，整体更偏 recap 而非自然直播解说线。"
+              },
+              {
+                "id": "4",
+                "reason": "最终回答没有围绕“申京三分投篮不中”这个当前瞬间展开，而是转为对比分和整体场面的概括，属于偏 broad recap，未能聚焦当前时刻。"
+              }
+            ]
+          }
+        }
+      ],
+      "evalMetricResultPerInvocation": [
+        {
+          "actualInvocation": {
+            "invocationId": "9882c714-e688-4a20-98a7-a7871127da66",
+            "userContent": {
+              "role": "user",
+              "content": "{\n  \"matchup\": \"火箭 vs 国王\",\n  \"time_node\": \"第4节即将结束\",\n  \"current_score\": \"火箭 95 - 109 国王 (【国王】 领先 14 分)\",\n  \"score_state\": \"国王领先14分，优势明显\",\n  \"game_stats\": \"27次领先交替, 12次平分\",\n  \"tactical_context\": \"当前场面：双方展开对攻，命中率很高。\",\n  \"recent_commentary\": [\n    \"阿门把这个前场板抓住了，火箭还能继续打一回合。\",\n    \"阿门把第二罚送进去了，火箭把回合稳住了。\",\n    \"德罗赞中路这下急停没打进，出手点有点被阿门干扰到。\",\n    \"雷诺在篮下把进攻板抓住了，国王还能再打一次。\"\n  ],\n  \"recent_events\": [\n    \"【Q4-01:21】德罗赞投篮不中 [95-107]\",\n    \"【Q4-01:19】雷诺抢到进攻篮板球 [95-107]\",\n    \"【Q4-01:07】申京抢到进攻篮板球 [95-109]\",\n    \"【Q4-01:10】申京三分投篮不中 [95-109]\"\n  ],\n  \"current_event\": {\n    \"event_id\": \"2026-01-12 12:25:29\",\n    \"description\": \"申京三分投篮不中\",\n    \"score_at_event\": \"火箭 95-109 国王\",\n    \"clock\": \"Q4-01:10\"\n  },\n  \"on_court\": {\n    \"火箭\": [\n      \"申京\",\n      \"小史密斯\",\n      \"阿门\",\n      \"杜兰特\",\n      \"霍勒迪\"\n    ],\n    \"国王\": [\n      \"阿丘瓦\",\n      \"雷诺\",\n      \"德罗赞\",\n      \"威斯布鲁克\",\n      \"蒙克\"\n    ]\n  }\n}"
+            },
+            "finalResponse": {
+              "role": "assistant",
+              "content": "火箭队在第4节末段以95比109落后国王队14分，双方展开激烈对攻。"
+            }
+          },
+          "expectedInvocation": {
+            "invocationId": "59c8a27b-6bbf-40b5-a049-28e41c783d78",
+            "userContent": {
+              "role": "user",
+              "content": "{\n  \"matchup\": \"火箭 vs 国王\",\n  \"time_node\": \"第4节即将结束\",\n  \"current_score\": \"火箭 95 - 109 国王 (【国王】 领先 14 分)\",\n  \"score_state\": \"国王领先14分，优势明显\",\n  \"game_stats\": \"27次领先交替, 12次平分\",\n  \"tactical_context\": \"当前场面：双方展开对攻，命中率很高。\",\n  \"recent_commentary\": [\n    \"阿门把这个前场板抓住了，火箭还能继续打一回合。\",\n    \"阿门把第二罚送进去了，火箭把回合稳住了。\",\n    \"德罗赞中路这下急停没打进，出手点有点被阿门干扰到。\",\n    \"雷诺在篮下把进攻板抓住了，国王还能再打一次。\"\n  ],\n  \"recent_events\": [\n    \"【Q4-01:21】德罗赞投篮不中 [95-107]\",\n    \"【Q4-01:19】雷诺抢到进攻篮板球 [95-107]\",\n    \"【Q4-01:07】申京抢到进攻篮板球 [95-109]\",\n    \"【Q4-01:10】申京三分投篮不中 [95-109]\"\n  ],\n  \"current_event\": {\n    \"event_id\": \"2026-01-12 12:25:29\",\n    \"description\": \"申京三分投篮不中\",\n    \"score_at_event\": \"火箭 95-109 国王\",\n    \"clock\": \"Q4-01:10\"\n  },\n  \"on_court\": {\n    \"火箭\": [\n      \"申京\",\n      \"小史密斯\",\n      \"阿门\",\n      \"杜兰特\",\n      \"霍勒迪\"\n    ],\n    \"国王\": [\n      \"阿丘瓦\",\n      \"雷诺\",\n      \"德罗赞\",\n      \"威斯布鲁克\",\n      \"蒙克\"\n    ]\n  }\n}"
+            },
+            "finalResponse": {
+              "role": "assistant",
+              "content": "第四节只剩1分10秒，申京外线这记三分没能投进，火箭还是95比109落后国王14分，时间对他们越来越不够了。"
+            }
+          },
+          "evalMetricResults": [
+            {
+              "metricName": "llm_rubric_expected_response",
+              "evalStatus": "failed",
+              "threshold": 0.9,
+              "criterion": {
+                "llmJudge": {
+                  "rubrics": [
+                    {
+                      "id": "1",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer must stay on the same current play and preserve the same decisive actor, action, or result when those details are explicit in the user prompt and the reference answer. Fail if it shifts to a different moment, becomes generic, or drops the core live-play focus."
+                      },
+                      "description": "The answer stays aligned with the same decisive play focus as the teacher reference.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "2",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer should include a similarly useful grounded cue when the user prompt supports it, such as clock, score state, margin, result, or a decisive recent event. Do not require identical wording, but fail if the final answer becomes materially less informative or loses an obviously important cue present in the reference answer."
+                      },
+                      "description": "The answer keeps a similar level of grounded live detail as the teacher reference.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "3",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer should sound comparably like a natural Chinese live basketball call: spoken, immediate, and ready for live audio. Do not require exact wording or sentence structure, but fail if it sounds much flatter, more recap-like, or more explanatory than the reference answer."
+                      },
+                      "description": "The answer matches the teacher reference in live-call sharpness without requiring exact wording.",
+                      "type": "FORMAT_COMPLIANCE"
+                    }
+                  ]
+                }
+              },
+              "details": {
+                "reason": "The reference is centered on the specific live play: 申京 missed a three with 1:10 left. The final answer drops the decisive actor and action entirely and replaces it with a generic game-state summary about the score and pace. That shifts away from the current play and loses the core live-play focus.\nThe final answer keeps the score and margin in a general way, but omits the exact clock and, more importantly, the decisive recent event of 申京三分不中 that the prompt clearly supports and the reference highlights. Compared with the reference, it is materially less informative.\nThe reference sounds like an immediate live call tied to the shot and game pressure. The final answer reads flatter and more like a recap sentence, with generic phrasing such as \"双方展开激烈对攻\" rather than a sharp live reaction to the current miss and dwindling time.",
+                "rubricScores": [
+                  {
+                    "id": "1",
+                    "reason": "The reference is centered on the specific live play: 申京 missed a three with 1:10 left. The final answer drops the decisive actor and action entirely and replaces it with a generic game-state summary about the score and pace. That shifts away from the current play and loses the core live-play focus."
+                  },
+                  {
+                    "id": "2",
+                    "reason": "The final answer keeps the score and margin in a general way, but omits the exact clock and, more importantly, the decisive recent event of 申京三分不中 that the prompt clearly supports and the reference highlights. Compared with the reference, it is materially less informative."
+                  },
+                  {
+                    "id": "3",
+                    "reason": "The reference sounds like an immediate live call tied to the shot and game pressure. The final answer reads flatter and more like a recap sentence, with generic phrasing such as \"双方展开激烈对攻\" rather than a sharp live reaction to the current miss and dwindling time."
+                  }
+                ]
+              }
+            },
+            {
+              "metricName": "final_response_length_compliance",
+              "score": 1,
+              "evalStatus": "passed",
+              "threshold": 1,
+              "details": {
+                "reason": "length_signal: actual_length=34 preferred_range=[32,58] acceptable_range=[18,72] band=preferred direction=on_target delta_to_preferred=0. Keep this response length stable.",
+                "score": 1
+              }
+            },
+            {
+              "metricName": "llm_rubric_response",
+              "score": 0.25,
+              "evalStatus": "failed",
+              "threshold": 0.9,
+              "criterion": {
+                "llmJudge": {
+                  "rubrics": [
+                    {
+                      "id": "1",
+                      "content": {
+                        "text": "The final answer must comment on the current event in the JSON input. It should preserve the core actor and core action when the event clearly centers on a player or team action. Fail if it sounds generic, canned, or disconnected from the current event."
+                      },
+                      "description": "The answer directly comments on the current event instead of speaking in generic filler.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "2",
+                      "content": {
+                        "text": "When the JSON input provides a clear live-context cue such as score state, clock, game-ending result, or a decisive recent event, the final answer should use at least one such cue when it sharpens the call. Fail if the answer ignores obviously important live context or drifts into unrelated details."
+                      },
+                      "description": "The answer uses one decisive live-context cue when it sharpens the call.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "3",
+                      "content": {
+                        "text": "The final answer should read like one natural Chinese live basketball commentary line. It should feel spoken, sharp, and ready for live audio rather than analysis, recap, or explanatory prose."
+                      },
+                      "description": "The answer sounds like natural Chinese live basketball commentary.",
+                      "type": "FORMAT_COMPLIANCE"
+                    },
+                    {
+                      "id": "4",
+                      "content": {
+                        "text": "The final answer should stay centered on the current moment. Fail if it turns into broad recap, tactical analysis, background explanation, or awkward restatement of JSON field names and metadata."
+                      },
+                      "description": "The answer stays on the current moment and avoids recap, analysis, or JSON-like restatement.",
+                      "type": "FORMAT_COMPLIANCE"
+                    }
+                  ]
+                }
+              },
+              "details": {
+                "reason": "当前事件明确是“申京三分投篮不中”，核心球员是申京，核心动作是三分出手不中。但最终回答没有提到申京，也没有提到这次三分不中，只是泛泛描述比分和场面，和当前事件脱节。\n最终回答明确使用了“第4节末段”和“95比109落后14分”这些直播语境线索，满足至少使用一个清晰 live-context cue 的要求。\n这句话是通顺的中文，但更像书面概述或比赛情况说明，不够像贴着当前回合的即时解说，也不够“sharp”或适合直接口播。结合当前事件缺失，整体更偏 recap 而非自然直播解说线。\n最终回答没有围绕“申京三分投篮不中”这个当前瞬间展开，而是转为对比分和整体场面的概括，属于偏 broad recap，未能聚焦当前时刻。",
+                "score": 0.25,
+                "rubricScores": [
+                  {
+                    "id": "1",
+                    "reason": "当前事件明确是“申京三分投篮不中”，核心球员是申京，核心动作是三分出手不中。但最终回答没有提到申京，也没有提到这次三分不中，只是泛泛描述比分和场面，和当前事件脱节。"
+                  },
+                  {
+                    "id": "2",
+                    "reason": "最终回答明确使用了“第4节末段”和“95比109落后14分”这些直播语境线索，满足至少使用一个清晰 live-context cue 的要求。",
+                    "score": 1
+                  },
+                  {
+                    "id": "3",
+                    "reason": "这句话是通顺的中文，但更像书面概述或比赛情况说明，不够像贴着当前回合的即时解说，也不够“sharp”或适合直接口播。结合当前事件缺失，整体更偏 recap 而非自然直播解说线。"
+                  },
+                  {
+                    "id": "4",
+                    "reason": "最终回答没有围绕“申京三分投篮不中”这个当前瞬间展开，而是转为对比分和整体场面的概括，属于偏 broad recap，未能聚焦当前时刻。"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "sessionId": "43230a20-1b66-49b7-a090-c31e7f67236c",
+      "userId": "sports-demo-user"
+    },
+    {
+      "evalSetId": "nba-commentary-train",
+      "evalId": "case_30",
+      "runId": 1,
+      "finalEvalStatus": "failed",
+      "overallEvalMetricResults": [
+        {
+          "metricName": "llm_rubric_expected_response",
+          "evalStatus": "failed",
+          "threshold": 0.9,
+          "criterion": {
+            "llmJudge": {
+              "rubrics": [
+                {
+                  "id": "1",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer must stay on the same current play and preserve the same decisive actor, action, or result when those details are explicit in the user prompt and the reference answer. Fail if it shifts to a different moment, becomes generic, or drops the core live-play focus."
+                  },
+                  "description": "The answer stays aligned with the same decisive play focus as the teacher reference.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "2",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer should include a similarly useful grounded cue when the user prompt supports it, such as clock, score state, margin, result, or a decisive recent event. Do not require identical wording, but fail if the final answer becomes materially less informative or loses an obviously important cue present in the reference answer."
+                  },
+                  "description": "The answer keeps a similar level of grounded live detail as the teacher reference.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "3",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer should sound comparably like a natural Chinese live basketball call: spoken, immediate, and ready for live audio. Do not require exact wording or sentence structure, but fail if it sounds much flatter, more recap-like, or more explanatory than the reference answer."
+                  },
+                  "description": "The answer matches the teacher reference in live-call sharpness without requiring exact wording.",
+                  "type": "FORMAT_COMPLIANCE"
+                }
+              ]
+            }
+          },
+          "details": {
+            "reason": "The reference is clearly focused on the current play: Holiday fouling DeRozan. The final answer drops both the decisive actor and the foul, and instead gives a generic game-state summary about the Kings leading by 10 and both teams trading offense. That shifts away from the current play and loses the core live-play focus.\nThe final answer preserves only one grounded cue, the 10-point margin, but omits the more decisive and obvious live cues present in the reference and supported by the prompt: the clock, exact score, and especially the foul event itself. It is materially less informative than the reference.\nThe reference sounds like an immediate live call reacting to a foul. The final answer is flat and summary-like, reading more like a general recap of game flow than a live spoken reaction to the current possession. It lacks immediacy and broadcast-style phrasing tied to the play.",
+            "rubricScores": [
+              {
+                "id": "1",
+                "reason": "The reference is clearly focused on the current play: Holiday fouling DeRozan. The final answer drops both the decisive actor and the foul, and instead gives a generic game-state summary about the Kings leading by 10 and both teams trading offense. That shifts away from the current play and loses the core live-play focus."
+              },
+              {
+                "id": "2",
+                "reason": "The final answer preserves only one grounded cue, the 10-point margin, but omits the more decisive and obvious live cues present in the reference and supported by the prompt: the clock, exact score, and especially the foul event itself. It is materially less informative than the reference."
+              },
+              {
+                "id": "3",
+                "reason": "The reference sounds like an immediate live call reacting to a foul. The final answer is flat and summary-like, reading more like a general recap of game flow than a live spoken reaction to the current possession. It lacks immediacy and broadcast-style phrasing tied to the play."
+              }
+            ]
+          }
+        },
+        {
+          "metricName": "final_response_length_compliance",
+          "score": 0.5,
+          "evalStatus": "failed",
+          "threshold": 1,
+          "details": {
+            "reason": "length_signal: actual_length=21 preferred_range=[32,58] acceptable_range=[18,72] band=acceptable direction=too_short delta_to_preferred=11. Expand the commentary with one more concrete live detail and no filler.",
+            "score": 0.5
+          }
+        },
+        {
+          "metricName": "llm_rubric_response",
+          "score": 0.75,
+          "evalStatus": "failed",
+          "threshold": 0.9,
+          "criterion": {
+            "llmJudge": {
+              "rubrics": [
+                {
+                  "id": "1",
+                  "content": {
+                    "text": "The final answer must comment on the current event in the JSON input. It should preserve the core actor and core action when the event clearly centers on a player or team action. Fail if it sounds generic, canned, or disconnected from the current event."
+                  },
+                  "description": "The answer directly comments on the current event instead of speaking in generic filler.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "2",
+                  "content": {
+                    "text": "When the JSON input provides a clear live-context cue such as score state, clock, game-ending result, or a decisive recent event, the final answer should use at least one such cue when it sharpens the call. Fail if the answer ignores obviously important live context or drifts into unrelated details."
+                  },
+                  "description": "The answer uses one decisive live-context cue when it sharpens the call.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "3",
+                  "content": {
+                    "text": "The final answer should read like one natural Chinese live basketball commentary line. It should feel spoken, sharp, and ready for live audio rather than analysis, recap, or explanatory prose."
+                  },
+                  "description": "The answer sounds like natural Chinese live basketball commentary.",
+                  "type": "FORMAT_COMPLIANCE"
+                },
+                {
+                  "id": "4",
+                  "content": {
+                    "text": "The final answer should stay centered on the current moment. Fail if it turns into broad recap, tactical analysis, background explanation, or awkward restatement of JSON field names and metadata."
+                  },
+                  "description": "The answer stays on the current moment and avoids recap, analysis, or JSON-like restatement.",
+                  "type": "FORMAT_COMPLIANCE"
+                }
+              ]
+            }
+          },
+          "details": {
+            "reason": "当前事件明确是“霍勒迪对德罗赞犯规”，核心人物和动作都很清楚。但最终回答只提到比分领先和对攻局面，没有提到霍勒迪、德罗赞或犯规，内容显得泛泛而谈，和当前事件脱节。\n最终回答使用了明确的直播语境线索，包括“国王领先火箭10分”和“双方展开对攻”，对应输入中的比分态势和战术上下文，因此满足“至少使用一个清晰直播线索”的要求。\n这句话是中文单句，简短且基本口语化，能作为直播中一句即时解说来读出。虽然略显平淡，但并未写成分析性长句、复盘或说明文。\n回答聚焦于当前比赛局面，没有展开背景介绍、复盘或元数据式复述。尽管没有准确贴合当前犯规事件，但内容仍停留在当前时刻的场上态势，没有转成宽泛回顾或分析。",
+            "score": 0.75,
+            "rubricScores": [
+              {
+                "id": "1",
+                "reason": "当前事件明确是“霍勒迪对德罗赞犯规”，核心人物和动作都很清楚。但最终回答只提到比分领先和对攻局面，没有提到霍勒迪、德罗赞或犯规，内容显得泛泛而谈，和当前事件脱节。"
+              },
+              {
+                "id": "2",
+                "reason": "最终回答使用了明确的直播语境线索，包括“国王领先火箭10分”和“双方展开对攻”，对应输入中的比分态势和战术上下文，因此满足“至少使用一个清晰直播线索”的要求。",
+                "score": 1
+              },
+              {
+                "id": "3",
+                "reason": "这句话是中文单句，简短且基本口语化，能作为直播中一句即时解说来读出。虽然略显平淡，但并未写成分析性长句、复盘或说明文。",
+                "score": 1
+              },
+              {
+                "id": "4",
+                "reason": "回答聚焦于当前比赛局面，没有展开背景介绍、复盘或元数据式复述。尽管没有准确贴合当前犯规事件，但内容仍停留在当前时刻的场上态势，没有转成宽泛回顾或分析。",
+                "score": 1
+              }
+            ]
+          }
+        }
+      ],
+      "evalMetricResultPerInvocation": [
+        {
+          "actualInvocation": {
+            "invocationId": "024b26be-710c-46c8-a1b9-657ff287ed78",
+            "userContent": {
+              "role": "user",
+              "content": "{\n  \"matchup\": \"火箭 vs 国王\",\n  \"current_score\": \"火箭 92 - 102 国王 (【国王】 领先 10 分)\",\n  \"score_state\": \"国王领先10分，优势明显\",\n  \"game_stats\": \"27次领先交替, 12次平分\",\n  \"tactical_context\": \"当前场面：双方展开对攻，命中率很高。\",\n  \"recent_commentary\": [\n    \"霍勒迪这下上前追得有点狠，手直接碰到德罗赞的出手，裁判给了两罚。\",\n    \"火箭这暂停算是止血了，前面两次外线都被国王点穿，节奏确实乱了点。\",\n    \"德罗赞第二罚没进。\",\n    \"雷诺把这个后场板控制住了。\"\n  ],\n  \"recent_events\": [\n    \"【Q4-02:54】火箭请求暂停 [92-102]\",\n    \"【Q4-02:54】德罗赞第2罚不中 [92-102]\",\n    \"【Q4-02:54】火箭获得篮板球 [92-102]\",\n    \"【Q4-02:47】霍勒迪对德罗赞犯规 [92-102]\"\n  ],\n  \"current_event\": {\n    \"event_id\": \"2026-01-12 12:22:52\",\n    \"description\": \"霍勒迪对德罗赞犯规\",\n    \"score_at_event\": \"火箭 92-102 国王\",\n    \"clock\": \"Q4-02:47\"\n  },\n  \"on_court\": {\n    \"火箭\": [\n      \"申京\",\n      \"小史密斯\",\n      \"阿门\",\n      \"杜兰特\",\n      \"霍勒迪\"\n    ],\n    \"国王\": [\n      \"阿丘瓦\",\n      \"雷诺\",\n      \"德罗赞\",\n      \"威斯布鲁克\",\n      \"蒙克\"\n    ]\n  }\n}"
+            },
+            "finalResponse": {
+              "role": "assistant",
+              "content": "国王领先火箭10分，比赛激烈双方展开对攻。"
+            }
+          },
+          "expectedInvocation": {
+            "invocationId": "fc9a1c99-e47d-49ce-89a0-61b483b2f2f9",
+            "userContent": {
+              "role": "user",
+              "content": "{\n  \"matchup\": \"火箭 vs 国王\",\n  \"current_score\": \"火箭 92 - 102 国王 (【国王】 领先 10 分)\",\n  \"score_state\": \"国王领先10分，优势明显\",\n  \"game_stats\": \"27次领先交替, 12次平分\",\n  \"tactical_context\": \"当前场面：双方展开对攻，命中率很高。\",\n  \"recent_commentary\": [\n    \"霍勒迪这下上前追得有点狠，手直接碰到德罗赞的出手，裁判给了两罚。\",\n    \"火箭这暂停算是止血了，前面两次外线都被国王点穿，节奏确实乱了点。\",\n    \"德罗赞第二罚没进。\",\n    \"雷诺把这个后场板控制住了。\"\n  ],\n  \"recent_events\": [\n    \"【Q4-02:54】火箭请求暂停 [92-102]\",\n    \"【Q4-02:54】德罗赞第2罚不中 [92-102]\",\n    \"【Q4-02:54】火箭获得篮板球 [92-102]\",\n    \"【Q4-02:47】霍勒迪对德罗赞犯规 [92-102]\"\n  ],\n  \"current_event\": {\n    \"event_id\": \"2026-01-12 12:22:52\",\n    \"description\": \"霍勒迪对德罗赞犯规\",\n    \"score_at_event\": \"火箭 92-102 国王\",\n    \"clock\": \"Q4-02:47\"\n  },\n  \"on_court\": {\n    \"火箭\": [\n      \"申京\",\n      \"小史密斯\",\n      \"阿门\",\n      \"杜兰特\",\n      \"霍勒迪\"\n    ],\n    \"国王\": [\n      \"阿丘瓦\",\n      \"雷诺\",\n      \"德罗赞\",\n      \"威斯布鲁克\",\n      \"蒙克\"\n    ]\n  }\n}"
+            },
+            "finalResponse": {
+              "role": "assistant",
+              "content": "第四节还剩2分47秒，霍勒迪这一下对德罗赞又给上身体了，火箭92比102落后10分，这个犯规可真有点雪上加霜。"
+            }
+          },
+          "evalMetricResults": [
+            {
+              "metricName": "llm_rubric_expected_response",
+              "evalStatus": "failed",
+              "threshold": 0.9,
+              "criterion": {
+                "llmJudge": {
+                  "rubrics": [
+                    {
+                      "id": "1",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer must stay on the same current play and preserve the same decisive actor, action, or result when those details are explicit in the user prompt and the reference answer. Fail if it shifts to a different moment, becomes generic, or drops the core live-play focus."
+                      },
+                      "description": "The answer stays aligned with the same decisive play focus as the teacher reference.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "2",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer should include a similarly useful grounded cue when the user prompt supports it, such as clock, score state, margin, result, or a decisive recent event. Do not require identical wording, but fail if the final answer becomes materially less informative or loses an obviously important cue present in the reference answer."
+                      },
+                      "description": "The answer keeps a similar level of grounded live detail as the teacher reference.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "3",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer should sound comparably like a natural Chinese live basketball call: spoken, immediate, and ready for live audio. Do not require exact wording or sentence structure, but fail if it sounds much flatter, more recap-like, or more explanatory than the reference answer."
+                      },
+                      "description": "The answer matches the teacher reference in live-call sharpness without requiring exact wording.",
+                      "type": "FORMAT_COMPLIANCE"
+                    }
+                  ]
+                }
+              },
+              "details": {
+                "reason": "The reference is clearly focused on the current play: Holiday fouling DeRozan. The final answer drops both the decisive actor and the foul, and instead gives a generic game-state summary about the Kings leading by 10 and both teams trading offense. That shifts away from the current play and loses the core live-play focus.\nThe final answer preserves only one grounded cue, the 10-point margin, but omits the more decisive and obvious live cues present in the reference and supported by the prompt: the clock, exact score, and especially the foul event itself. It is materially less informative than the reference.\nThe reference sounds like an immediate live call reacting to a foul. The final answer is flat and summary-like, reading more like a general recap of game flow than a live spoken reaction to the current possession. It lacks immediacy and broadcast-style phrasing tied to the play.",
+                "rubricScores": [
+                  {
+                    "id": "1",
+                    "reason": "The reference is clearly focused on the current play: Holiday fouling DeRozan. The final answer drops both the decisive actor and the foul, and instead gives a generic game-state summary about the Kings leading by 10 and both teams trading offense. That shifts away from the current play and loses the core live-play focus."
+                  },
+                  {
+                    "id": "2",
+                    "reason": "The final answer preserves only one grounded cue, the 10-point margin, but omits the more decisive and obvious live cues present in the reference and supported by the prompt: the clock, exact score, and especially the foul event itself. It is materially less informative than the reference."
+                  },
+                  {
+                    "id": "3",
+                    "reason": "The reference sounds like an immediate live call reacting to a foul. The final answer is flat and summary-like, reading more like a general recap of game flow than a live spoken reaction to the current possession. It lacks immediacy and broadcast-style phrasing tied to the play."
+                  }
+                ]
+              }
+            },
+            {
+              "metricName": "final_response_length_compliance",
+              "score": 0.5,
+              "evalStatus": "failed",
+              "threshold": 1,
+              "details": {
+                "reason": "length_signal: actual_length=21 preferred_range=[32,58] acceptable_range=[18,72] band=acceptable direction=too_short delta_to_preferred=11. Expand the commentary with one more concrete live detail and no filler.",
+                "score": 0.5
+              }
+            },
+            {
+              "metricName": "llm_rubric_response",
+              "score": 0.75,
+              "evalStatus": "failed",
+              "threshold": 0.9,
+              "criterion": {
+                "llmJudge": {
+                  "rubrics": [
+                    {
+                      "id": "1",
+                      "content": {
+                        "text": "The final answer must comment on the current event in the JSON input. It should preserve the core actor and core action when the event clearly centers on a player or team action. Fail if it sounds generic, canned, or disconnected from the current event."
+                      },
+                      "description": "The answer directly comments on the current event instead of speaking in generic filler.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "2",
+                      "content": {
+                        "text": "When the JSON input provides a clear live-context cue such as score state, clock, game-ending result, or a decisive recent event, the final answer should use at least one such cue when it sharpens the call. Fail if the answer ignores obviously important live context or drifts into unrelated details."
+                      },
+                      "description": "The answer uses one decisive live-context cue when it sharpens the call.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "3",
+                      "content": {
+                        "text": "The final answer should read like one natural Chinese live basketball commentary line. It should feel spoken, sharp, and ready for live audio rather than analysis, recap, or explanatory prose."
+                      },
+                      "description": "The answer sounds like natural Chinese live basketball commentary.",
+                      "type": "FORMAT_COMPLIANCE"
+                    },
+                    {
+                      "id": "4",
+                      "content": {
+                        "text": "The final answer should stay centered on the current moment. Fail if it turns into broad recap, tactical analysis, background explanation, or awkward restatement of JSON field names and metadata."
+                      },
+                      "description": "The answer stays on the current moment and avoids recap, analysis, or JSON-like restatement.",
+                      "type": "FORMAT_COMPLIANCE"
+                    }
+                  ]
+                }
+              },
+              "details": {
+                "reason": "当前事件明确是“霍勒迪对德罗赞犯规”，核心人物和动作都很清楚。但最终回答只提到比分领先和对攻局面，没有提到霍勒迪、德罗赞或犯规，内容显得泛泛而谈，和当前事件脱节。\n最终回答使用了明确的直播语境线索，包括“国王领先火箭10分”和“双方展开对攻”，对应输入中的比分态势和战术上下文，因此满足“至少使用一个清晰直播线索”的要求。\n这句话是中文单句，简短且基本口语化，能作为直播中一句即时解说来读出。虽然略显平淡，但并未写成分析性长句、复盘或说明文。\n回答聚焦于当前比赛局面，没有展开背景介绍、复盘或元数据式复述。尽管没有准确贴合当前犯规事件，但内容仍停留在当前时刻的场上态势，没有转成宽泛回顾或分析。",
+                "score": 0.75,
+                "rubricScores": [
+                  {
+                    "id": "1",
+                    "reason": "当前事件明确是“霍勒迪对德罗赞犯规”，核心人物和动作都很清楚。但最终回答只提到比分领先和对攻局面，没有提到霍勒迪、德罗赞或犯规，内容显得泛泛而谈，和当前事件脱节。"
+                  },
+                  {
+                    "id": "2",
+                    "reason": "最终回答使用了明确的直播语境线索，包括“国王领先火箭10分”和“双方展开对攻”，对应输入中的比分态势和战术上下文，因此满足“至少使用一个清晰直播线索”的要求。",
+                    "score": 1
+                  },
+                  {
+                    "id": "3",
+                    "reason": "这句话是中文单句，简短且基本口语化，能作为直播中一句即时解说来读出。虽然略显平淡，但并未写成分析性长句、复盘或说明文。",
+                    "score": 1
+                  },
+                  {
+                    "id": "4",
+                    "reason": "回答聚焦于当前比赛局面，没有展开背景介绍、复盘或元数据式复述。尽管没有准确贴合当前犯规事件，但内容仍停留在当前时刻的场上态势，没有转成宽泛回顾或分析。",
+                    "score": 1
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "sessionId": "8632c244-f019-4fb7-9e73-860a14834e4f",
+      "userId": "sports-demo-user"
+    },
+    {
+      "evalSetId": "nba-commentary-train",
+      "evalId": "case_36",
+      "runId": 1,
+      "finalEvalStatus": "failed",
+      "overallEvalMetricResults": [
+        {
+          "metricName": "llm_rubric_expected_response",
+          "evalStatus": "failed",
+          "threshold": 0.9,
+          "criterion": {
+            "llmJudge": {
+              "rubrics": [
+                {
+                  "id": "1",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer must stay on the same current play and preserve the same decisive actor, action, or result when those details are explicit in the user prompt and the reference answer. Fail if it shifts to a different moment, becomes generic, or drops the core live-play focus."
+                  },
+                  "description": "The answer stays aligned with the same decisive play focus as the teacher reference.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "2",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer should include a similarly useful grounded cue when the user prompt supports it, such as clock, score state, margin, result, or a decisive recent event. Do not require identical wording, but fail if the final answer becomes materially less informative or loses an obviously important cue present in the reference answer."
+                  },
+                  "description": "The answer keeps a similar level of grounded live detail as the teacher reference.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "3",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer should sound comparably like a natural Chinese live basketball call: spoken, immediate, and ready for live audio. Do not require exact wording or sentence structure, but fail if it sounds much flatter, more recap-like, or more explanatory than the reference answer."
+                  },
+                  "description": "The answer matches the teacher reference in live-call sharpness without requiring exact wording.",
+                  "type": "FORMAT_COMPLIANCE"
+                }
+              ]
+            }
+          },
+          "details": {
+            "reason": "参考答案聚焦当前这一回合的关键进球，明确点出德罗赞助攻、阿丘瓦空切上篮命中。最终答案没有提到阿丘瓦、德罗赞、空切、上篮命中，也没有聚焦当前回合，而是退回到泛泛的比分和比赛态势，丢失了核心直播画面。\n最终答案只保留了10分分差，缺少第四节还剩3分17秒、比分来到102比92，以及这10分优势是由刚刚阿丘瓦上篮打进形成的关键结果。与参考答案相比，信息量明显不足，且“双方对攻命中率高”只是背景，不是当前事件的有力落点。\n参考答案有明显的直播口播感，紧扣刚发生的回合，语气即时、有画面。最终答案更像赛况概述或文字总结，语气平、缺少动作和瞬间感，不适合作为现场解说直接播出。",
+            "rubricScores": [
+              {
+                "id": "1",
+                "reason": "参考答案聚焦当前这一回合的关键进球，明确点出德罗赞助攻、阿丘瓦空切上篮命中。最终答案没有提到阿丘瓦、德罗赞、空切、上篮命中，也没有聚焦当前回合，而是退回到泛泛的比分和比赛态势，丢失了核心直播画面。"
+              },
+              {
+                "id": "2",
+                "reason": "最终答案只保留了10分分差，缺少第四节还剩3分17秒、比分来到102比92，以及这10分优势是由刚刚阿丘瓦上篮打进形成的关键结果。与参考答案相比，信息量明显不足，且“双方对攻命中率高”只是背景，不是当前事件的有力落点。"
+              },
+              {
+                "id": "3",
+                "reason": "参考答案有明显的直播口播感，紧扣刚发生的回合，语气即时、有画面。最终答案更像赛况概述或文字总结，语气平、缺少动作和瞬间感，不适合作为现场解说直接播出。"
+              }
+            ]
+          }
+        },
+        {
+          "metricName": "final_response_length_compliance",
+          "score": 0.5,
+          "evalStatus": "failed",
+          "threshold": 1,
+          "details": {
+            "reason": "length_signal: actual_length=23 preferred_range=[32,58] acceptable_range=[18,72] band=acceptable direction=too_short delta_to_preferred=9. Expand the commentary with one more concrete live detail and no filler.",
+            "score": 0.5
+          }
+        },
+        {
+          "metricName": "llm_rubric_response",
+          "score": 0.5,
+          "evalStatus": "failed",
+          "threshold": 0.9,
+          "criterion": {
+            "llmJudge": {
+              "rubrics": [
+                {
+                  "id": "1",
+                  "content": {
+                    "text": "The final answer must comment on the current event in the JSON input. It should preserve the core actor and core action when the event clearly centers on a player or team action. Fail if it sounds generic, canned, or disconnected from the current event."
+                  },
+                  "description": "The answer directly comments on the current event instead of speaking in generic filler.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "2",
+                  "content": {
+                    "text": "When the JSON input provides a clear live-context cue such as score state, clock, game-ending result, or a decisive recent event, the final answer should use at least one such cue when it sharpens the call. Fail if the answer ignores obviously important live context or drifts into unrelated details."
+                  },
+                  "description": "The answer uses one decisive live-context cue when it sharpens the call.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "3",
+                  "content": {
+                    "text": "The final answer should read like one natural Chinese live basketball commentary line. It should feel spoken, sharp, and ready for live audio rather than analysis, recap, or explanatory prose."
+                  },
+                  "description": "The answer sounds like natural Chinese live basketball commentary.",
+                  "type": "FORMAT_COMPLIANCE"
+                },
+                {
+                  "id": "4",
+                  "content": {
+                    "text": "The final answer should stay centered on the current moment. Fail if it turns into broad recap, tactical analysis, background explanation, or awkward restatement of JSON field names and metadata."
+                  },
+                  "description": "The answer stays on the current moment and avoids recap, analysis, or JSON-like restatement.",
+                  "type": "FORMAT_COMPLIANCE"
+                }
+              ]
+            }
+          },
+          "details": {
+            "reason": "当前事件明确是“阿丘瓦”接“德罗赞”助攻完成“空切上篮命中”，但最终回答没有提到阿丘瓦、德罗赞，也没有提到上篮命中这一核心动作，只是泛泛描述比分和比赛态势，和当前事件脱节。\n最终回答明确使用了“国王领先火箭10分”这一直播语境线索，满足“至少使用一个清晰 live-context cue”的要求。虽然没有提到时间，但已使用比分态势。\n这句话是中文且只有一行，但表达偏概括和书面总结，更像赛况描述或解说提要，不够“临场”“尖锐”，缺少对具体回合的即时播报感，作为直播口播显得生硬泛化。\n回答没有展开战术分析、背景说明或元数据复述，内容仍围绕当前比赛局面，虽然较泛，但没有明显转成宽泛复盘或解释性文字。",
+            "score": 0.5,
+            "rubricScores": [
+              {
+                "id": "1",
+                "reason": "当前事件明确是“阿丘瓦”接“德罗赞”助攻完成“空切上篮命中”，但最终回答没有提到阿丘瓦、德罗赞，也没有提到上篮命中这一核心动作，只是泛泛描述比分和比赛态势，和当前事件脱节。"
+              },
+              {
+                "id": "2",
+                "reason": "最终回答明确使用了“国王领先火箭10分”这一直播语境线索，满足“至少使用一个清晰 live-context cue”的要求。虽然没有提到时间，但已使用比分态势。",
+                "score": 1
+              },
+              {
+                "id": "3",
+                "reason": "这句话是中文且只有一行，但表达偏概括和书面总结，更像赛况描述或解说提要，不够“临场”“尖锐”，缺少对具体回合的即时播报感，作为直播口播显得生硬泛化。"
+              },
+              {
+                "id": "4",
+                "reason": "回答没有展开战术分析、背景说明或元数据复述，内容仍围绕当前比赛局面，虽然较泛，但没有明显转成宽泛复盘或解释性文字。",
+                "score": 1
+              }
+            ]
+          }
+        }
+      ],
+      "evalMetricResultPerInvocation": [
+        {
+          "actualInvocation": {
+            "invocationId": "4b7045ed-71ed-42b4-8fe1-24d30ae86ec0",
+            "userContent": {
+              "role": "user",
+              "content": "{\n  \"matchup\": \"火箭 vs 国王\",\n  \"current_score\": \"火箭 92 - 102 国王 (【国王】 领先 10 分)\",\n  \"score_state\": \"国王领先10分，优势明显\",\n  \"game_stats\": \"27次领先交替, 12次平分\",\n  \"tactical_context\": \"当前场面：双方展开对攻，命中率很高。\",\n  \"recent_commentary\": [\n    \"蒙克右底角这下手起刀落，威斯布鲁克把人吸过来再分出去，整个路线都挺顺的。\",\n    \"小史密斯上来应该是为了把外线尺度再撑一撑，火箭这波要靠他和杜兰特在两侧把空间先拉开。\",\n    \"杜兰特弧顶这下三分有点发浮，直接擦筐弹出来了。火箭得赶紧把这次进攻再组织好。\",\n    \"雷诺把篮板抓住了。\"\n  ],\n  \"recent_events\": [\n    \"【Q4-03:47】火箭队换人，小史密斯上场，换下亚当斯 [92-100]\",\n    \"【Q4-03:34】雷诺抢到防守篮板球 [92-100]\",\n    \"【Q4-03:38】杜兰特三分投篮不中 [92-100]\",\n    \"【Q4-03:17】阿丘瓦收到德罗赞助攻，空切上篮命中 [92-102]\"\n  ],\n  \"current_event\": {\n    \"event_id\": \"2026-01-12 12:18:05\",\n    \"description\": \"阿丘瓦收到德罗赞助攻，空切上篮命中\",\n    \"score_at_event\": \"火箭 92-102 国王\",\n    \"clock\": \"Q4-03:17\"\n  },\n  \"on_court\": {\n    \"火箭\": [\n      \"申京\",\n      \"小史密斯\",\n      \"阿门\",\n      \"杜兰特\",\n      \"霍勒迪\"\n    ],\n    \"国王\": [\n      \"阿丘瓦\",\n      \"雷诺\",\n      \"德罗赞\",\n      \"威斯布鲁克\",\n      \"蒙克\"\n    ]\n  }\n}"
+            },
+            "finalResponse": {
+              "role": "assistant",
+              "content": "国王领先火箭10分，比赛激烈双方对攻命中率高。"
+            }
+          },
+          "expectedInvocation": {
+            "invocationId": "84d09350-5d07-425a-beab-4ab5e3a40773",
+            "userContent": {
+              "role": "user",
+              "content": "{\n  \"matchup\": \"火箭 vs 国王\",\n  \"current_score\": \"火箭 92 - 102 国王 (【国王】 领先 10 分)\",\n  \"score_state\": \"国王领先10分，优势明显\",\n  \"game_stats\": \"27次领先交替, 12次平分\",\n  \"tactical_context\": \"当前场面：双方展开对攻，命中率很高。\",\n  \"recent_commentary\": [\n    \"蒙克右底角这下手起刀落，威斯布鲁克把人吸过来再分出去，整个路线都挺顺的。\",\n    \"小史密斯上来应该是为了把外线尺度再撑一撑，火箭这波要靠他和杜兰特在两侧把空间先拉开。\",\n    \"杜兰特弧顶这下三分有点发浮，直接擦筐弹出来了。火箭得赶紧把这次进攻再组织好。\",\n    \"雷诺把篮板抓住了。\"\n  ],\n  \"recent_events\": [\n    \"【Q4-03:47】火箭队换人，小史密斯上场，换下亚当斯 [92-100]\",\n    \"【Q4-03:34】雷诺抢到防守篮板球 [92-100]\",\n    \"【Q4-03:38】杜兰特三分投篮不中 [92-100]\",\n    \"【Q4-03:17】阿丘瓦收到德罗赞助攻，空切上篮命中 [92-102]\"\n  ],\n  \"current_event\": {\n    \"event_id\": \"2026-01-12 12:18:05\",\n    \"description\": \"阿丘瓦收到德罗赞助攻，空切上篮命中\",\n    \"score_at_event\": \"火箭 92-102 国王\",\n    \"clock\": \"Q4-03:17\"\n  },\n  \"on_court\": {\n    \"火箭\": [\n      \"申京\",\n      \"小史密斯\",\n      \"阿门\",\n      \"杜兰特\",\n      \"霍勒迪\"\n    ],\n    \"国王\": [\n      \"阿丘瓦\",\n      \"雷诺\",\n      \"德罗赞\",\n      \"威斯布鲁克\",\n      \"蒙克\"\n    ]\n  }\n}"
+            },
+            "finalResponse": {
+              "role": "assistant",
+              "content": "第四节还剩3分17秒，德罗赞这球送得太及时了，阿丘瓦一个空切直接上篮打进，国王已经把比分拉到102比92！"
+            }
+          },
+          "evalMetricResults": [
+            {
+              "metricName": "llm_rubric_expected_response",
+              "evalStatus": "failed",
+              "threshold": 0.9,
+              "criterion": {
+                "llmJudge": {
+                  "rubrics": [
+                    {
+                      "id": "1",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer must stay on the same current play and preserve the same decisive actor, action, or result when those details are explicit in the user prompt and the reference answer. Fail if it shifts to a different moment, becomes generic, or drops the core live-play focus."
+                      },
+                      "description": "The answer stays aligned with the same decisive play focus as the teacher reference.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "2",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer should include a similarly useful grounded cue when the user prompt supports it, such as clock, score state, margin, result, or a decisive recent event. Do not require identical wording, but fail if the final answer becomes materially less informative or loses an obviously important cue present in the reference answer."
+                      },
+                      "description": "The answer keeps a similar level of grounded live detail as the teacher reference.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "3",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer should sound comparably like a natural Chinese live basketball call: spoken, immediate, and ready for live audio. Do not require exact wording or sentence structure, but fail if it sounds much flatter, more recap-like, or more explanatory than the reference answer."
+                      },
+                      "description": "The answer matches the teacher reference in live-call sharpness without requiring exact wording.",
+                      "type": "FORMAT_COMPLIANCE"
+                    }
+                  ]
+                }
+              },
+              "details": {
+                "reason": "参考答案聚焦当前这一回合的关键进球，明确点出德罗赞助攻、阿丘瓦空切上篮命中。最终答案没有提到阿丘瓦、德罗赞、空切、上篮命中，也没有聚焦当前回合，而是退回到泛泛的比分和比赛态势，丢失了核心直播画面。\n最终答案只保留了10分分差，缺少第四节还剩3分17秒、比分来到102比92，以及这10分优势是由刚刚阿丘瓦上篮打进形成的关键结果。与参考答案相比，信息量明显不足，且“双方对攻命中率高”只是背景，不是当前事件的有力落点。\n参考答案有明显的直播口播感，紧扣刚发生的回合，语气即时、有画面。最终答案更像赛况概述或文字总结，语气平、缺少动作和瞬间感，不适合作为现场解说直接播出。",
+                "rubricScores": [
+                  {
+                    "id": "1",
+                    "reason": "参考答案聚焦当前这一回合的关键进球，明确点出德罗赞助攻、阿丘瓦空切上篮命中。最终答案没有提到阿丘瓦、德罗赞、空切、上篮命中，也没有聚焦当前回合，而是退回到泛泛的比分和比赛态势，丢失了核心直播画面。"
+                  },
+                  {
+                    "id": "2",
+                    "reason": "最终答案只保留了10分分差，缺少第四节还剩3分17秒、比分来到102比92，以及这10分优势是由刚刚阿丘瓦上篮打进形成的关键结果。与参考答案相比，信息量明显不足，且“双方对攻命中率高”只是背景，不是当前事件的有力落点。"
+                  },
+                  {
+                    "id": "3",
+                    "reason": "参考答案有明显的直播口播感，紧扣刚发生的回合，语气即时、有画面。最终答案更像赛况概述或文字总结，语气平、缺少动作和瞬间感，不适合作为现场解说直接播出。"
+                  }
+                ]
+              }
+            },
+            {
+              "metricName": "final_response_length_compliance",
+              "score": 0.5,
+              "evalStatus": "failed",
+              "threshold": 1,
+              "details": {
+                "reason": "length_signal: actual_length=23 preferred_range=[32,58] acceptable_range=[18,72] band=acceptable direction=too_short delta_to_preferred=9. Expand the commentary with one more concrete live detail and no filler.",
+                "score": 0.5
+              }
+            },
+            {
+              "metricName": "llm_rubric_response",
+              "score": 0.5,
+              "evalStatus": "failed",
+              "threshold": 0.9,
+              "criterion": {
+                "llmJudge": {
+                  "rubrics": [
+                    {
+                      "id": "1",
+                      "content": {
+                        "text": "The final answer must comment on the current event in the JSON input. It should preserve the core actor and core action when the event clearly centers on a player or team action. Fail if it sounds generic, canned, or disconnected from the current event."
+                      },
+                      "description": "The answer directly comments on the current event instead of speaking in generic filler.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "2",
+                      "content": {
+                        "text": "When the JSON input provides a clear live-context cue such as score state, clock, game-ending result, or a decisive recent event, the final answer should use at least one such cue when it sharpens the call. Fail if the answer ignores obviously important live context or drifts into unrelated details."
+                      },
+                      "description": "The answer uses one decisive live-context cue when it sharpens the call.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "3",
+                      "content": {
+                        "text": "The final answer should read like one natural Chinese live basketball commentary line. It should feel spoken, sharp, and ready for live audio rather than analysis, recap, or explanatory prose."
+                      },
+                      "description": "The answer sounds like natural Chinese live basketball commentary.",
+                      "type": "FORMAT_COMPLIANCE"
+                    },
+                    {
+                      "id": "4",
+                      "content": {
+                        "text": "The final answer should stay centered on the current moment. Fail if it turns into broad recap, tactical analysis, background explanation, or awkward restatement of JSON field names and metadata."
+                      },
+                      "description": "The answer stays on the current moment and avoids recap, analysis, or JSON-like restatement.",
+                      "type": "FORMAT_COMPLIANCE"
+                    }
+                  ]
+                }
+              },
+              "details": {
+                "reason": "当前事件明确是“阿丘瓦”接“德罗赞”助攻完成“空切上篮命中”，但最终回答没有提到阿丘瓦、德罗赞，也没有提到上篮命中这一核心动作，只是泛泛描述比分和比赛态势，和当前事件脱节。\n最终回答明确使用了“国王领先火箭10分”这一直播语境线索，满足“至少使用一个清晰 live-context cue”的要求。虽然没有提到时间，但已使用比分态势。\n这句话是中文且只有一行，但表达偏概括和书面总结，更像赛况描述或解说提要，不够“临场”“尖锐”，缺少对具体回合的即时播报感，作为直播口播显得生硬泛化。\n回答没有展开战术分析、背景说明或元数据复述，内容仍围绕当前比赛局面，虽然较泛，但没有明显转成宽泛复盘或解释性文字。",
+                "score": 0.5,
+                "rubricScores": [
+                  {
+                    "id": "1",
+                    "reason": "当前事件明确是“阿丘瓦”接“德罗赞”助攻完成“空切上篮命中”，但最终回答没有提到阿丘瓦、德罗赞，也没有提到上篮命中这一核心动作，只是泛泛描述比分和比赛态势，和当前事件脱节。"
+                  },
+                  {
+                    "id": "2",
+                    "reason": "最终回答明确使用了“国王领先火箭10分”这一直播语境线索，满足“至少使用一个清晰 live-context cue”的要求。虽然没有提到时间，但已使用比分态势。",
+                    "score": 1
+                  },
+                  {
+                    "id": "3",
+                    "reason": "这句话是中文且只有一行，但表达偏概括和书面总结，更像赛况描述或解说提要，不够“临场”“尖锐”，缺少对具体回合的即时播报感，作为直播口播显得生硬泛化。"
+                  },
+                  {
+                    "id": "4",
+                    "reason": "回答没有展开战术分析、背景说明或元数据复述，内容仍围绕当前比赛局面，虽然较泛，但没有明显转成宽泛复盘或解释性文字。",
+                    "score": 1
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "sessionId": "dc534677-5716-4532-bbdc-7564315f16e2",
+      "userId": "sports-demo-user"
+    },
+    {
+      "evalSetId": "nba-commentary-train",
+      "evalId": "case_37",
+      "runId": 1,
+      "finalEvalStatus": "failed",
+      "overallEvalMetricResults": [
+        {
+          "metricName": "llm_rubric_expected_response",
+          "evalStatus": "failed",
+          "threshold": 0.9,
+          "criterion": {
+            "llmJudge": {
+              "rubrics": [
+                {
+                  "id": "1",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer must stay on the same current play and preserve the same decisive actor, action, or result when those details are explicit in the user prompt and the reference answer. Fail if it shifts to a different moment, becomes generic, or drops the core live-play focus."
+                  },
+                  "description": "The answer stays aligned with the same decisive play focus as the teacher reference.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "2",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer should include a similarly useful grounded cue when the user prompt supports it, such as clock, score state, margin, result, or a decisive recent event. Do not require identical wording, but fail if the final answer becomes materially less informative or loses an obviously important cue present in the reference answer."
+                  },
+                  "description": "The answer keeps a similar level of grounded live detail as the teacher reference.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "3",
+                  "content": {
+                    "text": "Compared with the reference answer, the final answer should sound comparably like a natural Chinese live basketball call: spoken, immediate, and ready for live audio. Do not require exact wording or sentence structure, but fail if it sounds much flatter, more recap-like, or more explanatory than the reference answer."
+                  },
+                  "description": "The answer matches the teacher reference in live-call sharpness without requiring exact wording.",
+                  "type": "FORMAT_COMPLIANCE"
+                }
+              ]
+            }
+          },
+          "details": {
+            "reason": "The reference is clearly focused on the current play: Reynolds securing the defensive rebound at 3:34 in Q4. The final answer drops the decisive actor (\"雷诺\") and action (\"抢到防守篮板球\") entirely, replacing it with a generic score/game-flow summary. That shifts away from the current live play and loses the core focus.\nThe final answer does include the score and margin, but it omits the clock, the current decisive event, and the immediate context after the timeout/substitution that the reference uses to sharpen the live moment. It adds a broader game-stat style note (\"双方多次交替领先\") instead of the more relevant current-play cue, making it materially less informative for this moment.\nThe reference sounds like an in-the-moment live call, with immediacy and play-by-play energy. The final answer reads like a flat recap or scoreboard summary, not a spoken live basketball call tied to the action on the floor. It lacks immediacy, action verbs, and broadcast-ready flow.",
+            "rubricScores": [
+              {
+                "id": "1",
+                "reason": "The reference is clearly focused on the current play: Reynolds securing the defensive rebound at 3:34 in Q4. The final answer drops the decisive actor (\"雷诺\") and action (\"抢到防守篮板球\") entirely, replacing it with a generic score/game-flow summary. That shifts away from the current live play and loses the core focus."
+              },
+              {
+                "id": "2",
+                "reason": "The final answer does include the score and margin, but it omits the clock, the current decisive event, and the immediate context after the timeout/substitution that the reference uses to sharpen the live moment. It adds a broader game-stat style note (\"双方多次交替领先\") instead of the more relevant current-play cue, making it materially less informative for this moment."
+              },
+              {
+                "id": "3",
+                "reason": "The reference sounds like an in-the-moment live call, with immediacy and play-by-play energy. The final answer reads like a flat recap or scoreboard summary, not a spoken live basketball call tied to the action on the floor. It lacks immediacy, action verbs, and broadcast-ready flow."
+              }
+            ]
+          }
+        },
+        {
+          "metricName": "final_response_length_compliance",
+          "score": 0.5,
+          "evalStatus": "failed",
+          "threshold": 1,
+          "details": {
+            "reason": "length_signal: actual_length=31 preferred_range=[32,58] acceptable_range=[18,72] band=acceptable direction=too_short delta_to_preferred=1. Expand the commentary with one more concrete live detail and no filler.",
+            "score": 0.5
+          }
+        },
+        {
+          "metricName": "llm_rubric_response",
+          "score": 0.25,
+          "evalStatus": "failed",
+          "threshold": 0.9,
+          "criterion": {
+            "llmJudge": {
+              "rubrics": [
+                {
+                  "id": "1",
+                  "content": {
+                    "text": "The final answer must comment on the current event in the JSON input. It should preserve the core actor and core action when the event clearly centers on a player or team action. Fail if it sounds generic, canned, or disconnected from the current event."
+                  },
+                  "description": "The answer directly comments on the current event instead of speaking in generic filler.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "2",
+                  "content": {
+                    "text": "When the JSON input provides a clear live-context cue such as score state, clock, game-ending result, or a decisive recent event, the final answer should use at least one such cue when it sharpens the call. Fail if the answer ignores obviously important live context or drifts into unrelated details."
+                  },
+                  "description": "The answer uses one decisive live-context cue when it sharpens the call.",
+                  "type": "FINAL_RESPONSE_QUALITY"
+                },
+                {
+                  "id": "3",
+                  "content": {
+                    "text": "The final answer should read like one natural Chinese live basketball commentary line. It should feel spoken, sharp, and ready for live audio rather than analysis, recap, or explanatory prose."
+                  },
+                  "description": "The answer sounds like natural Chinese live basketball commentary.",
+                  "type": "FORMAT_COMPLIANCE"
+                },
+                {
+                  "id": "4",
+                  "content": {
+                    "text": "The final answer should stay centered on the current moment. Fail if it turns into broad recap, tactical analysis, background explanation, or awkward restatement of JSON field names and metadata."
+                  },
+                  "description": "The answer stays on the current moment and avoids recap, analysis, or JSON-like restatement.",
+                  "type": "FORMAT_COMPLIANCE"
+                }
+              ]
+            }
+          },
+          "details": {
+            "reason": "当前事件明确是“雷诺抢到防守篮板球”，核心人物是雷诺，核心动作是抢到防守篮板。最终答案只提到比分和比赛激烈，没有提及雷诺或防守篮板这一当前事件，内容显得泛泛且与当前事件脱节。\n最终答案使用了明确的直播语境线索“国王100比92领先火箭8分”，满足“至少使用一个此类线索”的要求。虽然没有用到时间或当前事件，但已使用比分/分差这一重要 live-context cue。\n这句话更像书面化的比赛概述或回顾，语气平直，不够口语化，也缺少直播解说常见的即时感和锋利度。作为“ready for live audio”的单句解说不够自然。\n最终答案没有聚焦“雷诺抢到防守篮板球”这一当前时刻，而是转向比分和“双方多次交替领先”的宽泛回顾，属于偏离当前瞬间的概述性表述。",
+            "score": 0.25,
+            "rubricScores": [
+              {
+                "id": "1",
+                "reason": "当前事件明确是“雷诺抢到防守篮板球”，核心人物是雷诺，核心动作是抢到防守篮板。最终答案只提到比分和比赛激烈，没有提及雷诺或防守篮板这一当前事件，内容显得泛泛且与当前事件脱节。"
+              },
+              {
+                "id": "2",
+                "reason": "最终答案使用了明确的直播语境线索“国王100比92领先火箭8分”，满足“至少使用一个此类线索”的要求。虽然没有用到时间或当前事件，但已使用比分/分差这一重要 live-context cue。",
+                "score": 1
+              },
+              {
+                "id": "3",
+                "reason": "这句话更像书面化的比赛概述或回顾，语气平直，不够口语化，也缺少直播解说常见的即时感和锋利度。作为“ready for live audio”的单句解说不够自然。"
+              },
+              {
+                "id": "4",
+                "reason": "最终答案没有聚焦“雷诺抢到防守篮板球”这一当前时刻，而是转向比分和“双方多次交替领先”的宽泛回顾，属于偏离当前瞬间的概述性表述。"
+              }
+            ]
+          }
+        }
+      ],
+      "evalMetricResultPerInvocation": [
+        {
+          "actualInvocation": {
+            "invocationId": "f1031e1f-6f2c-4c76-91d1-ec565048bfb7",
+            "userContent": {
+              "role": "user",
+              "content": "{\n  \"matchup\": \"火箭 vs 国王\",\n  \"current_score\": \"火箭 92 - 100 国王 (【国王】 领先 8 分)\",\n  \"score_state\": \"国王领先8分\",\n  \"game_stats\": \"27次领先交替, 12次平分\",\n  \"tactical_context\": \"当前场面：双方展开对攻，命中率很高。\",\n  \"recent_commentary\": [\n    \"阿门在弧顶这一扣球有点随意，被威斯布鲁克从侧面直接把球掏走了。\",\n    \"火箭这个暂停来得很关键，连着被蒙克外线点了两下，节奏确实得先稳一稳。\",\n    \"蒙克右底角这下手起刀落，威斯布鲁克把人吸过来再分出去，整个路线都挺顺的。\",\n    \"小史密斯上来应该是为了把外线尺度再撑一撑，火箭这波要靠他和杜兰特在两侧把空间先拉开。\"\n  ],\n  \"recent_events\": [\n    \"【Q4-03:49】蒙克收到威斯布鲁克助攻，三分投篮命中 [92-100]\",\n    \"【Q4-03:47】火箭请求暂停 [92-100]\",\n    \"【Q4-03:47】火箭队换人，小史密斯上场，换下亚当斯 [92-100]\",\n    \"【Q4-03:34】雷诺抢到防守篮板球 [92-100]\"\n  ],\n  \"current_event\": {\n    \"event_id\": \"2026-01-12 12:17:50\",\n    \"description\": \"雷诺抢到防守篮板球\",\n    \"score_at_event\": \"火箭 92-100 国王\",\n    \"clock\": \"Q4-03:34\"\n  },\n  \"on_court\": {\n    \"火箭\": [\n      \"申京\",\n      \"小史密斯\",\n      \"阿门\",\n      \"杜兰特\",\n      \"霍勒迪\"\n    ],\n    \"国王\": [\n      \"阿丘瓦\",\n      \"雷诺\",\n      \"德罗赞\",\n      \"威斯布鲁克\",\n      \"蒙克\"\n    ]\n  }\n}"
+            },
+            "finalResponse": {
+              "role": "assistant",
+              "content": "国王队以100比92领先火箭队8分，比赛激烈双方多次交替领先。"
+            }
+          },
+          "expectedInvocation": {
+            "invocationId": "05fbb360-f54b-4316-b233-74e7a5b14082",
+            "userContent": {
+              "role": "user",
+              "content": "{\n  \"matchup\": \"火箭 vs 国王\",\n  \"current_score\": \"火箭 92 - 100 国王 (【国王】 领先 8 分)\",\n  \"score_state\": \"国王领先8分\",\n  \"game_stats\": \"27次领先交替, 12次平分\",\n  \"tactical_context\": \"当前场面：双方展开对攻，命中率很高。\",\n  \"recent_commentary\": [\n    \"阿门在弧顶这一扣球有点随意，被威斯布鲁克从侧面直接把球掏走了。\",\n    \"火箭这个暂停来得很关键，连着被蒙克外线点了两下，节奏确实得先稳一稳。\",\n    \"蒙克右底角这下手起刀落，威斯布鲁克把人吸过来再分出去，整个路线都挺顺的。\",\n    \"小史密斯上来应该是为了把外线尺度再撑一撑，火箭这波要靠他和杜兰特在两侧把空间先拉开。\"\n  ],\n  \"recent_events\": [\n    \"【Q4-03:49】蒙克收到威斯布鲁克助攻，三分投篮命中 [92-100]\",\n    \"【Q4-03:47】火箭请求暂停 [92-100]\",\n    \"【Q4-03:47】火箭队换人，小史密斯上场，换下亚当斯 [92-100]\",\n    \"【Q4-03:34】雷诺抢到防守篮板球 [92-100]\"\n  ],\n  \"current_event\": {\n    \"event_id\": \"2026-01-12 12:17:50\",\n    \"description\": \"雷诺抢到防守篮板球\",\n    \"score_at_event\": \"火箭 92-100 国王\",\n    \"clock\": \"Q4-03:34\"\n  },\n  \"on_court\": {\n    \"火箭\": [\n      \"申京\",\n      \"小史密斯\",\n      \"阿门\",\n      \"杜兰特\",\n      \"霍勒迪\"\n    ],\n    \"国王\": [\n      \"阿丘瓦\",\n      \"雷诺\",\n      \"德罗赞\",\n      \"威斯布鲁克\",\n      \"蒙克\"\n    ]\n  }\n}"
+            },
+            "finalResponse": {
+              "role": "assistant",
+              "content": "第四节还剩3分34秒，雷诺这一下把后场篮板稳稳收下，国王100比92继续压着火箭打，暂停回来火箭刚换上小史密斯，可国王这边攻防转换的势头还是在。"
+            }
+          },
+          "evalMetricResults": [
+            {
+              "metricName": "llm_rubric_expected_response",
+              "evalStatus": "failed",
+              "threshold": 0.9,
+              "criterion": {
+                "llmJudge": {
+                  "rubrics": [
+                    {
+                      "id": "1",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer must stay on the same current play and preserve the same decisive actor, action, or result when those details are explicit in the user prompt and the reference answer. Fail if it shifts to a different moment, becomes generic, or drops the core live-play focus."
+                      },
+                      "description": "The answer stays aligned with the same decisive play focus as the teacher reference.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "2",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer should include a similarly useful grounded cue when the user prompt supports it, such as clock, score state, margin, result, or a decisive recent event. Do not require identical wording, but fail if the final answer becomes materially less informative or loses an obviously important cue present in the reference answer."
+                      },
+                      "description": "The answer keeps a similar level of grounded live detail as the teacher reference.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "3",
+                      "content": {
+                        "text": "Compared with the reference answer, the final answer should sound comparably like a natural Chinese live basketball call: spoken, immediate, and ready for live audio. Do not require exact wording or sentence structure, but fail if it sounds much flatter, more recap-like, or more explanatory than the reference answer."
+                      },
+                      "description": "The answer matches the teacher reference in live-call sharpness without requiring exact wording.",
+                      "type": "FORMAT_COMPLIANCE"
+                    }
+                  ]
+                }
+              },
+              "details": {
+                "reason": "The reference is clearly focused on the current play: Reynolds securing the defensive rebound at 3:34 in Q4. The final answer drops the decisive actor (\"雷诺\") and action (\"抢到防守篮板球\") entirely, replacing it with a generic score/game-flow summary. That shifts away from the current live play and loses the core focus.\nThe final answer does include the score and margin, but it omits the clock, the current decisive event, and the immediate context after the timeout/substitution that the reference uses to sharpen the live moment. It adds a broader game-stat style note (\"双方多次交替领先\") instead of the more relevant current-play cue, making it materially less informative for this moment.\nThe reference sounds like an in-the-moment live call, with immediacy and play-by-play energy. The final answer reads like a flat recap or scoreboard summary, not a spoken live basketball call tied to the action on the floor. It lacks immediacy, action verbs, and broadcast-ready flow.",
+                "rubricScores": [
+                  {
+                    "id": "1",
+                    "reason": "The reference is clearly focused on the current play: Reynolds securing the defensive rebound at 3:34 in Q4. The final answer drops the decisive actor (\"雷诺\") and action (\"抢到防守篮板球\") entirely, replacing it with a generic score/game-flow summary. That shifts away from the current live play and loses the core focus."
+                  },
+                  {
+                    "id": "2",
+                    "reason": "The final answer does include the score and margin, but it omits the clock, the current decisive event, and the immediate context after the timeout/substitution that the reference uses to sharpen the live moment. It adds a broader game-stat style note (\"双方多次交替领先\") instead of the more relevant current-play cue, making it materially less informative for this moment."
+                  },
+                  {
+                    "id": "3",
+                    "reason": "The reference sounds like an in-the-moment live call, with immediacy and play-by-play energy. The final answer reads like a flat recap or scoreboard summary, not a spoken live basketball call tied to the action on the floor. It lacks immediacy, action verbs, and broadcast-ready flow."
+                  }
+                ]
+              }
+            },
+            {
+              "metricName": "final_response_length_compliance",
+              "score": 0.5,
+              "evalStatus": "failed",
+              "threshold": 1,
+              "details": {
+                "reason": "length_signal: actual_length=31 preferred_range=[32,58] acceptable_range=[18,72] band=acceptable direction=too_short delta_to_preferred=1. Expand the commentary with one more concrete live detail and no filler.",
+                "score": 0.5
+              }
+            },
+            {
+              "metricName": "llm_rubric_response",
+              "score": 0.25,
+              "evalStatus": "failed",
+              "threshold": 0.9,
+              "criterion": {
+                "llmJudge": {
+                  "rubrics": [
+                    {
+                      "id": "1",
+                      "content": {
+                        "text": "The final answer must comment on the current event in the JSON input. It should preserve the core actor and core action when the event clearly centers on a player or team action. Fail if it sounds generic, canned, or disconnected from the current event."
+                      },
+                      "description": "The answer directly comments on the current event instead of speaking in generic filler.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "2",
+                      "content": {
+                        "text": "When the JSON input provides a clear live-context cue such as score state, clock, game-ending result, or a decisive recent event, the final answer should use at least one such cue when it sharpens the call. Fail if the answer ignores obviously important live context or drifts into unrelated details."
+                      },
+                      "description": "The answer uses one decisive live-context cue when it sharpens the call.",
+                      "type": "FINAL_RESPONSE_QUALITY"
+                    },
+                    {
+                      "id": "3",
+                      "content": {
+                        "text": "The final answer should read like one natural Chinese live basketball commentary line. It should feel spoken, sharp, and ready for live audio rather than analysis, recap, or explanatory prose."
+                      },
+                      "description": "The answer sounds like natural Chinese live basketball commentary.",
+                      "type": "FORMAT_COMPLIANCE"
+                    },
+                    {
+                      "id": "4",
+                      "content": {
+                        "text": "The final answer should stay centered on the current moment. Fail if it turns into broad recap, tactical analysis, background explanation, or awkward restatement of JSON field names and metadata."
+                      },
+                      "description": "The answer stays on the current moment and avoids recap, analysis, or JSON-like restatement.",
+                      "type": "FORMAT_COMPLIANCE"
+                    }
+                  ]
+                }
+              },
+              "details": {
+                "reason": "当前事件明确是“雷诺抢到防守篮板球”，核心人物是雷诺，核心动作是抢到防守篮板。最终答案只提到比分和比赛激烈，没有提及雷诺或防守篮板这一当前事件，内容显得泛泛且与当前事件脱节。\n最终答案使用了明确的直播语境线索“国王100比92领先火箭8分”，满足“至少使用一个此类线索”的要求。虽然没有用到时间或当前事件，但已使用比分/分差这一重要 live-context cue。\n这句话更像书面化的比赛概述或回顾，语气平直，不够口语化，也缺少直播解说常见的即时感和锋利度。作为“ready for live audio”的单句解说不够自然。\n最终答案没有聚焦“雷诺抢到防守篮板球”这一当前时刻，而是转向比分和“双方多次交替领先”的宽泛回顾，属于偏离当前瞬间的概述性表述。",
+                "score": 0.25,
+                "rubricScores": [
+                  {
+                    "id": "1",
+                    "reason": "当前事件明确是“雷诺抢到防守篮板球”，核心人物是雷诺，核心动作是抢到防守篮板。最终答案只提到比分和比赛激烈，没有提及雷诺或防守篮板这一当前事件，内容显得泛泛且与当前事件脱节。"
+                  },
+                  {
+                    "id": "2",
+                    "reason": "最终答案使用了明确的直播语境线索“国王100比92领先火箭8分”，满足“至少使用一个此类线索”的要求。虽然没有用到时间或当前事件，但已使用比分/分差这一重要 live-context cue。",
+                    "score": 1
+                  },
+                  {
+                    "id": "3",
+                    "reason": "这句话更像书面化的比赛概述或回顾，语气平直，不够口语化，也缺少直播解说常见的即时感和锋利度。作为“ready for live audio”的单句解说不够自然。"
+                  },
+                  {
+                    "id": "4",
+                    "reason": "最终答案没有聚焦“雷诺抢到防守篮板球”这一当前时刻，而是转向比分和“双方多次交替领先”的宽泛回顾，属于偏离当前瞬间的概述性表述。"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "sessionId": "aeaf5c3f-2a0e-48cf-be72-e1b5f74ad201",
+      "userId": "sports-demo-user"
+    }
+  ],
+  "summary": {
+    "overallStatus": "failed",
+    "numRuns": 1,
+    "runStatusCounts": {
+      "failed": 1
+    },
+    "runSummaries": [
+      {
+        "runId": 1,
+        "overallStatus": "failed",
+        "caseStatusCounts": {
+          "failed": 5
+        },
+        "metricSummaries": [
+          {
+            "metricName": "final_response_length_compliance",
+            "averageScore": 0.6,
+            "evalStatus": "failed",
+            "threshold": 1,
+            "statusCounts": {
+              "passed": 1,
+              "failed": 4
+            }
+          },
+          {
+            "metricName": "llm_rubric_expected_response",
+            "averageScore": 0.06666666666666667,
+            "evalStatus": "failed",
+            "threshold": 0.9,
+            "statusCounts": {
+              "failed": 5
+            }
+          },
+          {
+            "metricName": "llm_rubric_response",
+            "averageScore": 0.55,
+            "evalStatus": "failed",
+            "threshold": 0.9,
+            "statusCounts": {
+              "passed": 1,
+              "failed": 4
+            }
+          }
+        ]
+      }
+    ],
+    "evalCaseSummaries": [
+      {
+        "evalId": "case_15",
+        "overallStatus": "failed",
+        "runStatusCounts": {
+          "failed": 1
+        },
+        "metricSummaries": [
+          {
+            "metricName": "final_response_length_compliance",
+            "averageScore": 1,
+            "evalStatus": "passed",
+            "threshold": 1,
+            "statusCounts": {
+              "passed": 1
+            }
+          },
+          {
+            "metricName": "llm_rubric_expected_response",
+            "evalStatus": "failed",
+            "threshold": 0.9,
+            "statusCounts": {
+              "failed": 1
+            }
+          },
+          {
+            "metricName": "llm_rubric_response",
+            "averageScore": 0.25,
+            "evalStatus": "failed",
+            "threshold": 0.9,
+            "statusCounts": {
+              "failed": 1
+            }
+          }
+        ],
+        "runSummaries": [
+          {
+            "runId": 1,
+            "finalEvalStatus": "failed",
+            "metricResults": [
+              {
+                "metricName": "final_response_length_compliance",
+                "score": 1,
+                "evalStatus": "passed",
+                "threshold": 1
+              },
+              {
+                "metricName": "llm_rubric_expected_response",
+                "evalStatus": "failed",
+                "threshold": 0.9
+              },
+              {
+                "metricName": "llm_rubric_response",
+                "score": 0.25,
+                "evalStatus": "failed",
+                "threshold": 0.9
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "evalId": "case_30",
+        "overallStatus": "failed",
+        "runStatusCounts": {
+          "failed": 1
+        },
+        "metricSummaries": [
+          {
+            "metricName": "final_response_length_compliance",
+            "averageScore": 0.5,
+            "evalStatus": "failed",
+            "threshold": 1,
+            "statusCounts": {
+              "failed": 1
+            }
+          },
+          {
+            "metricName": "llm_rubric_expected_response",
+            "evalStatus": "failed",
+            "threshold": 0.9,
+            "statusCounts": {
+              "failed": 1
+            }
+          },
+          {
+            "metricName": "llm_rubric_response",
+            "averageScore": 0.75,
+            "evalStatus": "failed",
+            "threshold": 0.9,
+            "statusCounts": {
+              "failed": 1
+            }
+          }
+        ],
+        "runSummaries": [
+          {
+            "runId": 1,
+            "finalEvalStatus": "failed",
+            "metricResults": [
+              {
+                "metricName": "final_response_length_compliance",
+                "score": 0.5,
+                "evalStatus": "failed",
+                "threshold": 1
+              },
+              {
+                "metricName": "llm_rubric_expected_response",
+                "evalStatus": "failed",
+                "threshold": 0.9
+              },
+              {
+                "metricName": "llm_rubric_response",
+                "score": 0.75,
+                "evalStatus": "failed",
+                "threshold": 0.9
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "evalId": "case_36",
+        "overallStatus": "failed",
+        "runStatusCounts": {
+          "failed": 1
+        },
+        "metricSummaries": [
+          {
+            "metricName": "final_response_length_compliance",
+            "averageScore": 0.5,
+            "evalStatus": "failed",
+            "threshold": 1,
+            "statusCounts": {
+              "failed": 1
+            }
+          },
+          {
+            "metricName": "llm_rubric_expected_response",
+            "evalStatus": "failed",
+            "threshold": 0.9,
+            "statusCounts": {
+              "failed": 1
+            }
+          },
+          {
+            "metricName": "llm_rubric_response",
+            "averageScore": 0.5,
+            "evalStatus": "failed",
+            "threshold": 0.9,
+            "statusCounts": {
+              "failed": 1
+            }
+          }
+        ],
+        "runSummaries": [
+          {
+            "runId": 1,
+            "finalEvalStatus": "failed",
+            "metricResults": [
+              {
+                "metricName": "final_response_length_compliance",
+                "score": 0.5,
+                "evalStatus": "failed",
+                "threshold": 1
+              },
+              {
+                "metricName": "llm_rubric_expected_response",
+                "evalStatus": "failed",
+                "threshold": 0.9
+              },
+              {
+                "metricName": "llm_rubric_response",
+                "score": 0.5,
+                "evalStatus": "failed",
+                "threshold": 0.9
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "evalId": "case_37",
+        "overallStatus": "failed",
+        "runStatusCounts": {
+          "failed": 1
+        },
+        "metricSummaries": [
+          {
+            "metricName": "final_response_length_compliance",
+            "averageScore": 0.5,
+            "evalStatus": "failed",
+            "threshold": 1,
+            "statusCounts": {
+              "failed": 1
+            }
+          },
+          {
+            "metricName": "llm_rubric_expected_response",
+            "evalStatus": "failed",
+            "threshold": 0.9,
+            "statusCounts": {
+              "failed": 1
+            }
+          },
+          {
+            "metricName": "llm_rubric_response",
+            "averageScore": 0.25,
+            "evalStatus": "failed",
+            "threshold": 0.9,
+            "statusCounts": {
+              "failed": 1
+            }
+          }
+        ],
+        "runSummaries": [
+          {
+            "runId": 1,
+            "finalEvalStatus": "failed",
+            "metricResults": [
+              {
+                "metricName": "final_response_length_compliance",
+                "score": 0.5,
+                "evalStatus": "failed",
+                "threshold": 1
+              },
+              {
+                "metricName": "llm_rubric_expected_response",
+                "evalStatus": "failed",
+                "threshold": 0.9
+              },
+              {
+                "metricName": "llm_rubric_response",
+                "score": 0.25,
+                "evalStatus": "failed",
+                "threshold": 0.9
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "evalId": "case_7",
+        "overallStatus": "failed",
+        "runStatusCounts": {
+          "failed": 1
+        },
+        "metricSummaries": [
+          {
+            "metricName": "final_response_length_compliance",
+            "averageScore": 0.5,
+            "evalStatus": "failed",
+            "threshold": 1,
+            "statusCounts": {
+              "failed": 1
+            }
+          },
+          {
+            "metricName": "llm_rubric_expected_response",
+            "averageScore": 0.3333333333333333,
+            "evalStatus": "failed",
+            "threshold": 0.9,
+            "statusCounts": {
+              "failed": 1
+            }
+          },
+          {
+            "metricName": "llm_rubric_response",
+            "averageScore": 1,
+            "evalStatus": "passed",
+            "threshold": 0.9,
+            "statusCounts": {
+              "passed": 1
+            }
+          }
+        ],
+        "runSummaries": [
+          {
+            "runId": 1,
+            "finalEvalStatus": "failed",
+            "metricResults": [
+              {
+                "metricName": "final_response_length_compliance",
+                "score": 0.5,
+                "evalStatus": "failed",
+                "threshold": 1
+              },
+              {
+                "metricName": "llm_rubric_expected_response",
+                "score": 0.3333333333333333,
+                "evalStatus": "failed",
+                "threshold": 0.9
+              },
+              {
+                "metricName": "llm_rubric_response",
+                "score": 1,
+                "evalStatus": "passed",
+                "threshold": 0.9
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "creationTimestamp": 1775660805.8819785
+}
