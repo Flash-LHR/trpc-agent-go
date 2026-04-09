@@ -527,7 +527,7 @@ events, err := r.Run(
 
 #### 按运行临时覆盖 `code executor`
 
-如果需要为同一个 Agent 的不同请求指定不同的执行环境，可以在 `runner.Run(...)` 中直接传入 `agent.WithCodeExecutor(exec)`。
+如果需要为会从 `RunOptions.CodeExecutor` 解析执行器的 Agent 在不同请求中指定不同的执行环境，例如 `LLMAgent`，可以在 `runner.Run(...)` 中直接传入 `agent.WithCodeExecutor(exec)`。
 
 ```go
 events, err := r.Run(
@@ -542,6 +542,7 @@ events, err := r.Run(
 说明：
 
 - 该选项仅对当前这一次 `runner.Run(...)` 调用生效，不会修改 Agent 的默认配置。
+- 该选项仅对会读取 `RunOptions.CodeExecutor` 的 Agent 生效；如果使用自定义 Agent，请确认其实现会处理该运行参数。
 - 如果创建 Agent 时已经设置 `llmagent.WithCodeExecutor(...)`，则此处传入的执行器会在本次运行中临时覆盖默认值。
 - 本次运行中所有依赖代码执行器的能力，均会使用此处传入的执行器，例如 `workspace_exec`、`skill_run` 和交互式 skill 会话工具。
 - 如果仅需为 `skill_run` 提供运行环境，而不希望模型自动执行回复中的 Markdown 围栏代码，可在创建 Agent 时设置 `llmagent.WithEnableCodeExecutionResponseProcessor(false)`。更多说明见 [Skill 文档](./skill.md)。

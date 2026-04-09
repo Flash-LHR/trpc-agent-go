@@ -543,7 +543,8 @@ details and more examples, see [Agent: Override Runtime Surfaces by `nodeID`](./
 ### Override `code executor` Per Run
 
 If you need to specify a different execution environment for a particular
-request, pass `agent.WithCodeExecutor(exec)` to `runner.Run(...)`.
+request on an agent that resolves its executor from `RunOptions.CodeExecutor`,
+such as `LLMAgent`, pass `agent.WithCodeExecutor(exec)` to `runner.Run(...)`.
 
 ```go
 events, err := r.Run(
@@ -558,6 +559,7 @@ events, err := r.Run(
 Notes:
 
 - This option applies only to the current `runner.Run(...)` call and does not change the agent's default configuration.
+- This option only applies to agents that read `RunOptions.CodeExecutor`. If you use a custom agent, make sure its implementation handles this run option.
 - If the agent was created with `llmagent.WithCodeExecutor(...)`, the executor passed here temporarily overrides that default for this run.
 - All capabilities that depend on a code executor use the executor passed here for this run, including `workspace_exec`, `skill_run`, and interactive skill session tools.
 - If you only need to provide an execution environment for `skill_run` and do not want Markdown fenced code blocks in model replies to auto-execute, set `llmagent.WithEnableCodeExecutionResponseProcessor(false)` when creating the agent. See [Skill](./skill.md) for more details.
