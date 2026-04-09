@@ -243,6 +243,23 @@ func TestLLMAgent_InvocationToolSurface_RunCodeExecutorOverridesStaticExecutor(
 	require.Nil(t, findTool(tools, "skill_write_stdin"))
 	require.Nil(t, findTool(tools, "skill_poll_session"))
 	require.Nil(t, findTool(tools, "skill_kill_session"))
+
+	runTool, ok := findTool(tools, "skill_run").(*toolskill.RunTool)
+	require.True(t, ok)
+	runToolVal := reflect.ValueOf(runTool).Elem()
+	execField := reflect.NewAt(
+		runToolVal.FieldByName("exec").Type(),
+		unsafe.Pointer(runToolVal.FieldByName("exec").UnsafeAddr()),
+	).Elem()
+	require.Same(t, inv.RunOptions.CodeExecutor, execField.Interface())
+	args := map[string]any{"skill": testSkillName, "command": "echo ok"}
+	b, err := json.Marshal(args)
+	require.NoError(t, err)
+	_, err = runTool.Call(context.Background(), b)
+	require.NoError(t, err)
+	overrideExec, ok := inv.RunOptions.CodeExecutor.(*stubExec)
+	require.True(t, ok)
+	require.True(t, overrideExec.ran)
 }
 
 func TestLLMAgent_WorkspaceSaveArtifactRegisteredForInvocationCapability(

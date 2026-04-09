@@ -614,12 +614,17 @@ func appendSkillTools(
 	options *Options,
 	runTool *toolskill.RunTool,
 ) []tool.Tool {
+	var exec codeexecutor.CodeExecutor
+	if options != nil {
+		exec = options.codeExecutor
+	}
 	return appendSkillToolsWithRepoAndFlags(
 		allTools,
 		options,
 		options.skillsRepository,
 		nil,
 		runTool,
+		exec,
 		mustResolveSkillToolFlags(options),
 	)
 }
@@ -631,12 +636,17 @@ func appendSkillToolsWithRepo(
 	reg *codeexecutor.WorkspaceRegistry,
 	runTool *toolskill.RunTool,
 ) []tool.Tool {
+	var exec codeexecutor.CodeExecutor
+	if options != nil {
+		exec = options.codeExecutor
+	}
 	return appendSkillToolsWithRepoAndFlags(
 		allTools,
 		options,
 		repo,
 		reg,
 		runTool,
+		exec,
 		mustResolveSkillToolFlags(options),
 	)
 }
@@ -647,6 +657,7 @@ func appendSkillToolsWithRepoAndFlags(
 	repo skill.Repository,
 	reg *codeexecutor.WorkspaceRegistry,
 	runTool *toolskill.RunTool,
+	exec codeexecutor.CodeExecutor,
 	skillFlags skillprofile.Flags,
 ) []tool.Tool {
 	if repo == nil {
@@ -675,7 +686,7 @@ func appendSkillToolsWithRepoAndFlags(
 	}
 
 	if runTool == nil {
-		runTool = buildSkillRunToolWithRepo(options, repo, reg, nil)
+		runTool = buildSkillRunToolWithRepo(options, repo, reg, exec)
 	}
 	if skillFlags.Run {
 		allTools = append(allTools, runTool)

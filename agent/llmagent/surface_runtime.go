@@ -195,6 +195,7 @@ func (a *LLMAgent) InvocationToolSurface(
 		effectiveSkills,
 		workspaceRegistry,
 		nil,
+		effectiveExec,
 		mustResolveSkillToolFlagsWithExecutor(
 			&options,
 			effectiveExec,
