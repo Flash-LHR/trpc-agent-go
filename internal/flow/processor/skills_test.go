@@ -390,7 +390,7 @@ func TestSkillsRequestProcessor_CapabilityGuidance_CatalogOnly(t *testing.T) {
 		&mockRepo{},
 		WithSkillToolFlags(skillprofile.Flags{}),
 	)
-	text := p.capabilityGuidanceText()
+	text := p.capabilityGuidanceText(p.toolFlags)
 	require.Contains(t, text, skillsCapabilityHeader)
 	require.Contains(t, text, "exposes skill summaries only")
 	require.Contains(t, text, "catalog of possible capabilities")

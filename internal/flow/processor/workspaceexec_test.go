@@ -165,3 +165,25 @@ func TestWorkspaceExecRequestProcessor_ProcessRequest_ResolverCanDisableSkillsGu
 	require.NotEmpty(t, req.Messages)
 	require.NotContains(t, req.Messages[0].Content, "Paths under skills/")
 }
+
+func TestWorkspaceExecRequestProcessor_ProcessRequest_DisabledByResolver(
+	t *testing.T,
+) {
+	p := NewWorkspaceExecRequestProcessor(
+		WithWorkspaceExecEnabledResolver(
+			func(*agent.Invocation) bool {
+				return false
+			},
+		),
+	)
+	req := &model.Request{}
+
+	p.ProcessRequest(
+		context.Background(),
+		&agent.Invocation{AgentName: "tester"},
+		req,
+		nil,
+	)
+
+	require.Empty(t, req.Messages)
+}
