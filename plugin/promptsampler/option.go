@@ -1,0 +1,140 @@
+//
+// Tencent is pleased to support the open source community by making trpc-agent-go available.
+//
+// Copyright (C) 2025 Tencent.  All rights reserved.
+//
+// trpc-agent-go is licensed under the Apache License Version 2.0.
+//
+
+package promptsampler
+
+// Option configures a PromptSampler at construction time.
+type Option func(*PromptSampler)
+
+// WithName overrides the plugin name. Plugins registered in the same plugin
+// manager must have unique names.
+func WithName(name string) Option {
+	return func(s *PromptSampler) {
+		if name != "" {
+			s.name = name
+		}
+	}
+}
+
+// WithSampleRate sets the sampling rate in [0, 1]. Values outside that range
+// are clamped. A rate of 0 disables sampling, 1 samples every invocation.
+func WithSampleRate(rate float64) Option {
+	return func(s *PromptSampler) {
+		if rate < 0 {
+			rate = 0
+		}
+		if rate > 1 {
+			rate = 1
+		}
+		cfg := s.runtimeConfig.Load()
+		s.runtimeConfig.Store(&RuntimeConfig{
+			Enabled:    cfg.Enabled,
+			SampleRate: rate,
+			Token:      cfg.Token,
+		})
+	}
+}
+
+// WithEnabled toggles the master sampling switch. When disabled, no
+// invocation is sampled regardless of sample rate.
+func WithEnabled(enabled bool) Option {
+	return func(s *PromptSampler) {
+		cfg := s.runtimeConfig.Load()
+		s.runtimeConfig.Store(&RuntimeConfig{
+			Enabled:    enabled,
+			SampleRate: cfg.SampleRate,
+			Token:      cfg.Token,
+		})
+	}
+}
+
+// WithToken sets the initial business isolation token. The token can also be
+// updated at runtime via SetConfig.
+func WithToken(token string) Option {
+	return func(s *PromptSampler) {
+		cfg := s.runtimeConfig.Load()
+		s.runtimeConfig.Store(&RuntimeConfig{
+			Enabled:    cfg.Enabled,
+			SampleRate: cfg.SampleRate,
+			Token:      token,
+		})
+		if ts, ok := s.writer.(TokenSetter); ok {
+			ts.SetToken(token)
+		}
+	}
+}
+
+// WithWriter installs a custom TraceWriter. Passing nil is a no-op.
+func WithWriter(w TraceWriter) Option {
+	return func(s *PromptSampler) {
+		if w != nil {
+			s.writer = w
+		}
+	}
+}
+
+// WithLogWriter selects the standard compact-JSON log writer.
+func WithLogWriter() Option {
+	return func(s *PromptSampler) {
+		s.writer = NewLogWriter()
+	}
+}
+
+// WithPrettyLogWriter selects the indented-JSON log writer.
+func WithPrettyLogWriter() Option {
+	return func(s *PromptSampler) {
+		s.writer = NewPrettyLogWriter()
+	}
+}
+
+// WithTRPCWriter installs the tRPC-based trace writer that uploads each trace
+// to the log_collector service. This is the recommended writer for
+// production deployments.
+//
+// Typical usage:
+//
+//	sampler := promptsampler.New(
+//	    promptsampler.WithSampleRate(1.0),
+//	    promptsampler.WithTRPCWriter(),
+//	    promptsampler.WithAsyncWrite(100),
+//	)
+func WithTRPCWriter(opts ...TRPCWriterOption) Option {
+	return func(s *PromptSampler) {
+		s.writer = NewTRPCWriter(opts...)
+	}
+}
+
+// WithMaxSteps caps the number of steps recorded per invocation. Once the
+// cap is reached, further steps are dropped silently to bound memory use.
+func WithMaxSteps(n int) Option {
+	return func(s *PromptSampler) {
+		if n > 0 {
+			s.maxSteps = n
+		}
+	}
+}
+
+// WithAsyncWrite enables background trace uploads with the given queue
+// length. Writes become non-blocking: when the queue saturates, Write
+// returns ErrAsyncQueueFull and the trace is dropped.
+//
+// A queue length of 0 or less keeps synchronous behaviour.
+func WithAsyncWrite(queueLen int) Option {
+	return func(s *PromptSampler) {
+		s.asyncQueueLen = queueLen
+	}
+}
+
+// WithStructureID sets a default structure ID stamped onto every trace when
+// the invocation has no explicit structure of its own. Defaults to the root
+// agent name.
+func WithStructureID(id string) Option {
+	return func(s *PromptSampler) {
+		s.defaultStructureID = id
+	}
+}

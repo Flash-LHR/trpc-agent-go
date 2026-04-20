@@ -1,0 +1,43 @@
+// SOURCE OF TRUTH for the LogCollector service contract.
+//
+// 本文件是 LogCollector 服务协议的权威真源；log_collector 服务仓中
+// git.woa.com/PromptHub/log_collector/proto/log_collector.proto 是本文件的
+// 只读镜像，两者的 package / service / message 必须保持完全一致；仅允许
+// go_package 不同（log_collector 侧使用内部版 trpc，本仓使用开源版 trpc，
+// 因此 pb.go / trpc.go 各自独立生成）。
+//
+// 修改流程：
+//   1. 任何字段调整 **先改本文件**；
+//   2. 同步复制到 log_collector/proto/log_collector.proto（仅 go_package 不同）；
+//   3. 两仓各自用自己的 trpc 工具链重新生成 pb.go / trpc.go；
+//   4. 同步 PR 时务必在 commit 里同时提两仓的改动以便审计。
+
+syntax = "proto3";
+
+package trpc.prompt.logcollector;
+
+option go_package = "trpc.group/trpc-go/trpc-agent-go/plugin/promptsampler/proto";
+
+// LogCollector 日志采集服务
+service LogCollector {
+    // ReportTrace 上报 Prompt 执行追踪数据
+    rpc ReportTrace(ReportTraceRequest) returns (ReportTraceResponse);
+}
+
+// ReportTraceRequest 上报追踪请求
+message ReportTraceRequest {
+    // caller 调用方服务名，格式: trpc.${app}.${server}
+    string caller = 1;
+    // trace_json Prompt 执行追踪 JSON
+    string trace_json = 2;
+    // token 业务隔离标识，用于区分不同业务的 Trace 数据
+    string token = 3;
+}
+
+// ReportTraceResponse 上报追踪响应
+message ReportTraceResponse {
+    // code 响应码，0=成功, 非0=失败
+    int32 code = 1;
+    // message 错误信息
+    string message = 2;
+}
