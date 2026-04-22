@@ -94,7 +94,8 @@ func WithPrettyLogWriter() Option {
 
 // WithTRPCWriter installs the tRPC-based trace writer that uploads each trace
 // to the log_collector service. This is the recommended writer for
-// production deployments.
+// production deployments that already use the open-source tRPC distribution
+// ("trpc.group/trpc-go/trpc-go").
 //
 // Typical usage:
 //
@@ -106,6 +107,38 @@ func WithPrettyLogWriter() Option {
 func WithTRPCWriter(opts ...TRPCWriterOption) Option {
 	return func(s *PromptSampler) {
 		s.writer = NewTRPCWriter(opts...)
+	}
+}
+
+// WithRPCWriter installs a TraceWriter that delegates transport to a
+// caller-supplied ReportFunc. Use this when the host process cannot share a
+// tRPC distribution with the plugin (for example Tencent's internal
+// "git.code.oa.com/trpc-go/trpc-go") or needs to ship traces over a
+// different protocol entirely.
+//
+// Typical usage (host process uses internal-version tRPC):
+//
+//	proxy := logpb.NewLogCollectorClientProxy()
+//	reportTrace := func(ctx context.Context, caller, traceJSON, token string) error {
+//	    rsp, err := proxy.ReportTrace(ctx, &logpb.ReportTraceRequest{
+//	        Caller: caller, TraceJson: traceJSON, Token: token,
+//	    })
+//	    if err != nil { return err }
+//	    if rsp.GetCode() != 0 {
+//	        return fmt.Errorf("code=%d message=%s", rsp.GetCode(), rsp.GetMessage())
+//	    }
+//	    return nil
+//	}
+//	sampler := promptsampler.New(
+//	    promptsampler.WithRPCWriter(
+//	        promptsampler.WithRPCCaller("trpc.myapp.myserver"),
+//	        promptsampler.WithRPCReportFunc(reportTrace),
+//	    ),
+//	    promptsampler.WithAsyncWrite(100),
+//	)
+func WithRPCWriter(opts ...RPCWriterOption) Option {
+	return func(s *PromptSampler) {
+		s.writer = NewRPCWriter(opts...)
 	}
 }
 

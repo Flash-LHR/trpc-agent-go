@@ -53,12 +53,13 @@ r := runner.NewRunner(myAgent, runner.WithPluginManager(mgr))
 | `WithWriter(TraceWriter)` | 自定义 writer | `LogWriter` |
 | `WithLogWriter()` | 用日志输出 trace | — |
 | `WithPrettyLogWriter()` | 缩进 JSON 日志 | — |
-| `WithTRPCWriter(opts...)` | tRPC 上报 log_collector | — |
+| `WithTRPCWriter(opts...)` | tRPC 上报 log_collector（开源版 tRPC） | — |
+| `WithRPCWriter(opts...)` | 通用上报：ReportFunc 注入（兼容内部版 tRPC / 其他 transport） | — |
 | `WithMaxSteps(int)` | Step 上限 | `1000` |
 | `WithAsyncWrite(int)` | 异步队列长度 | `0`（同步） |
 | `WithStructureID(string)` | 默认 structure ID | agent name |
 
-### TRPCWriter 子选项
+### TRPCWriter 子选项（开源版 tRPC 用户）
 
 | Option | 作用 | 默认 |
 |--------|------|------|
@@ -66,6 +67,14 @@ r := runner.NewRunner(myAgent, runner.WithPluginManager(mgr))
 | `WithTRPCTarget(string)` | 目标服务名 | `"trpc.trs.prompt_log_collector.LogCollector"` |
 | `WithTRPCTimeout(Duration)` | 单次调用超时 | `3s` |
 | `WithTRPCClient(proxy)` | 注入 mock / 自定义 proxy | 默认 tRPC client |
+
+### RPCWriter 子选项（自定义 transport / 内部版 tRPC）
+
+| Option | 作用 | 默认 |
+|--------|------|------|
+| `WithRPCReportFunc(ReportFunc)` | **必选**：用户提供的上报回调 | — |
+| `WithRPCCaller(string)` | **必选**：本服务名，plugin 不会尝试自动解析（避免跨 tRPC 版本） | — |
+| `WithRPCTimeout(Duration)` | 单次调用超时 | `3s` |
 
 ---
 
@@ -162,6 +171,63 @@ type TraceStep struct {
 3. 把 `.proto` 同步复制到 `log_collector/proto/log_collector.proto`（只调整 `go_package` 一行）；
 4. 在 log_collector 仓用其内部版工具链重新生成该仓的 `pb.go` / `trpc.go`；
 5. 同一次改动尽量同步提交两仓 PR，便于审计。
+
+---
+
+## 适配内部版 tRPC / 自定义 transport
+
+本插件自身使用**开源版 tRPC**（`trpc.group/trpc-go/trpc-go`）生成 proto client，无法与腾讯内部版（`git.code.oa.com/trpc-go/trpc-go`）生成的 `client.Client` 互通 —— 两个版本的 `server.Service`、`client.Client`、filter / naming 注册表均独立，强行同时引入会导致 polaris 解析失败、filter 链失效。
+
+**解决方式**：使用 `WithRPCWriter(WithRPCReportFunc(...), WithRPCCaller(...))`，由业务方在自己的 tRPC 生态里组装 client proxy 并提供上报回调，plugin 只负责拼装 `caller / traceJSON / token` 三个字段：
+
+```go
+import (
+    logpb "git.woa.com/PromptHub/log_collector/proto"        // 内部版生成的 pb.go
+    tclient "git.code.oa.com/trpc-go/trpc-go/client"
+    trpc "git.code.oa.com/trpc-go/trpc-go"
+    "trpc.group/trpc-go/trpc-agent-go/plugin/promptsampler"
+)
+
+proxy := logpb.NewLogCollectorClientProxy()
+callerName := trpc.GlobalConfig().Server.Service[0].Name
+
+reportTrace := func(ctx context.Context, caller, traceJSON, token string) error {
+    rsp, err := proxy.ReportTrace(
+        ctx,
+        &logpb.ReportTraceRequest{
+            Caller:    caller,
+            TraceJson: traceJSON,
+            Token:     token,
+        },
+    )
+    if err != nil {
+        return err
+    }
+    if rsp.GetCode() != 0 {
+        return fmt.Errorf("code=%d message=%s", rsp.GetCode(), rsp.GetMessage())
+    }
+    return nil
+}
+
+sampler := promptsampler.New(
+    promptsampler.WithSampleRate(1.0),
+    promptsampler.WithStructureID("my-agent"),
+    promptsampler.WithRPCWriter(
+        promptsampler.WithRPCCaller(callerName),
+        promptsampler.WithRPCReportFunc(reportTrace),
+    ),
+    promptsampler.WithAsyncWrite(100),
+)
+```
+
+### 何时用 TRPCWriter，何时用 RPCWriter
+
+| 场景 | 推荐 |
+|------|------|
+| 你的服务 import `trpc.group/trpc-go/trpc-go`（开源版） | `WithTRPCWriter()` —— 零参数接入 |
+| 你的服务 import `git.code.oa.com/trpc-go/trpc-go`（内部版） | `WithRPCWriter(...)` + 业务侧 5 行适配 |
+| 你要通过 HTTP / gRPC / Kafka 等其他通路上报 | `WithRPCWriter(...)` + 业务侧回调 |
+| 单测 / mock | `WithWriter(customWriter)` —— 最灵活 |
 
 ---
 
