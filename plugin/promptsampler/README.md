@@ -4,13 +4,20 @@
 
 **Module 路径**: `trpc.group/trpc-go/trpc-agent-go/plugin/promptsampler`
 
+> **近期变更（BREAKING）**
+> - `RuntimeConfig.Token` 已重命名为 `RuntimeConfig.SamplerToken`（JSON `sampler_token`）。
+> - 构造选项 `WithToken(...)` 同步改为 `WithSamplerToken(...)`。
+> - 新增 HTTP `ConfigHandler` 控制面，支持 default + per-app 配置，默认 `Authorization: Bearer` 鉴权。
+> - 详见下文 **迁移指南** 和 **控制面接口** 章节。
+
 ---
 
 ## 功能特性
 
 - 🎯 **一次任务一次上报** —— root Agent `AfterAgent` 触发时，输出聚合了所有 sub-agent / model / tool 步骤的 Trace
 - 📊 **采样率控制** —— 支持 `[0, 1]` 可配置采样率
-- 🔥 **运行时热更新** —— `Enabled` / `SampleRate` / `Token` 可通过 `SetConfig` 原子更新
+- 🔥 **运行时热更新** —— `Enabled` / `SampleRate` / `SamplerToken` 可通过 `SetConfig` 或 HTTP `ConfigHandler` 原子更新
+- 🎯 **per-app 覆盖** —— 一个 sampler 同时服务多个 Runner，可按 appName 下发差异化采样策略
 - 🚀 **开箱即用** —— `WithTRPCWriter()` 零参数即可上报，caller 自动从 `trpc.GlobalConfig()` 读取
 - 🛡️ **失败不影响 Runner** —— 上报错误以 `log.Errorf` 输出，永不影响业务主流程
 - ⚡ **异步可选** —— `WithAsyncWrite(100)` 开启后台上报，hot path 不阻塞
@@ -49,7 +56,7 @@ r := runner.NewRunner(myAgent, runner.WithPluginManager(mgr))
 | `WithName(string)` | 自定义插件名 | `"promptsampler"` |
 | `WithEnabled(bool)` | 主开关 | `true` |
 | `WithSampleRate(float64)` | 采样率 `[0,1]` | `0.0`（关闭） |
-| `WithToken(string)` | 初始业务隔离 token | `""` |
+| `WithSamplerToken(string)` | 初始业务隔离 token（SamplerToken） | `""` |
 | `WithWriter(TraceWriter)` | 自定义 writer | `LogWriter` |
 | `WithLogWriter()` | 用日志输出 trace | — |
 | `WithPrettyLogWriter()` | 缩进 JSON 日志 | — |
@@ -80,23 +87,171 @@ r := runner.NewRunner(myAgent, runner.WithPluginManager(mgr))
 
 ## 控制面接口
 
-控制面 HTTP API（`GET/PUT /promptiter/v1/apps/{app}/plugins/trace_reporter/config`）由 `trpc.group/trpc-go/trpc-agent-go/server/promptiter` 提供；本插件只对外暴露 `GetConfig` / `SetConfig` 两个同进程接口：
+本插件自带一个 `http.Handler`，业务方在启动时把它挂到任意 `http.ServeMux` 前缀下即可：
+
+```go
+sampler := promptsampler.New(
+    promptsampler.WithSampleRate(0.1),
+    promptsampler.WithTRPCWriter(),
+)
+
+mux := http.NewServeMux()
+mux.Handle(
+    // URL 前缀由业务方决定；下面这条模仿历史契约。
+    "/promptiter/v1/plugins/trace_reporter/config",
+    sampler.ConfigHandler(
+        promptsampler.WithAdminToken(os.Getenv("PROMPTSAMPLER_ADMIN_TOKEN")),
+    ),
+)
+go http.ListenAndServe(":9090", mux)
+```
+
+### 两种 token 的严格区分
+
+| 概念 | 字段/选项 | 作用 | 方向 |
+|------|-----------|------|------|
+| 控制面鉴权 token（admin token） | `WithAdminToken` / `WithAdminTokens` / `Authorization: Bearer <token>` 请求头 / `?admin_token=<token>` query 兜底 | 保护 ConfigHandler 本身 —— 拿到这个 token 就能改采样行为 | 运维 → Agent 进程 |
+| 业务隔离 token（sampler token） | `RuntimeConfig.SamplerToken` / `WithSamplerToken(...)` | 上报 trace 时透传给 log_collector，用于租户/业务隔离 | Agent → log_collector |
+
+**两种 token 绝不能混用**。控制面 token 进 HTTP 访问日志，业务 token 进 collector 的数据库；把 admin token 放到 body 里或把 sampler token 放到 header 里都是安全事故。
+
+### HTTP API
+
+#### GET 获取配置
+
+```bash
+# 不带 ?app= → 返回 default 配置 + 所有 per-app overrides
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+     http://localhost:9090/promptiter/v1/plugins/trace_reporter/config
+
+# 带 ?app=X → 返回 X 对应的生效配置（override 或 default fallback）
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+     "http://localhost:9090/promptiter/v1/plugins/trace_reporter/config?app=my-app"
+```
+
+响应示例（不带 `?app=`）：
+
+```json
+{
+  "config": {"enabled": true, "sample_rate": 0.1, "sampler_token": "default-tok"},
+  "apps": {
+    "my-app": {"enabled": true, "sample_rate": 1.0, "sampler_token": "app-tok"}
+  }
+}
+```
+
+响应示例（带 `?app=my-app`）：
+
+```json
+{
+  "config": {"enabled": true, "sample_rate": 1.0, "sampler_token": "app-tok"},
+  "source": "override"
+}
+```
+
+未命中 override 时 `source` 为 `"default"`。
+
+#### PUT 更新配置（完整覆盖语义）
+
+```bash
+# 更新 default 配置
+curl -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"config":{"enabled":true,"sample_rate":0.5,"sampler_token":"biz-a"}}' \
+     http://localhost:9090/promptiter/v1/plugins/trace_reporter/config
+
+# 为指定 app 写一条覆盖（一次 PUT = 一份完整配置，不做字段级合并）
+curl -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"config":{"enabled":true,"sample_rate":1.0,"sampler_token":"biz-a"}}' \
+     "http://localhost:9090/promptiter/v1/plugins/trace_reporter/config?app=my-app"
+```
+
+#### DELETE 删除 app 覆盖
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
+     "http://localhost:9090/promptiter/v1/plugins/trace_reporter/config?app=my-app"
+```
+
+成功 `204 No Content`；不存在的 override 返回 `404 Not Found`；**DELETE 不支持默认配置**（`405 Method Not Allowed`），如需重置请用 PUT。
+
+#### 错误响应
+
+统一格式：
+
+```json
+{"error": "<message>"}
+```
+
+典型状态码：
+
+| 状态 | 触发场景 |
+|------|----------|
+| 200  | GET / PUT 成功 |
+| 204  | DELETE 成功 |
+| 400  | body 非 JSON / 缺少 `config` 字段 / `sample_rate` 超出 [0,1] |
+| 401  | 缺少或无效的 admin token；handler 未配置任何鉴权 |
+| 404  | DELETE 时指定的 app 没有 override |
+| 405  | 方法不被支持；对 default 发 DELETE |
+
+### 同进程 Go API
+
+HTTP 之外也可从同进程直接调用：
 
 ```go
 // 读取
-cfg := sampler.GetConfig()
-fmt.Printf("enabled=%v sample_rate=%v token=%s\n",
-    cfg.Enabled, cfg.SampleRate, cfg.Token)
+cfg := sampler.GetConfig()  // default 配置
+appCfg, isOverride := sampler.GetAppConfig("my-app")
 
-// 更新（非法值将返回 error）
-err := sampler.SetConfig(&promptsampler.RuntimeConfig{
-    Enabled:    true,
-    SampleRate: 0.5,
-    Token:      "biz-a",
+// 写入
+_ = sampler.SetConfig(&promptsampler.RuntimeConfig{
+    Enabled:      true,
+    SampleRate:   0.5,
+    SamplerToken: "biz-a",
 })
+_ = sampler.SetAppConfig("my-app", &promptsampler.RuntimeConfig{
+    Enabled:      true,
+    SampleRate:   1.0,
+    SamplerToken: "biz-a-full",
+})
+
+// 删除
+removed := sampler.DeleteAppConfig("my-app")
+
+// 列出所有 overrides
+apps := sampler.ListAppConfigs()
 ```
 
-`SetConfig` 成功后，下一次 Trace 上报时 `ReportTraceRequest.Token` 即为新值。
+`SetConfig` 成功后，下一次 Trace 上报时 `ReportTraceRequest.Token` 即为新值（通过 TokenSetter 传递）。
+
+### 安全默认：未配置鉴权 → 401
+
+`ConfigHandler()` 未传入 `WithAdminToken` / `WithAdminTokens` / `WithAuthFunc` 时，所有请求都会收到 `401 Unauthorized`，错误信息 `"no admin auth configured for ConfigHandler"`。这是 security-by-default 原则：避免误操作把控制面暴露到公网。
+
+如需自定义鉴权（IAM / 签名 / allowlist）：
+
+```go
+handler := sampler.ConfigHandler(
+    promptsampler.WithAuthFunc(func(r *http.Request) bool {
+        // 返回 true 表示放行，false 表示 401
+        return myIAM.Verify(r)
+    }),
+)
+```
+
+`WithAuthFunc` 设置后会**完全替代**静态 token 列表。
+
+### 迁移指南
+
+从旧版本（仅有 `Token` 字段和 `WithToken(...)` 选项）迁移：
+
+| 旧 | 新 |
+|----|----|
+| `RuntimeConfig.Token` | `RuntimeConfig.SamplerToken`（JSON `"sampler_token"`） |
+| `WithToken("biz")`     | `WithSamplerToken("biz")` |
+
+字段改名是**破坏性变更**，需要同步修改所有直接构造 `RuntimeConfig` 字面量的调用点。字段语义不变：仍是上报给 log_collector 的业务隔离标签。
 
 ---
 
@@ -130,7 +285,7 @@ type TraceStep struct {
 }
 ```
 
-> 注意：`TraceOutput.TokenUsage`（LLM prompt/completion tokens）与 `RuntimeConfig.Token`（业务身份 token）是两个完全独立的概念。前者记录 LLM 调用成本，后者用于在 log_collector 侧按业务隔离数据。
+> 注意：`TraceOutput.TokenUsage`（LLM prompt/completion tokens）与 `RuntimeConfig.SamplerToken`（业务身份 token）是两个完全独立的概念。前者记录 LLM 调用成本，后者用于在 log_collector 侧按业务隔离数据。
 
 ---
 

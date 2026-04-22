@@ -23,6 +23,9 @@ func WithName(name string) Option {
 
 // WithSampleRate sets the sampling rate in [0, 1]. Values outside that range
 // are clamped. A rate of 0 disables sampling, 1 samples every invocation.
+//
+// The rate can also be updated at runtime via SetConfig or the HTTP
+// ConfigHandler.
 func WithSampleRate(rate float64) Option {
 	return func(s *PromptSampler) {
 		if rate < 0 {
@@ -33,9 +36,9 @@ func WithSampleRate(rate float64) Option {
 		}
 		cfg := s.runtimeConfig.Load()
 		s.runtimeConfig.Store(&RuntimeConfig{
-			Enabled:    cfg.Enabled,
-			SampleRate: rate,
-			Token:      cfg.Token,
+			Enabled:      cfg.Enabled,
+			SampleRate:   rate,
+			SamplerToken: cfg.SamplerToken,
 		})
 	}
 }
@@ -46,22 +49,27 @@ func WithEnabled(enabled bool) Option {
 	return func(s *PromptSampler) {
 		cfg := s.runtimeConfig.Load()
 		s.runtimeConfig.Store(&RuntimeConfig{
-			Enabled:    enabled,
-			SampleRate: cfg.SampleRate,
-			Token:      cfg.Token,
+			Enabled:      enabled,
+			SampleRate:   cfg.SampleRate,
+			SamplerToken: cfg.SamplerToken,
 		})
 	}
 }
 
-// WithToken sets the initial business isolation token. The token can also be
-// updated at runtime via SetConfig.
-func WithToken(token string) Option {
+// WithSamplerToken sets the initial business isolation token (SamplerToken).
+// This token is forwarded to the log collector as ReportTraceRequest.Token
+// and must not be confused with the control-plane admin token used by
+// ConfigHandler (see WithAdminToken).
+//
+// The token can also be updated at runtime via SetConfig or the HTTP
+// ConfigHandler; updates are propagated atomically to TokenSetter writers.
+func WithSamplerToken(token string) Option {
 	return func(s *PromptSampler) {
 		cfg := s.runtimeConfig.Load()
 		s.runtimeConfig.Store(&RuntimeConfig{
-			Enabled:    cfg.Enabled,
-			SampleRate: cfg.SampleRate,
-			Token:      token,
+			Enabled:      cfg.Enabled,
+			SampleRate:   cfg.SampleRate,
+			SamplerToken: token,
 		})
 		if ts, ok := s.writer.(TokenSetter); ok {
 			ts.SetToken(token)

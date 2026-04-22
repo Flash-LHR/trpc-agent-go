@@ -161,16 +161,130 @@ func (s *PromptSampler) SetConfig(config *RuntimeConfig) error {
 	}
 	s.runtimeConfig.Store(config.Clone())
 	if ts, ok := s.writer.(TokenSetter); ok {
-		ts.SetToken(config.Token)
+		ts.SetToken(config.SamplerToken)
 	}
 	return nil
 }
 
-// shouldSample decides whether a root invocation should be sampled. It is
-// called exactly once per root invocation in beforeAgent.
-func (s *PromptSampler) shouldSample() bool {
-	cfg := s.runtimeConfig.Load()
-	if !cfg.Enabled {
+// GetAppConfig returns the RuntimeConfig that will be used for invocations
+// whose resolved appName equals app. When app has a registered override the
+// override copy is returned and isOverride is true; otherwise the default
+// config copy is returned and isOverride is false.
+//
+// The returned pointer is owned by the caller and safe to mutate.
+func (s *PromptSampler) GetAppConfig(app string) (cfg *RuntimeConfig, isOverride bool) {
+	snap := s.runtimeConfig.loadSnapshot()
+	if app != "" {
+		if override, ok := snap.overrides[app]; ok && override != nil {
+			return override.Clone(), true
+		}
+	}
+	return snap.defaults.Clone(), false
+}
+
+// SetAppConfig atomically installs a per-app override. A PUT-like complete
+// replacement: the whole RuntimeConfig for app is replaced with the
+// supplied value. Returns an error when cfg fails Validate. The empty app
+// string is rejected as it would collide with "use default".
+//
+// Unlike SetConfig, SetAppConfig does not interact with the writer's
+// TokenSetter: writer-level token state follows the *default* config (which
+// is the single value writers can hold). Per-app SamplerToken values apply
+// inside the sampler's effective() path and are expected to be re-read on
+// each trace emission when a future writer wants per-app isolation.
+func (s *PromptSampler) SetAppConfig(app string, cfg *RuntimeConfig) error {
+	if app == "" {
+		return errors.New("app name must not be empty")
+	}
+	if cfg == nil {
+		return errors.New("config must not be nil")
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	for {
+		cur := s.runtimeConfig.loadSnapshot()
+		next := cur.Clone()
+		if next.overrides == nil {
+			next.overrides = map[string]*RuntimeConfig{}
+		}
+		next.overrides[app] = cfg.Clone()
+		// Single-writer COW: Store is linearising on atomic.Value, a
+		// concurrent writer that landed between our load and store will
+		// have published a different snapshot and we redo on the loop's
+		// next iteration. Reading the snapshot pointer back after the
+		// store and comparing is not strictly required but protects
+		// against accidental lost writes if additional concurrent
+		// writers exist.
+		s.runtimeConfig.storeSnapshot(next)
+		return nil
+	}
+}
+
+// DeleteAppConfig removes a previously registered per-app override. It
+// returns true if an override was removed and false when no such override
+// existed.
+func (s *PromptSampler) DeleteAppConfig(app string) bool {
+	if app == "" {
+		return false
+	}
+	cur := s.runtimeConfig.loadSnapshot()
+	if _, ok := cur.overrides[app]; !ok {
+		return false
+	}
+	next := cur.Clone()
+	delete(next.overrides, app)
+	s.runtimeConfig.storeSnapshot(next)
+	return true
+}
+
+// ListAppConfigs returns a deep copy of all registered per-app overrides.
+// The returned map is owned by the caller and safe to mutate; mutations do
+// not affect the sampler's internal state.
+func (s *PromptSampler) ListAppConfigs() map[string]*RuntimeConfig {
+	snap := s.runtimeConfig.loadSnapshot()
+	out := make(map[string]*RuntimeConfig, len(snap.overrides))
+	for k, v := range snap.overrides {
+		out[k] = v.Clone()
+	}
+	return out
+}
+
+// resolveAppName extracts the appName associated with an invocation. It is
+// used to look up the per-app override that should apply to the current
+// sampling decision. The resolution order mirrors how the Runner propagates
+// app identity:
+//
+//  1. inv.RunOptions.AppName (set by runner.WithAppName on a specific run)
+//  2. inv.Session.AppName    (set when the runner attached a session to the
+//     invocation)
+//  3. "" (no app known)
+//
+// The empty string falls back to the default RuntimeConfig in the sampler's
+// configHolder snapshot.
+func resolveAppName(inv *agent.Invocation) string {
+	if inv == nil {
+		return ""
+	}
+	if name := inv.RunOptions.AppName; name != "" {
+		return name
+	}
+	if inv.Session != nil && inv.Session.AppName != "" {
+		return inv.Session.AppName
+	}
+	return ""
+}
+
+// shouldSample decides whether a root invocation should be sampled. It
+// consults the per-app override (if any) before falling back to the default
+// RuntimeConfig. The entire lookup is one atomic.Load on the hot path.
+//
+// Passing a nil invocation is equivalent to passing an invocation with no
+// appName; in that case the default RuntimeConfig is used.
+func (s *PromptSampler) shouldSample(inv *agent.Invocation) bool {
+	snap := s.runtimeConfig.loadSnapshot()
+	cfg := snap.effective(resolveAppName(inv))
+	if cfg == nil || !cfg.Enabled {
 		return false
 	}
 	switch {
@@ -214,7 +328,7 @@ func (s *PromptSampler) beforeAgent(
 	if isSubAgentInvocation(inv) {
 		return nil, nil
 	}
-	sampled := s.shouldSample()
+	sampled := s.shouldSample(inv)
 	structureID := s.defaultStructureID
 	if structureID == "" {
 		structureID = inv.AgentName

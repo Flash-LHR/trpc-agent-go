@@ -57,7 +57,7 @@ func TestNew_Defaults(t *testing.T) {
 	cfg := s.GetConfig()
 	assert.True(t, cfg.Enabled)
 	assert.InDelta(t, 0.0, cfg.SampleRate, 0)
-	assert.Empty(t, cfg.Token)
+	assert.Empty(t, cfg.SamplerToken)
 }
 
 func TestNew_WithOptions(t *testing.T) {
@@ -69,7 +69,7 @@ func TestNew_WithOptions(t *testing.T) {
 		WithWriter(cw),
 		WithMaxSteps(42),
 		WithStructureID("struct-v1"),
-		WithToken("initial-token"),
+		WithSamplerToken("initial-token"),
 	)
 
 	assert.Equal(t, "custom", s.Name())
@@ -79,9 +79,9 @@ func TestNew_WithOptions(t *testing.T) {
 	cfg := s.GetConfig()
 	assert.True(t, cfg.Enabled)
 	assert.InDelta(t, 0.5, cfg.SampleRate, 0)
-	assert.Equal(t, "initial-token", cfg.Token)
+	assert.Equal(t, "initial-token", cfg.SamplerToken)
 
-	// WithToken must propagate into the writer's TokenSetter.
+	// WithSamplerToken must propagate into the writer's TokenSetter.
 	_, tok := cw.snapshot()
 	assert.Equal(t, "initial-token", tok)
 }
@@ -98,26 +98,26 @@ func TestShouldSample(t *testing.T) {
 	t.Run("disabled_never_samples", func(t *testing.T) {
 		s := New(WithEnabled(false), WithSampleRate(1.0))
 		for i := 0; i < 50; i++ {
-			assert.False(t, s.shouldSample())
+			assert.False(t, s.shouldSample(nil))
 		}
 	})
 	t.Run("rate_zero_never_samples", func(t *testing.T) {
 		s := New(WithSampleRate(0))
 		for i := 0; i < 50; i++ {
-			assert.False(t, s.shouldSample())
+			assert.False(t, s.shouldSample(nil))
 		}
 	})
 	t.Run("rate_one_always_samples", func(t *testing.T) {
 		s := New(WithSampleRate(1))
 		for i := 0; i < 50; i++ {
-			assert.True(t, s.shouldSample())
+			assert.True(t, s.shouldSample(nil))
 		}
 	})
 	t.Run("rate_half_has_both", func(t *testing.T) {
 		s := New(WithSampleRate(0.5))
 		var sampled, skipped int
 		for i := 0; i < 500; i++ {
-			if s.shouldSample() {
+			if s.shouldSample(nil) {
 				sampled++
 			} else {
 				skipped++
@@ -137,13 +137,13 @@ func TestSetConfig_Validation(t *testing.T) {
 	err = s.SetConfig(&RuntimeConfig{SampleRate: 2})
 	assert.Error(t, err)
 
-	err = s.SetConfig(&RuntimeConfig{Enabled: true, SampleRate: 0.7, Token: "t"})
+	err = s.SetConfig(&RuntimeConfig{Enabled: true, SampleRate: 0.7, SamplerToken: "t"})
 	require.NoError(t, err)
 
 	got := s.GetConfig()
 	assert.Equal(t, true, got.Enabled)
 	assert.InDelta(t, 0.7, got.SampleRate, 0)
-	assert.Equal(t, "t", got.Token)
+	assert.Equal(t, "t", got.SamplerToken)
 }
 
 func TestSetConfig_PropagatesTokenToWriter(t *testing.T) {
@@ -151,7 +151,7 @@ func TestSetConfig_PropagatesTokenToWriter(t *testing.T) {
 	s := New(WithWriter(cw))
 
 	require.NoError(t, s.SetConfig(&RuntimeConfig{
-		Enabled: true, SampleRate: 0.1, Token: "new-token",
+		Enabled: true, SampleRate: 0.1, SamplerToken: "new-token",
 	}))
 
 	_, tok := cw.snapshot()
@@ -164,7 +164,7 @@ func TestSetConfig_PropagatesTokenThroughAsyncWriter(t *testing.T) {
 	defer s.Close(context.Background())
 
 	require.NoError(t, s.SetConfig(&RuntimeConfig{
-		Enabled: true, SampleRate: 0.1, Token: "through-async",
+		Enabled: true, SampleRate: 0.1, SamplerToken: "through-async",
 	}))
 
 	// Inner writer should have received the token through AsyncWriter's
