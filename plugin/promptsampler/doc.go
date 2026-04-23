@@ -54,9 +54,11 @@
 //
 // The sampler also exposes a standalone HTTP control-plane handler via
 // PromptSampler.ConfigHandler. The handler serves GET / PUT / DELETE on
-// default and per-app configurations, authenticates requests using static
-// admin tokens or a caller-supplied auth func, and does not own a specific
-// URL prefix — the host process mounts it at any ServeMux path. See
-// ConfigHandler's documentation and the package README for the wire
-// contract.
+// default and per-app configurations. By default it is permissive: every
+// request is served without authentication. Callers that need access
+// control should either wrap the returned handler in their own HTTP
+// middleware or supply a predicate via WithAuthFunc. The handler does not
+// own a specific URL prefix — the host process mounts it at any ServeMux
+// path. See ConfigHandler's documentation and the package README for the
+// wire contract.
 package promptsampler

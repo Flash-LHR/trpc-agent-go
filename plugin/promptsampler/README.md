@@ -7,7 +7,8 @@
 > **近期变更（BREAKING）**
 > - `RuntimeConfig.Token` 已重命名为 `RuntimeConfig.SamplerToken`（JSON `sampler_token`）。
 > - 构造选项 `WithToken(...)` 同步改为 `WithSamplerToken(...)`。
-> - 新增 HTTP `ConfigHandler` 控制面，支持 default + per-app 配置，默认 `Authorization: Bearer` 鉴权。
+> - 新增 HTTP `ConfigHandler` 控制面，支持 default + per-app 配置。
+> - `ConfigHandler` 已移除静态 admin token 鉴权：`WithAdminToken` / `WithAdminTokens` 选项被删除，handler 默认放行所有请求；需要自定义鉴权请改用 `WithAuthFunc`，或在外层 HTTP middleware 中处理。
 > - 详见下文 **迁移指南** 和 **控制面接口** 章节。
 
 ---
@@ -97,23 +98,28 @@ sampler := promptsampler.New(
 
 mux := http.NewServeMux()
 mux.Handle(
-    // URL 前缀由业务方决定；下面这条模仿历史契约。
+    // URL 前缀由业务方决定。
     "/promptiter/v1/plugins/trace_reporter/config",
-    sampler.ConfigHandler(
-        promptsampler.WithAdminToken(os.Getenv("PROMPTSAMPLER_ADMIN_TOKEN")),
-    ),
+    sampler.ConfigHandler(),
 )
 go http.ListenAndServe(":9090", mux)
 ```
 
-### 两种 token 的严格区分
+### 默认放行；鉴权属于业务方
 
-| 概念 | 字段/选项 | 作用 | 方向 |
-|------|-----------|------|------|
-| 控制面鉴权 token（admin token） | `WithAdminToken` / `WithAdminTokens` / `Authorization: Bearer <token>` 请求头 / `?admin_token=<token>` query 兜底 | 保护 ConfigHandler 本身 —— 拿到这个 token 就能改采样行为 | 运维 → Agent 进程 |
-| 业务隔离 token（sampler token） | `RuntimeConfig.SamplerToken` / `WithSamplerToken(...)` | 上报 trace 时透传给 log_collector，用于租户/业务隔离 | Agent → log_collector |
+`ConfigHandler()` 默认 **permissive**：未传入 `WithAuthFunc(...)` 时，任何请求都会进入路由（GET/PUT/DELETE）。这是出于以下设计原则：
 
-**两种 token 绝不能混用**。控制面 token 进 HTTP 访问日志，业务 token 进 collector 的数据库；把 admin token 放到 body 里或把 sampler token 放到 header 里都是安全事故。
+- `ConfigHandler` 应挂在**运维内网**（或进程自身控制的 admin 端口）上，不应对公网暴露。网络边界由业务方负责。
+- `RuntimeConfig.SamplerToken` 是**业务隔离标签**，透传给 `log_collector` 的 `ReportTraceRequest.Token`，它不是凭证；**凭证级别的访问控制**（例如允许谁写、允许谁读 trace）由下游 `log_collector` 统一承担。
+- plugin 不再提供静态 admin token 开关；需要进程内鉴权请用 `WithAuthFunc`，或在外层 HTTP middleware 中处理。
+
+### SamplerToken 的定位
+
+| 字段/选项 | 作用 | 方向 |
+|-----------|------|------|
+| `RuntimeConfig.SamplerToken` / `WithSamplerToken(...)` | 上报 trace 时透传给 log_collector 的业务隔离标签 | Agent → log_collector |
+
+`SamplerToken` **不是** HTTP 访问凭证，也不参与 ConfigHandler 的鉴权；它只进 log_collector 的业务数据。
 
 ### HTTP API
 
@@ -121,12 +127,10 @@ go http.ListenAndServe(":9090", mux)
 
 ```bash
 # 不带 ?app= → 返回 default 配置 + 所有 per-app overrides
-curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-     http://localhost:9090/promptiter/v1/plugins/trace_reporter/config
+curl http://localhost:9090/promptiter/v1/plugins/trace_reporter/config
 
 # 带 ?app=X → 返回 X 对应的生效配置（override 或 default fallback）
-curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-     "http://localhost:9090/promptiter/v1/plugins/trace_reporter/config?app=my-app"
+curl "http://localhost:9090/promptiter/v1/plugins/trace_reporter/config?app=my-app"
 ```
 
 响应示例（不带 `?app=`）：
@@ -155,14 +159,12 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 
 ```bash
 # 更新 default 配置
-curl -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
-     -H "Content-Type: application/json" \
+curl -X PUT -H "Content-Type: application/json" \
      -d '{"config":{"enabled":true,"sample_rate":0.5,"sampler_token":"biz-a"}}' \
      http://localhost:9090/promptiter/v1/plugins/trace_reporter/config
 
 # 为指定 app 写一条覆盖（一次 PUT = 一份完整配置，不做字段级合并）
-curl -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
-     -H "Content-Type: application/json" \
+curl -X PUT -H "Content-Type: application/json" \
      -d '{"config":{"enabled":true,"sample_rate":1.0,"sampler_token":"biz-a"}}' \
      "http://localhost:9090/promptiter/v1/plugins/trace_reporter/config?app=my-app"
 ```
@@ -170,7 +172,7 @@ curl -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
 #### DELETE 删除 app 覆盖
 
 ```bash
-curl -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
+curl -X DELETE \
      "http://localhost:9090/promptiter/v1/plugins/trace_reporter/config?app=my-app"
 ```
 
@@ -191,7 +193,7 @@ curl -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
 | 200  | GET / PUT 成功 |
 | 204  | DELETE 成功 |
 | 400  | body 非 JSON / 缺少 `config` 字段 / `sample_rate` 超出 [0,1] |
-| 401  | 缺少或无效的 admin token；handler 未配置任何鉴权 |
+| 401  | 仅当 `WithAuthFunc` 被传入且其返回 `false` 时出现 |
 | 404  | DELETE 时指定的 app 没有 override |
 | 405  | 方法不被支持；对 default 发 DELETE |
 
@@ -225,26 +227,24 @@ apps := sampler.ListAppConfigs()
 
 `SetConfig` 成功后，下一次 Trace 上报时 `ReportTraceRequest.Token` 即为新值（通过 TokenSetter 传递）。
 
-### 安全默认：未配置鉴权 → 401
+### 自定义鉴权（可选）
 
-`ConfigHandler()` 未传入 `WithAdminToken` / `WithAdminTokens` / `WithAuthFunc` 时，所有请求都会收到 `401 Unauthorized`，错误信息 `"no admin auth configured for ConfigHandler"`。这是 security-by-default 原则：避免误操作把控制面暴露到公网。
-
-如需自定义鉴权（IAM / 签名 / allowlist）：
+当 `ConfigHandler` 确实需要在进程内做一层轻量鉴权（例如接公司 IAM、签名、IP 白名单）时，可通过 `WithAuthFunc` 注入：
 
 ```go
 handler := sampler.ConfigHandler(
     promptsampler.WithAuthFunc(func(r *http.Request) bool {
-        // 返回 true 表示放行，false 表示 401
+        // 返回 true 放行；false 返回 401 Unauthorized
         return myIAM.Verify(r)
     }),
 )
 ```
 
-`WithAuthFunc` 设置后会**完全替代**静态 token 列表。
+`WithAuthFunc` 是 plugin 内**唯一**的鉴权扩展点。若不调用它，handler 对所有请求放行。
 
 ### 迁移指南
 
-从旧版本（仅有 `Token` 字段和 `WithToken(...)` 选项）迁移：
+#### 从旧字段名迁移
 
 | 旧 | 新 |
 |----|----|
@@ -252,6 +252,17 @@ handler := sampler.ConfigHandler(
 | `WithToken("biz")`     | `WithSamplerToken("biz")` |
 
 字段改名是**破坏性变更**，需要同步修改所有直接构造 `RuntimeConfig` 字面量的调用点。字段语义不变：仍是上报给 log_collector 的业务隔离标签。
+
+#### 从 admin token 鉴权迁移
+
+| 旧 | 新 |
+|----|----|
+| `sampler.ConfigHandler(promptsampler.WithAdminToken(token))` | `sampler.ConfigHandler()`（默认放行） |
+| `sampler.ConfigHandler(promptsampler.WithAdminTokens(t1, t2))` | `sampler.ConfigHandler()`，在外层 HTTP middleware 自行匹配 / 或 `WithAuthFunc(...)` |
+| 请求必带 `Authorization: Bearer <token>` | 无鉴权需求，直接 curl；若配置了 `WithAuthFunc`，按其约定鉴权 |
+| 部署环境变量 `PROMPTSAMPLER_ADMIN_TOKEN` | 不再使用；部署平台可移除 |
+
+凭证级访问控制现在由下游 `log_collector` 对 `SamplerToken` 的校验承担（独立变更，不在 plugin 仓）。
 
 ---
 

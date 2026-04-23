@@ -57,9 +57,9 @@ func WithEnabled(enabled bool) Option {
 }
 
 // WithSamplerToken sets the initial business isolation token (SamplerToken).
-// This token is forwarded to the log collector as ReportTraceRequest.Token
-// and must not be confused with the control-plane admin token used by
-// ConfigHandler (see WithAdminToken).
+// This token is forwarded to the log collector as ReportTraceRequest.Token.
+// It is a tenant / app label, not an access credential; the log collector
+// is responsible for deciding which SamplerToken values to accept.
 //
 // The token can also be updated at runtime via SetConfig or the HTTP
 // ConfigHandler; updates are propagated atomically to TokenSetter writers.

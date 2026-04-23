@@ -9,7 +9,6 @@
 package promptsampler
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,48 +20,30 @@ import (
 
 // ConfigHandlerOption configures a configHandler at construction time.
 //
-// At least one authentication option (WithAdminToken, WithAdminTokens or
-// WithAuthFunc) must be provided. A ConfigHandler built without any auth
-// option rejects every request with 401 to avoid accidentally exposing the
-// control plane.
+// ConfigHandler is permissive-by-default: when constructed with no options
+// it serves every request. Pass WithAuthFunc(...) to attach a custom
+// authentication predicate (IAM, signature, allowlist, static token, etc.)
+// — that is the sole in-plugin extension point for access control.
+//
+// Tenant-level access control (deciding which SamplerToken values are
+// acceptable) is deliberately out of scope here; it belongs to the
+// downstream log_collector.
 type ConfigHandlerOption func(*configHandler)
 
-// WithAdminToken appends a single admin token to the handler's accepted
-// token list. Multiple calls are additive.
+// WithAuthFunc installs a custom authentication predicate. When set,
+// ConfigHandler invokes it on every request and serves only when it
+// returns true; otherwise the request is rejected with 401 Unauthorized.
 //
-// The admin token gates HTTP access to ConfigHandler (i.e. it is the
-// operator credential). It is unrelated to RuntimeConfig.SamplerToken, which
-// is forwarded to the log_collector as a business isolation label. These two
-// tokens must not be reused or confused; leaking the admin token exposes the
-// control plane, leaking the SamplerToken exposes the tenant.
-func WithAdminToken(token string) ConfigHandlerOption {
-	return func(h *configHandler) {
-		if token == "" {
-			return
-		}
-		h.adminTokens = append(h.adminTokens, []byte(token))
-	}
-}
-
-// WithAdminTokens appends multiple admin tokens to the handler's accepted
-// list. It is a convenience for token rotation scenarios.
-func WithAdminTokens(tokens ...string) ConfigHandlerOption {
-	return func(h *configHandler) {
-		for _, t := range tokens {
-			if t == "" {
-				continue
-			}
-			h.adminTokens = append(h.adminTokens, []byte(t))
-		}
-	}
-}
-
-// WithAuthFunc installs a custom authentication predicate. When set, the
-// function is consulted exclusively (static admin tokens are ignored unless
-// the function chooses to look them up). Return true to accept the request.
+// Typical use cases:
 //
-// Use WithAuthFunc when the host process needs IAM / signature / allowlist
-// logic beyond a static bearer token list.
+//   - Bearer token allowlist:
+//     WithAuthFunc(func(r *http.Request) bool {
+//         return r.Header.Get("Authorization") == "Bearer " + os.Getenv("MY_TOKEN")
+//     })
+//
+//   - IP allowlist, IAM session verification, or HMAC signature checks.
+//
+// Without WithAuthFunc, ConfigHandler does not authenticate requests.
 func WithAuthFunc(fn func(*http.Request) bool) ConfigHandlerOption {
 	return func(h *configHandler) { h.authFunc = fn }
 }
@@ -75,8 +56,10 @@ func WithAuthFunc(fn func(*http.Request) bool) ConfigHandlerOption {
 // parameter and therefore works under any prefix. It does not own or
 // validate URL paths beyond what the enclosing ServeMux delivered.
 //
-// Authentication is mandatory: a handler built without any auth option
-// responds to every request with 401 Unauthorized.
+// Authentication: ConfigHandler is permissive by default. When constructed
+// without any WithAuthFunc option, every request is served. To impose
+// access control, supply a WithAuthFunc predicate or wrap the returned
+// handler in a caller-owned HTTP middleware.
 func (s *PromptSampler) ConfigHandler(opts ...ConfigHandlerOption) http.Handler {
 	h := &configHandler{sampler: s}
 	for _, opt := range opts {
@@ -90,26 +73,25 @@ func (s *PromptSampler) ConfigHandler(opts ...ConfigHandlerOption) http.Handler 
 // ServeMux handles path routing.
 type configHandler struct {
 	sampler *PromptSampler
-	// adminTokens holds valid bearer tokens for the default static-token
-	// auth strategy. Comparisons use constant-time equality.
-	adminTokens [][]byte
-	// authFunc, when set, fully replaces the static token list and is the
-	// sole source of truth for "is this request allowed".
+	// authFunc, when non-nil, is consulted on every request; its return
+	// value is the sole source of truth for "is this request allowed".
+	// When nil, the handler serves all requests without authentication.
 	authFunc func(*http.Request) bool
 }
 
-// ServeHTTP implements http.Handler. The handler always authenticates
-// first; then dispatches on r.Method.
+// ServeHTTP implements http.Handler. When an auth predicate has been
+// supplied via WithAuthFunc, it is consulted first; otherwise the handler
+// dispatches directly on r.Method.
 func (h *configHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !h.authenticate(r) {
+	if h.authFunc != nil && !h.authFunc(r) {
 		// The auth failure path intentionally logs the remote address
-		// and URL but never the token value, so that the log cannot be
-		// abused to leak credentials.
+		// and URL but never request bodies or headers, so the log
+		// cannot be abused to leak credentials.
 		log.ErrorfContext(r.Context(),
 			"[promptsampler] ConfigHandler: unauthorized: method=%s path=%s remote=%s",
 			r.Method, r.URL.Path, r.RemoteAddr,
 		)
-		h.writeError(w, r, http.StatusUnauthorized, h.unauthorizedMessage())
+		h.writeError(w, r, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
@@ -127,63 +109,6 @@ func (h *configHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		))
 		h.writeError(w, r, http.StatusMethodNotAllowed, "method not allowed")
 	}
-}
-
-// ---------- auth ----------
-
-// authenticate returns true when the request should be allowed.
-//
-// Resolution order:
-//  1. If an authFunc is set, its return value is authoritative (ignores
-//     static tokens entirely; callers who want both semantics can call
-//     WithAdminToken logic themselves inside authFunc).
-//  2. Otherwise, check the configured static admin tokens. A request is
-//     accepted iff its bearer token matches one of them in constant time.
-//  3. Otherwise (no auth configured at all), reject.
-func (h *configHandler) authenticate(r *http.Request) bool {
-	if h.authFunc != nil {
-		return h.authFunc(r)
-	}
-	if len(h.adminTokens) == 0 {
-		return false
-	}
-	token := extractToken(r)
-	if token == "" {
-		return false
-	}
-	provided := []byte(token)
-	for _, accepted := range h.adminTokens {
-		// ConstantTimeCompare returns 1 iff the byte slices are equal
-		// *and* of the same length; we pre-check the length implicitly
-		// by the comparison semantics.
-		if subtle.ConstantTimeCompare(provided, accepted) == 1 {
-			return true
-		}
-	}
-	return false
-}
-
-// unauthorizedMessage returns the JSON error message used in 401 responses.
-// It distinguishes "no auth configured" (a misconfiguration) from "bad
-// token" so that operators see the root cause quickly.
-func (h *configHandler) unauthorizedMessage() string {
-	if h.authFunc == nil && len(h.adminTokens) == 0 {
-		return "no admin auth configured for ConfigHandler"
-	}
-	return "unauthorized"
-}
-
-// extractToken reads the bearer token from the request. The Authorization
-// header is preferred (so it never shows up in access logs); if absent, the
-// ?admin_token= query parameter is used as a fallback.
-func extractToken(r *http.Request) string {
-	if auth := r.Header.Get("Authorization"); auth != "" {
-		const prefix = "Bearer "
-		if strings.HasPrefix(auth, prefix) {
-			return strings.TrimSpace(auth[len(prefix):])
-		}
-	}
-	return r.URL.Query().Get("admin_token")
 }
 
 // ---------- GET ----------

@@ -74,79 +74,74 @@ func do(
 
 // ---------- auth ----------
 
-func TestConfigHandler_Auth_NoConfig_Rejects(t *testing.T) {
+// TestConfigHandler_NoOptions_Serves verifies the permissive-by-default
+// contract: ConfigHandler() without any option must serve every request
+// rather than returning 401.
+func TestConfigHandler_NoOptions_Serves(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler() // no auth options at all
+	h := s.ConfigHandler()
 
-	rec, resp := do(t, h, http.MethodGet, "/config", "", nil)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.Contains(t, resp.Error, "no admin auth configured")
+	rec, _ := do(t, h, http.MethodGet, "/config", "", nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 }
 
-func TestConfigHandler_Auth_BearerAccepted(t *testing.T) {
+// TestConfigHandler_AuthFunc_True_Accepts verifies that a predicate
+// returning true lets the request through to the normal route handlers.
+func TestConfigHandler_AuthFunc_True_Accepts(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminToken("secret"))
+	h := s.ConfigHandler(WithAuthFunc(func(*http.Request) bool { return true }))
 
-	rec, _ := do(t, h, http.MethodGet, "/config", "",
-		map[string]string{"Authorization": "Bearer secret"})
+	rec, _ := do(t, h, http.MethodGet, "/config", "", nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
-func TestConfigHandler_Auth_QueryFallback(t *testing.T) {
+// TestConfigHandler_AuthFunc_False_Rejects verifies that a predicate
+// returning false produces a 401 with the canonical "unauthorized" body
+// and leaves the sampler's configuration untouched.
+func TestConfigHandler_AuthFunc_False_Rejects(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminToken("secret"))
+	before := s.GetConfig()
 
-	rec, _ := do(t, h, http.MethodGet, "/config?admin_token=secret", "", nil)
-	assert.Equal(t, http.StatusOK, rec.Code)
-}
+	h := s.ConfigHandler(WithAuthFunc(func(*http.Request) bool { return false }))
 
-func TestConfigHandler_Auth_BadTokenRejected(t *testing.T) {
-	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminToken("secret"))
-
-	rec, resp := do(t, h, http.MethodGet, "/config?admin_token=wrong", "", nil)
+	rec, resp := do(t, h, http.MethodPut, "/config",
+		`{"config":{"enabled":true,"sample_rate":1.0,"sampler_token":"x"}}`, nil)
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Equal(t, "unauthorized", resp.Error)
-	// The response body must never echo the provided token.
-	assert.NotContains(t, rec.Body.String(), "wrong")
+
+	// Config must not have changed.
+	after := s.GetConfig()
+	assert.Equal(t, before.Enabled, after.Enabled)
+	assert.InDelta(t, before.SampleRate, after.SampleRate, 0)
+	assert.Equal(t, before.SamplerToken, after.SamplerToken)
 }
 
-func TestConfigHandler_Auth_MultipleTokens(t *testing.T) {
+// TestConfigHandler_AuthFunc_ReceivesRequest verifies the predicate gets
+// the full *http.Request so callers can read headers, path, or anything
+// else to make the allow/deny decision.
+func TestConfigHandler_AuthFunc_ReceivesRequest(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminTokens("t1", "t2"))
+	h := s.ConfigHandler(WithAuthFunc(func(r *http.Request) bool {
+		return r.Header.Get("X-Allow") == "1"
+	}))
 
-	for _, tok := range []string{"t1", "t2"} {
-		rec, _ := do(t, h, http.MethodGet, "/config", "",
-			map[string]string{"Authorization": "Bearer " + tok})
-		assert.Equal(t, http.StatusOK, rec.Code, "token %q must pass", tok)
-	}
-	rec, _ := do(t, h, http.MethodGet, "/config", "",
-		map[string]string{"Authorization": "Bearer nope"})
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-}
+	recPass, _ := do(t, h, http.MethodGet, "/config", "",
+		map[string]string{"X-Allow": "1"})
+	assert.Equal(t, http.StatusOK, recPass.Code)
 
-func TestConfigHandler_Auth_AuthFuncOverridesStatic(t *testing.T) {
-	s := newTestSampler(t)
-	// AuthFunc always rejects; static tokens would otherwise allow "t1"
-	// but AuthFunc is authoritative per the spec.
-	h := s.ConfigHandler(
-		WithAdminToken("t1"),
-		WithAuthFunc(func(r *http.Request) bool { return false }),
-	)
-	rec, _ := do(t, h, http.MethodGet, "/config", "",
-		map[string]string{"Authorization": "Bearer t1"})
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	recDeny, _ := do(t, h, http.MethodGet, "/config", "",
+		map[string]string{"X-Allow": "0"})
+	assert.Equal(t, http.StatusUnauthorized, recDeny.Code)
 }
 
 // ---------- method dispatch ----------
 
 func TestConfigHandler_UnsupportedMethod_Returns405(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminToken("t"))
+	h := s.ConfigHandler()
 
-	rec, resp := do(t, h, http.MethodPost, "/config", "",
-		map[string]string{"Authorization": "Bearer t"})
+	rec, resp := do(t, h, http.MethodPost, "/config", "", nil)
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 	assert.NotEmpty(t, rec.Header().Get("Allow"))
 	assert.Equal(t, "method not allowed", resp.Error)
@@ -163,9 +158,8 @@ func TestConfigHandler_GET_DefaultReturnsDefaultAndApps(t *testing.T) {
 		Enabled: true, SampleRate: 1.0, SamplerToken: "a-tok",
 	}))
 
-	h := s.ConfigHandler(WithAdminToken("t"))
-	rec, resp := do(t, h, http.MethodGet, "/config", "",
-		map[string]string{"Authorization": "Bearer t"})
+	h := s.ConfigHandler()
+	rec, resp := do(t, h, http.MethodGet, "/config", "", nil)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	require.NotNil(t, resp.Config, "default config must be present")
@@ -181,10 +175,9 @@ func TestConfigHandler_GET_AppHitReturnsOverride(t *testing.T) {
 	require.NoError(t, s.SetAppConfig("A", &RuntimeConfig{
 		Enabled: true, SampleRate: 0.42, SamplerToken: "a",
 	}))
-	h := s.ConfigHandler(WithAdminToken("t"))
+	h := s.ConfigHandler()
 
-	rec, resp := do(t, h, http.MethodGet, "/config?app=A", "",
-		map[string]string{"Authorization": "Bearer t"})
+	rec, resp := do(t, h, http.MethodGet, "/config?app=A", "", nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "override", resp.Source)
 	assert.InDelta(t, 0.42, resp.Config.SampleRate, 0)
@@ -193,10 +186,9 @@ func TestConfigHandler_GET_AppHitReturnsOverride(t *testing.T) {
 func TestConfigHandler_GET_AppMissFallsBackToDefault(t *testing.T) {
 	s := newTestSampler(t)
 	require.NoError(t, s.SetConfig(&RuntimeConfig{SampleRate: 0.1}))
-	h := s.ConfigHandler(WithAdminToken("t"))
+	h := s.ConfigHandler()
 
-	rec, resp := do(t, h, http.MethodGet, "/config?app=unknown", "",
-		map[string]string{"Authorization": "Bearer t"})
+	rec, resp := do(t, h, http.MethodGet, "/config?app=unknown", "", nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "default", resp.Source)
 	assert.InDelta(t, 0.1, resp.Config.SampleRate, 0)
@@ -206,11 +198,10 @@ func TestConfigHandler_GET_AppMissFallsBackToDefault(t *testing.T) {
 
 func TestConfigHandler_PUT_Default_ReplacesConfig(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminToken("t"))
+	h := s.ConfigHandler()
 
 	body := `{"config":{"enabled":true,"sample_rate":0.7,"sampler_token":"new"}}`
-	rec, resp := do(t, h, http.MethodPut, "/config", body,
-		map[string]string{"Authorization": "Bearer t"})
+	rec, resp := do(t, h, http.MethodPut, "/config", body, nil)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	got := s.GetConfig()
@@ -222,11 +213,10 @@ func TestConfigHandler_PUT_Default_ReplacesConfig(t *testing.T) {
 
 func TestConfigHandler_PUT_App_WritesOverride(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminToken("t"))
+	h := s.ConfigHandler()
 
 	body := `{"config":{"enabled":true,"sample_rate":1.0,"sampler_token":"A"}}`
-	rec, resp := do(t, h, http.MethodPut, "/config?app=A", body,
-		map[string]string{"Authorization": "Bearer t"})
+	rec, resp := do(t, h, http.MethodPut, "/config?app=A", body, nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "override", resp.Source)
 
@@ -246,10 +236,9 @@ func TestConfigHandler_PUT_Invalid_RateOutOfRange(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			s := newTestSampler(t)
-			h := s.ConfigHandler(WithAdminToken("t"))
+			h := s.ConfigHandler()
 
-			rec, resp := do(t, h, http.MethodPut, "/config", c.body,
-				map[string]string{"Authorization": "Bearer t"})
+			rec, resp := do(t, h, http.MethodPut, "/config", c.body, nil)
 			assert.Equal(t, http.StatusBadRequest, rec.Code)
 			assert.Contains(t, resp.Error, "sample_rate must be between 0 and 1")
 		})
@@ -258,39 +247,36 @@ func TestConfigHandler_PUT_Invalid_RateOutOfRange(t *testing.T) {
 
 func TestConfigHandler_PUT_Invalid_MissingConfigWrapper(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminToken("t"))
+	h := s.ConfigHandler()
 
 	// A flat body without the "config" outer wrapper must be rejected.
 	// The exact message depends on whether the unknown-field check or the
 	// nil-config check fires first; both paths are acceptable 400s per
 	// the spec, so we assert only the status code and non-empty error.
 	body := `{"enabled":true,"sample_rate":0.5}`
-	rec, resp := do(t, h, http.MethodPut, "/config", body,
-		map[string]string{"Authorization": "Bearer t"})
+	rec, resp := do(t, h, http.MethodPut, "/config", body, nil)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.NotEmpty(t, resp.Error)
 }
 
 func TestConfigHandler_PUT_Invalid_EmptyConfigField(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminToken("t"))
+	h := s.ConfigHandler()
 
 	// Envelope with an explicit null config must surface the
 	// "must contain a 'config' field" message so operators understand the
 	// contract.
 	body := `{"config":null}`
-	rec, resp := do(t, h, http.MethodPut, "/config", body,
-		map[string]string{"Authorization": "Bearer t"})
+	rec, resp := do(t, h, http.MethodPut, "/config", body, nil)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, resp.Error, "config")
 }
 
 func TestConfigHandler_PUT_Invalid_NotJSON(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminToken("t"))
+	h := s.ConfigHandler()
 
-	rec, resp := do(t, h, http.MethodPut, "/config", `{not json}`,
-		map[string]string{"Authorization": "Bearer t"})
+	rec, resp := do(t, h, http.MethodPut, "/config", `{not json}`, nil)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, resp.Error, "invalid request body")
 }
@@ -299,10 +285,9 @@ func TestConfigHandler_PUT_Invalid_NotJSON(t *testing.T) {
 
 func TestConfigHandler_DELETE_DefaultIsMethodNotAllowed(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminToken("t"))
+	h := s.ConfigHandler()
 
-	rec, resp := do(t, h, http.MethodDelete, "/config", "",
-		map[string]string{"Authorization": "Bearer t"})
+	rec, resp := do(t, h, http.MethodDelete, "/config", "", nil)
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 	assert.Contains(t, resp.Error, "default config cannot be deleted")
 }
@@ -310,10 +295,9 @@ func TestConfigHandler_DELETE_DefaultIsMethodNotAllowed(t *testing.T) {
 func TestConfigHandler_DELETE_AppRemovesOverride(t *testing.T) {
 	s := newTestSampler(t)
 	require.NoError(t, s.SetAppConfig("A", &RuntimeConfig{SampleRate: 1.0}))
-	h := s.ConfigHandler(WithAdminToken("t"))
+	h := s.ConfigHandler()
 
-	rec, _ := do(t, h, http.MethodDelete, "/config?app=A", "",
-		map[string]string{"Authorization": "Bearer t"})
+	rec, _ := do(t, h, http.MethodDelete, "/config?app=A", "", nil)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 
 	// Post-delete: override must be gone; GET returns default source.
@@ -323,10 +307,9 @@ func TestConfigHandler_DELETE_AppRemovesOverride(t *testing.T) {
 
 func TestConfigHandler_DELETE_UnknownAppIs404(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminToken("t"))
+	h := s.ConfigHandler()
 
-	rec, resp := do(t, h, http.MethodDelete, "/config?app=never", "",
-		map[string]string{"Authorization": "Bearer t"})
+	rec, resp := do(t, h, http.MethodDelete, "/config?app=never", "", nil)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 	assert.Equal(t, "app override not found", resp.Error)
 }
@@ -335,7 +318,7 @@ func TestConfigHandler_DELETE_UnknownAppIs404(t *testing.T) {
 
 func TestConfigHandler_PUT_TakesEffectOnNextSampling(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminToken("t"))
+	h := s.ConfigHandler()
 
 	// Initially disabled -> no sampling.
 	require.NoError(t, s.SetConfig(&RuntimeConfig{Enabled: false, SampleRate: 1.0}))
@@ -343,8 +326,7 @@ func TestConfigHandler_PUT_TakesEffectOnNextSampling(t *testing.T) {
 
 	// PUT via HTTP to enable sampling at rate=1.
 	body := `{"config":{"enabled":true,"sample_rate":1.0,"sampler_token":"x"}}`
-	rec, _ := do(t, h, http.MethodPut, "/config", body,
-		map[string]string{"Authorization": "Bearer t"})
+	rec, _ := do(t, h, http.MethodPut, "/config", body, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	assert.True(t, s.shouldSample(nil))
@@ -354,7 +336,7 @@ func TestConfigHandler_PUT_TakesEffectOnNextSampling(t *testing.T) {
 
 func TestConfigHandler_Concurrent_NoRaces(t *testing.T) {
 	s := newTestSampler(t)
-	h := s.ConfigHandler(WithAdminToken("t"))
+	h := s.ConfigHandler()
 
 	var wg sync.WaitGroup
 	const workers = 16
@@ -375,7 +357,6 @@ func TestConfigHandler_Concurrent_NoRaces(t *testing.T) {
 					"/config?app="+app,
 					strings.NewReader(body),
 				)
-				req.Header.Set("Authorization", "Bearer t")
 				rec := httptest.NewRecorder()
 				h.ServeHTTP(rec, req)
 			}
@@ -387,7 +368,6 @@ func TestConfigHandler_Concurrent_NoRaces(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < iters; i++ {
 				req := httptest.NewRequest(http.MethodGet, "/config", nil)
-				req.Header.Set("Authorization", "Bearer t")
 				rec := httptest.NewRecorder()
 				h.ServeHTTP(rec, req)
 			}
@@ -404,7 +384,7 @@ func TestConfigHandler_Concurrent_NoRaces(t *testing.T) {
 
 func TestConfigHandler_EndToEnd_ViaHTTPServer(t *testing.T) {
 	s := newTestSampler(t)
-	srv := httptest.NewServer(s.ConfigHandler(WithAdminToken("t")))
+	srv := httptest.NewServer(s.ConfigHandler())
 	defer srv.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -415,7 +395,6 @@ func TestConfigHandler_EndToEnd_ViaHTTPServer(t *testing.T) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
 		srv.URL+"/config", strings.NewReader(body))
 	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer t")
 	rsp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	_ = rsp.Body.Close()
@@ -425,7 +404,6 @@ func TestConfigHandler_EndToEnd_ViaHTTPServer(t *testing.T) {
 	req, err = http.NewRequestWithContext(ctx, http.MethodGet,
 		srv.URL+"/config", nil)
 	require.NoError(t, err)
-	req.Header.Set("Authorization", "Bearer t")
 	rsp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer rsp.Body.Close()

@@ -19,16 +19,11 @@ import (
 // and the external control-plane (see PromptSampler.ConfigHandler). The
 // control-plane may round-trip the struct in HTTP request / response bodies.
 //
-// Two conceptually distinct tokens are involved when operating the sampler;
-// they must not be conflated:
-//
-//   - SamplerToken (this field) is a *business isolation* label that the
-//     writer forwards to the log_collector as ReportTraceRequest.Token. It
-//     identifies the calling tenant / app on the collector side.
-//   - The control-plane admin token (configured via ConfigHandler options
-//     such as WithAdminToken) is an *access credential* that gates HTTP
-//     access to ConfigHandler itself. It is never embedded in RuntimeConfig
-//     and must not be sent to the log_collector.
+// SamplerToken (below) is a *business isolation* label that the writer
+// forwards to the log_collector as ReportTraceRequest.Token. It identifies
+// the calling tenant / app on the collector side. Tenant-level access
+// control (deciding which SamplerToken values are acceptable) is handled
+// by the log_collector itself, not by this plugin.
 type RuntimeConfig struct {
 	// Enabled is the master switch; when false, sampling is skipped entirely.
 	Enabled bool `json:"enabled"`
@@ -37,9 +32,6 @@ type RuntimeConfig struct {
 	// SamplerToken is the business isolation token forwarded to the log
 	// collector via ReportTraceRequest.Token. It is assigned by the platform
 	// and used to filter traces by tenant / app.
-	//
-	// It is unrelated to the control-plane admin token and must never be
-	// confused with HTTP bearer credentials.
 	SamplerToken string `json:"sampler_token,omitempty"`
 }
 
