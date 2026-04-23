@@ -140,6 +140,66 @@ func (s *PromptSampler) Close(ctx context.Context) error {
 	return err
 }
 
+// NonClosable returns a plugin.Plugin that forwards to this sampler but is
+// NOT a plugin.Closer. Use it instead of passing *PromptSampler directly to
+// runner.WithPlugins(...) when you intend this sampler to be a *process-wide
+// singleton shared across multiple Runners:
+//
+//	sampler := promptsampler.New(...)                          // once per process
+//	r := runner.NewRunner(appName, agent,
+//	    runner.WithPlugins(sampler.NonClosable()),             // safe for each Runner
+//	)
+//
+// Background: runner.Runner.Close propagates to plugin.Manager.Close, which
+// walks every plugin and calls Close on those that implement plugin.Closer.
+// PromptSampler implements Closer (it closes its AsyncWriter channel), so a
+// Runner tearing down would also tear down the shared sampler; the next
+// Runner reusing the same singleton would then panic with
+// "send on closed channel" on the next trace write. The wrapper returned
+// here has no Close method, so plugin.Manager skips it and the shared core
+// stays alive for the life of the process.
+//
+// Multiple NonClosable wrappers may be returned for the same sampler and
+// attached to different Runners — per-invocation state inside the core is
+// keyed by invocationID (sync.Map), so callbacks routed through distinct
+// Runner.Registries never collide.
+//
+// The wrapper's Name defaults to the sampler's own plugin name (typically
+// "promptsampler"). Two wrappers returned from the same sampler therefore
+// share a Name, which is fine: plugin.Manager only de-duplicates names
+// within a single Manager, not across Runners. If a single Manager ever
+// needs multiple wrappers of the same core, use NonClosableNamed to
+// disambiguate.
+//
+// Callers MUST NOT hand-call Close on the underlying *PromptSampler while
+// NonClosable wrappers are still attached to live Runners, except at
+// process shutdown. Doing so would resurrect the exact failure mode this
+// wrapper exists to prevent.
+func (s *PromptSampler) NonClosable() plugin.Plugin {
+	if s == nil {
+		return nil
+	}
+	return &nonClosablePlugin{core: s, name: s.name}
+}
+
+// NonClosableNamed is identical to NonClosable except that the returned
+// wrapper's Name() reports the supplied string. An empty name falls back to
+// the sampler's own plugin name, making NonClosableNamed("") equivalent to
+// NonClosable().
+//
+// Use this when you need to attach multiple wrappers of the same core to
+// a single plugin.Manager (rare) and want to avoid the Manager's duplicate
+// name check.
+func (s *PromptSampler) NonClosableNamed(name string) plugin.Plugin {
+	if s == nil {
+		return nil
+	}
+	if name == "" {
+		name = s.name
+	}
+	return &nonClosablePlugin{core: s, name: name}
+}
+
 // GetConfig returns a deep copy of the current runtime configuration.
 // The returned pointer is owned by the caller and safe to mutate.
 func (s *PromptSampler) GetConfig() *RuntimeConfig {
@@ -318,7 +378,7 @@ func isSubAgentInvocation(inv *agent.Invocation) bool {
 // beforeAgent initialises per-invocation state for the root agent. Sub-agents
 // reuse their root's state so that all their steps are merged into one trace.
 func (s *PromptSampler) beforeAgent(
-	_ context.Context,
+	ctx context.Context,
 	args *agent.BeforeAgentArgs,
 ) (*agent.BeforeAgentResult, error) {
 	if args == nil || args.Invocation == nil {
@@ -334,6 +394,24 @@ func (s *PromptSampler) beforeAgent(
 		structureID = inv.AgentName
 	}
 	s.states.getOrCreate(inv.InvocationID, inv.AgentName, structureID, sampled)
+
+	// [promptsampler-test] 采样决策日志：记录本次 root invocation 是否被采到，
+	// 便于和 log_collector 侧事件交叉核对。
+	appName := resolveAppName(inv)
+	snap := s.runtimeConfig.loadSnapshot()
+	cfg := snap.effective(appName)
+	var enabled bool
+	var rate float64
+	var token string
+	if cfg != nil {
+		enabled = cfg.Enabled
+		rate = cfg.SampleRate
+		token = cfg.SamplerToken
+	}
+	log.ErrorfContext(ctx,
+		"[promptsampler-test] sampling decision: invocation_id=%s agent=%s app=%s enabled=%v rate=%v token=%s sampled=%v",
+		inv.InvocationID, inv.AgentName, appName, enabled, rate, token, sampled,
+	)
 	return nil, nil
 }
 
@@ -355,6 +433,13 @@ func (s *PromptSampler) afterAgent(
 
 	state := s.states.get(inv.InvocationID)
 	if state == nil || !state.sampled {
+		// [promptsampler-test] 未命中采样，记录一行方便对账：invocation 跑完但不产出 trace。
+		if state != nil {
+			log.ErrorfContext(ctx,
+				"[promptsampler-test] trace skipped (not sampled): invocation_id=%s agent=%s",
+				inv.InvocationID, inv.AgentName,
+			)
+		}
 		s.states.delete(inv.InvocationID)
 		return nil, nil
 	}
@@ -364,6 +449,13 @@ func (s *PromptSampler) afterAgent(
 	// Clean up state before writing to avoid accidental re-use.
 	s.states.delete(inv.InvocationID)
 
+	// [promptsampler-test] 录制结果日志：一次 Runner 产出的 trace 元信息，
+	// 无论写入成功与否都先打一行，便于统计哪些 invocation 被真正录制了。
+	log.ErrorfContext(ctx,
+		"[promptsampler-test] trace recorded: invocation_id=%s agent=%s status=%s steps=%d duration=%s",
+		trace.InvocationID, trace.AgentName, trace.Status, len(trace.Steps), trace.Duration,
+	)
+
 	if err := s.writer.Write(ctx, trace); err != nil {
 		// Writer implementations already log their own errors; we add a
 		// top-level entry with the invocation ID so that operators can
@@ -371,6 +463,11 @@ func (s *PromptSampler) afterAgent(
 		log.ErrorfContext(ctx,
 			"[promptsampler] trace write failed, dropped: invocation_id=%s err=%v",
 			trace.InvocationID, err,
+		)
+	} else {
+		log.ErrorfContext(ctx,
+			"[promptsampler-test] trace write ok: invocation_id=%s",
+			trace.InvocationID,
 		)
 	}
 	return nil, nil

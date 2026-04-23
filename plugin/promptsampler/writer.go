@@ -69,7 +69,10 @@ func (w *LogWriter) Write(ctx context.Context, trace *Trace) error {
 	if err != nil {
 		return fmt.Errorf("marshal trace: %w", err)
 	}
-	log.InfofContext(ctx, "[promptsampler] trace=%s", string(data))
+	// [promptsampler-test] LogWriter 的录制结果：直接把 trace JSON 打到日志，
+	// 便于本地/测试环境不接 log_collector 也能观察到录制内容。
+	log.ErrorfContext(ctx, "[promptsampler-test] LogWriter trace: invocation_id=%s bytes=%d body=%s",
+		trace.InvocationID, len(data), string(data))
 	return nil
 }
 
@@ -144,8 +147,21 @@ func (w *AsyncWriter) Write(ctx context.Context, trace *Trace) error {
 	detached := context.WithoutCancel(ctx)
 	select {
 	case w.ch <- &asyncJob{ctx: detached, trace: trace}:
+		// [promptsampler-test] 入队成功（真正落盘由后台 goroutine 执行）。
+		if trace != nil {
+			log.ErrorfContext(ctx,
+				"[promptsampler-test] AsyncWriter enqueued: invocation_id=%s queue_len=%d",
+				trace.InvocationID, w.queueLen,
+			)
+		}
 		return nil
 	default:
+		if trace != nil {
+			log.ErrorfContext(ctx,
+				"[promptsampler-test] AsyncWriter queue full, drop: invocation_id=%s queue_len=%d",
+				trace.InvocationID, w.queueLen,
+			)
+		}
 		return ErrAsyncQueueFull
 	}
 }

@@ -48,6 +48,59 @@ r := runner.NewRunner(myAgent, runner.WithPluginManager(mgr))
 
 业务 main 里通常只需要这几行，`trpc.NewServer()` 初始化完成后 `caller` 字段会自动填上 `trpc.GlobalConfig().Server.Service[0].Name`。
 
+> ⚠️ 以上示例只适用 **单 Runner** 场景（一个进程一个 Runner）。如果你有多个 Runner 都要挂同一个 sampler，请看下一节。
+
+---
+
+## 进程级单例：挂给多个 Runner 的正确姿势
+
+如果你的进程里有**多个 Runner**（或者 per-request 地新建 Runner）并且希望它们**共享同一个 sampler**，**不要**把 `*PromptSampler` 直接传给 `runner.WithPlugins(...)` —— 必须用 `sampler.NonClosable()`：
+
+```go
+// 进程启动时构造一次（单例）
+var sampler = promptsampler.New(
+    promptsampler.WithSampleRate(0),
+    promptsampler.WithTRPCWriter(),
+    promptsampler.WithAsyncWrite(100),
+)
+
+// 每次构造 Runner 时拿一个 NonClosable wrapper
+r := runner.NewRunner(
+    "myapp", myAgent,
+    runner.WithPlugins(sampler.NonClosable()),  // ← 注意这里
+)
+```
+
+### 为什么必须加 `.NonClosable()`
+
+`runner.Runner.Close()` 会遍历挂在它上面的所有 plugin，对实现了 `plugin.Closer` 接口的 plugin 调用 `Close(ctx)`。`*PromptSampler` 实现了 `Closer`，其 `Close` 会 `close(asyncWriter.ch)`。当这个单例被任意一个 Runner 的 `Close` 关掉后，**下一次**有 Runner 产生 trace 时 `AsyncWriter.Write` 往已关闭的 channel send 会直接 panic：
+
+```
+panic: send on closed channel
+  plugin/promptsampler/writer.go (AsyncWriter.Write)
+  plugin/promptsampler/sampler.go (PromptSampler.afterAgent)
+```
+
+这是一个**必现** bug（线上已复现过）。`NonClosable()` 返回的 wrapper 只实现 `plugin.Plugin` 而**不**实现 `plugin.Closer`，plugin.Manager 的类型断言会跳过它，Runner.Close 就不会动到 core。
+
+### 多 Runner 并发是否安全
+
+是的。core 内部的 per-invocation 状态用 `sync.Map` 按 `invocationID` 做 key，callbacks 都是 per-invocation 独立读写。两个 Runner 的 callback 不会互相踩到对方的 state。
+
+### 什么时候该用 `NonClosableNamed`
+
+极少数场景：**同一个 plugin.Manager 里**需要挂两个指向同一 core 的 wrapper（例如 debug 观察 + 正式上报同时存在）。plugin.Manager 在同一个 Manager 内要求 plugin Name 唯一，这时用 `sampler.NonClosableNamed("my-tag")` 给其中一个起独特名字即可。
+
+**不同 Runner（不同 Manager）之间 Name 不去重**，日常多 Runner 场景用 `NonClosable()` 就够了。
+
+### FAQ
+
+**Q：我已经按"快速开始"里 `plugin.NewManager(sampler)` 的写法上线了，要改吗？**  
+A：只有**单 Runner** 场景（进程里从头到尾只有一个 Runner、`Close` 只发生在进程退出）不需要改。如果进程里会创建/销毁多个 Runner（包括 per-request 新建），必须改用 `.NonClosable()`，否则第二次 Runner.Close 之后就会 panic。
+
+**Q：`.NonClosable()` 之后 core 什么时候被关？**  
+A：默认**永不关**。`AsyncWriter` 队列里未发送的 trace 在进程退出时丢失（上限 = `WithAsyncWrite(N)` 的 N）。这是 tracing 的 best-effort 语义。如需优雅 flush，可在进程退出 hook 里显式 `sampler.Close(ctx)` —— 但此时不能有 Runner 还在用 wrapper。
+
 ---
 
 ## Option 参考

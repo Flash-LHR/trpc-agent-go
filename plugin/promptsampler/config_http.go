@@ -120,9 +120,16 @@ func (h *configHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	app, hasApp := readAppParam(r)
 
 	if !hasApp {
+		snapshot := h.sampler.GetConfig()
+		appsOverride := h.sampler.ListAppConfigs()
+		// [promptsampler-test] 便于确认 GET /config 的实际返回。
+		log.ErrorfContext(r.Context(),
+			"[promptsampler-test] ConfigHandler GET (all): remote=%s default_enabled=%v default_rate=%v overrides=%d",
+			r.RemoteAddr, snapshot.Enabled, snapshot.SampleRate, len(appsOverride),
+		)
 		body := map[string]any{
-			"config": h.sampler.GetConfig(),
-			"apps":   h.sampler.ListAppConfigs(),
+			"config": snapshot,
+			"apps":   appsOverride,
 		}
 		h.writeJSON(w, r, http.StatusOK, body)
 		return
@@ -135,6 +142,11 @@ func (h *configHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	if isOverride {
 		source = "override"
 	}
+	// [promptsampler-test] 便于确认 GET /config?app=... 命中 override 还是 default。
+	log.ErrorfContext(r.Context(),
+		"[promptsampler-test] ConfigHandler GET (app): remote=%s app=%s source=%s enabled=%v rate=%v token=%s",
+		r.RemoteAddr, app, source, cfg.Enabled, cfg.SampleRate, cfg.SamplerToken,
+	)
 	h.writeJSON(w, r, http.StatusOK, map[string]any{
 		"config": cfg,
 		"source": source,
@@ -153,10 +165,18 @@ type configEnvelope struct {
 func (h *configHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	cfg, err := decodeConfigBody(r)
 	if err != nil {
+		log.ErrorfContext(r.Context(),
+			"[promptsampler-test] ConfigHandler PUT decode failed: remote=%s err=%v",
+			r.RemoteAddr, err,
+		)
 		h.writeError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := cfg.Validate(); err != nil {
+		log.ErrorfContext(r.Context(),
+			"[promptsampler-test] ConfigHandler PUT validate failed: remote=%s err=%v",
+			r.RemoteAddr, err,
+		)
 		h.writeError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -164,9 +184,17 @@ func (h *configHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	app, hasApp := readAppParam(r)
 	if !hasApp || app == "" {
 		if err := h.sampler.SetConfig(cfg); err != nil {
+			log.ErrorfContext(r.Context(),
+				"[promptsampler-test] ConfigHandler PUT set default failed: remote=%s err=%v",
+				r.RemoteAddr, err,
+			)
 			h.writeError(w, r, http.StatusBadRequest, err.Error())
 			return
 		}
+		log.ErrorfContext(r.Context(),
+			"[promptsampler-test] ConfigHandler PUT default ok: remote=%s enabled=%v rate=%v token=%s",
+			r.RemoteAddr, cfg.Enabled, cfg.SampleRate, cfg.SamplerToken,
+		)
 		// Respond with the latest snapshot so callers can confirm.
 		h.writeJSON(w, r, http.StatusOK, map[string]any{
 			"config": h.sampler.GetConfig(),
@@ -176,6 +204,10 @@ func (h *configHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.sampler.SetAppConfig(app, cfg); err != nil {
+		log.ErrorfContext(r.Context(),
+			"[promptsampler-test] ConfigHandler PUT set app failed: remote=%s app=%s err=%v",
+			r.RemoteAddr, app, err,
+		)
 		h.writeError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -184,6 +216,10 @@ func (h *configHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	if isOverride {
 		source = "override"
 	}
+	log.ErrorfContext(r.Context(),
+		"[promptsampler-test] ConfigHandler PUT app ok: remote=%s app=%s source=%s enabled=%v rate=%v token=%s",
+		r.RemoteAddr, app, source, effective.Enabled, effective.SampleRate, effective.SamplerToken,
+	)
 	h.writeJSON(w, r, http.StatusOK, map[string]any{
 		"config": effective,
 		"source": source,
@@ -226,9 +262,17 @@ func (h *configHandler) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if removed := h.sampler.DeleteAppConfig(app); !removed {
+		log.ErrorfContext(r.Context(),
+			"[promptsampler-test] ConfigHandler DELETE miss: remote=%s app=%s",
+			r.RemoteAddr, app,
+		)
 		h.writeError(w, r, http.StatusNotFound, "app override not found")
 		return
 	}
+	log.ErrorfContext(r.Context(),
+		"[promptsampler-test] ConfigHandler DELETE ok: remote=%s app=%s",
+		r.RemoteAddr, app,
+	)
 	w.WriteHeader(http.StatusNoContent)
 }
 
