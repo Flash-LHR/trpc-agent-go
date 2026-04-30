@@ -569,21 +569,27 @@ func (s *PromptSampler) beforeModel(
 	// overwrite each other's in-flight builders.
 	builderKey := inv.InvocationID + ":model"
 	state.setBuilder(builderKey, builder)
+	// Pre-allocate the streaming accumulator so that afterModel frames —
+	// partial or terminal — always find a live container. The accumulator
+	// is released in afterModel after the terminal frame is processed, or
+	// via state.clearAccumulators() if the invocation ends prematurely.
+	state.getOrCreateAccumulator(builderKey)
 
 	return &model.BeforeModelResult{
 		Context: context.WithValue(ctx, modelBuilderKey{}, builderKey),
 	}, nil
 }
 
-// afterModel finalises the model step created in beforeModel. Streaming
-// partial responses are ignored; only the final response drives the trace.
+// afterModel finalises the model step created in beforeModel. In streaming
+// mode each model call produces multiple afterModel invocations: N partial
+// frames (IsPartial=true) plus a terminal frame (IsPartial=false). Text,
+// usage and tool_calls are aggregated in a per-step streamingAccumulator;
+// the step is only committed on the terminal frame (or when the Response
+// is nil, which we treat as terminal to ensure the builder is drained).
 func (s *PromptSampler) afterModel(
 	ctx context.Context,
 	args *model.AfterModelArgs,
 ) (*model.AfterModelResult, error) {
-	if args != nil && args.Response != nil && args.Response.IsPartial {
-		return nil, nil
-	}
 	inv, ok := agent.InvocationFromContext(ctx)
 	if !ok || inv == nil {
 		return nil, nil
@@ -596,42 +602,76 @@ func (s *PromptSampler) afterModel(
 	if !ok || builderKey == "" {
 		return nil, nil
 	}
-	builder := state.getBuilder(builderKey)
-	if builder == nil {
+
+	// Merge this frame into the accumulator. append is nil-safe for both
+	// args and args.Response, so partial frames with empty Choices (e.g.
+	// openai usage-only frame) still correctly update the usage snapshot.
+	acc := state.getAccumulator(builderKey)
+	if args != nil {
+		acc.append(args.Response)
+	}
+
+	// Defer step commit until the terminal frame (or until a terminal
+	// "args==nil / response==nil" signal arrives, which also ends the
+	// stream).
+	if args != nil && args.Response != nil && args.Response.IsPartial {
 		return nil, nil
 	}
 
+	builder := state.getBuilder(builderKey)
+	if builder == nil {
+		// No matching builder means beforeModel was filtered out (e.g.
+		// maxSteps reached). Drop the accumulator and return.
+		state.deleteAccumulator(builderKey)
+		return nil, nil
+	}
+
+	var errMsg string
+	if args != nil && args.Error != nil {
+		errMsg = args.Error.Error()
+	}
+
+	// Snapshot the aggregated view. text/usage/toolCalls come from the
+	// accumulator's last-wins / delta-appended view built up across all
+	// frames in this model step.
 	var (
-		output *TraceOutput
-		errMsg string
+		text      string
+		usage     *model.Usage
+		toolCalls []model.ToolCall
 	)
-	if args != nil {
-		if args.Error != nil {
-			errMsg = args.Error.Error()
+	if acc != nil {
+		text, usage, toolCalls = acc.snapshot()
+	}
+	// Defensive fallback: if the accumulator never saw a populated
+	// Choices[0] (e.g. Response was nil throughout), try to pull text /
+	// tool_calls directly from the terminal Response before giving up.
+	if text == "" && len(toolCalls) == 0 &&
+		args != nil && args.Response != nil && len(args.Response.Choices) > 0 {
+		msg := args.Response.Choices[0].Message
+		if msg.Content != "" {
+			text = msg.Content
 		}
-		if args.Response != nil {
-			var outputText string
-			if len(args.Response.Choices) > 0 {
-				msg := args.Response.Choices[0].Message
-				outputText = msg.Content
-				if outputText == "" && len(msg.ToolCalls) > 0 {
-					outputText = formatToolCalls(msg.ToolCalls)
-				}
-			}
-			output = &TraceOutput{Text: truncate(outputText, outputTextMaxLen)}
-			if args.Response.Usage != nil {
-				output.TokenUsage = &TokenUsage{
-					PromptTokens:     args.Response.Usage.PromptTokens,
-					CompletionTokens: args.Response.Usage.CompletionTokens,
-					TotalTokens:      args.Response.Usage.TotalTokens,
-				}
-			}
+		if len(msg.ToolCalls) > 0 {
+			toolCalls = msg.ToolCalls
+		}
+	}
+	if text == "" && len(toolCalls) > 0 {
+		text = formatToolCalls(toolCalls)
+	}
+
+	output := &TraceOutput{Text: truncate(text, outputTextMaxLen)}
+	if usage != nil {
+		output.TokenUsage = &TokenUsage{
+			PromptTokens:     usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+			TotalTokens:      usage.TotalTokens,
 		}
 	}
 
 	step := builder.build(output, errMsg)
 	state.addStep(step)
 	state.setLastStepID(step.StepID)
+	state.deleteAccumulator(builderKey)
 	return nil, nil
 }
 

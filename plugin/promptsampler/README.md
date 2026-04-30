@@ -471,3 +471,18 @@ sampler := promptsampler.New(
 2. **内存控制**：长 trace 会累积 step，`WithMaxSteps` 可设上限，超限时后续 step 被丢弃。
 3. **并发安全**：`PromptSampler` 可被多个 Runner 实例共享，内部按 root invocation ID 隔离。
 4. **Context 脱离**：`AsyncWriter` 与 `TRPCWriter` 内部都使用 `context.WithoutCancel`，保证上游 Runner 返回后，后台上报仍能完成。
+
+---
+
+## 录制语义：Streaming 模式下的 model step 聚合
+
+当底层 `model.Response` 以 streaming 形态抵达（`IsPartial=true` 的多个分片 + 一个 `IsPartial=false` 的终帧），`afterModel` 会把每一帧合并进一份 per-step 的 `streamingAccumulator`，只在终帧时构造并提交 `TraceStep.Output`。合并规则如下（详见 `state.go::streamingAccumulator.append`）：
+
+- **文本**：优先 `Choices[0].Delta.Content`（非空则追加）；若 Delta 为空而 `Choices[0].Message.Content` 非空，则把 `Message.Content` 视为"当前最新全量快照"，**重置**缓冲区后写入。非 streaming 单帧调用自动命中后一条，与旧行为完全等价。
+- **Token 用量**：`Response.Usage != nil && TotalTokens > 0` 时 last-wins 覆盖；覆盖了 openai `stream_options.include_usage=true` 产出的独立 usage 帧；零值 `{0,0,0}` 被视为无效快照忽略。
+- **Tool calls**：任意帧的 `Choices[0].Message.ToolCalls` 非空时 last-wins 覆盖（框架已在上游合并过流式分片，这里只取最后快照）。
+- **Usage-only 帧**：`len(Choices)==0` 的 usage-only 帧被正常处理（只更新 usage 快照）。
+- **异常路径**：`args.Error != nil` 仍按终帧路径提交 step（保留已累积的文本 + errMsg），保证每次 `beforeModel` 都有对应 `TraceStep` 落盘。
+- **生命周期**：累积器随 step 构造结束立即释放；root invocation `afterAgent` 时 `stateManager.delete` 会兜底清空任何未终止的累积器，防止 client cancel 场景下的泄漏。
+
+---
