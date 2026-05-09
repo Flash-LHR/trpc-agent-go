@@ -196,6 +196,42 @@ func TestManagerStartAndGetReturnRun(t *testing.T) {
 	assert.True(t, current.Rounds[0].Acceptance.Accepted)
 }
 
+func TestManagerStartStoresFinalSlimmedRun(t *testing.T) {
+	engineInstance := &fakePromptIterEngine{
+		run: func(ctx context.Context, request *promptiterengine.RunRequest, opts ...promptiterengine.Option) (*promptiterengine.RunResult, error) {
+			_ = ctx
+			_ = request
+			_ = opts
+			return &promptiterengine.RunResult{
+				Structure: &astructure.Snapshot{StructureID: "structure_1", EntryNodeID: "node_1"},
+				Status:    promptiterengine.RunStatusSucceeded,
+			}, nil
+		},
+	}
+	managerInstance, err := New(
+		engineInstance,
+		WithStoredResultSlimming(promptiterengine.RunResultSlimming{OmitStructure: true}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, managerInstance.Close())
+	})
+	run, err := managerInstance.Start(context.Background(), &promptiterengine.RunRequest{
+		TrainEvalSetIDs:      []string{"train"},
+		ValidationEvalSetIDs: []string{"validation"},
+		MaxRounds:            1,
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		current, getErr := managerInstance.Get(context.Background(), run.ID)
+		require.NoError(t, getErr)
+		return current.Status == promptiterengine.RunStatusSucceeded
+	}, time.Second, 10*time.Millisecond)
+	current, err := managerInstance.Get(context.Background(), run.ID)
+	require.NoError(t, err)
+	assert.Nil(t, current.Structure)
+}
+
 func TestManagerCancelTransitionsRun(t *testing.T) {
 	engineInstance := &fakePromptIterEngine{
 		run: func(ctx context.Context, request *promptiterengine.RunRequest, opts ...promptiterengine.Option) (*promptiterengine.RunResult, error) {
@@ -367,6 +403,60 @@ func TestRunObserverPassesContextToStoreUpdate(t *testing.T) {
 	assert.Equal(t, run.Status, store.updateRun.Status)
 	require.NotNil(t, store.updateRun.BaselineValidation)
 	assert.InDelta(t, 0.55, store.updateRun.BaselineValidation.OverallScore, 0.0001)
+}
+
+func TestRunObserverStoresSlimmedCopy(t *testing.T) {
+	store := &recordingStore{}
+	managerInstance, err := New(
+		&fakePromptIterEngine{},
+		WithStore(store),
+		WithStoredResultSlimming(promptiterengine.RunResultSlimming{
+			OmitStructure:       true,
+			OmitEvaluationCases: true,
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, managerInstance.Close())
+	})
+	concreteManager, ok := managerInstance.(*manager)
+	require.True(t, ok)
+	run := &promptiterengine.RunResult{
+		ID:     "run-slim",
+		Status: promptiterengine.RunStatusRunning,
+	}
+	observer := &observer{
+		manager: concreteManager,
+		run:     run,
+	}
+	require.NoError(t, observer.append(context.Background(), &promptiterengine.Event{
+		Kind:    promptiterengine.EventKindStructureSnapshot,
+		Payload: &astructure.Snapshot{StructureID: "structure_1", EntryNodeID: "node_1"},
+	}))
+	require.NoError(t, observer.append(context.Background(), &promptiterengine.Event{
+		Kind: promptiterengine.EventKindBaselineValidation,
+		Payload: &promptiterengine.EvaluationResult{
+			OverallScore: 0.55,
+			EvalSets: []promptiterengine.EvalSetResult{
+				{
+					EvalSetID:    "validation",
+					OverallScore: 0.55,
+					Cases: []promptiterengine.CaseResult{
+						{EvalSetID: "validation", EvalCaseID: "case_1"},
+					},
+				},
+			},
+		},
+	}))
+
+	require.NotNil(t, observer.run.Structure)
+	require.NotNil(t, observer.run.BaselineValidation)
+	require.Len(t, observer.run.BaselineValidation.EvalSets[0].Cases, 1)
+	require.NotNil(t, store.updateRun)
+	assert.Nil(t, store.updateRun.Structure)
+	require.NotNil(t, store.updateRun.BaselineValidation)
+	require.Len(t, store.updateRun.BaselineValidation.EvalSets, 1)
+	assert.Empty(t, store.updateRun.BaselineValidation.EvalSets[0].Cases)
 }
 
 func TestRunObserverRejectsInvalidEvents(t *testing.T) {

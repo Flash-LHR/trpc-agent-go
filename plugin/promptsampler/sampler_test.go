@@ -10,6 +10,7 @@ package promptsampler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -18,6 +19,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/plugin"
 )
 
@@ -207,6 +211,59 @@ func TestFormatToolResult(t *testing.T) {
 	assert.Equal(t, "boom", formatToolResult(errors.New("boom")))
 	// Structured value goes through json.Marshal.
 	assert.Equal(t, `{"a":1}`, formatToolResult(map[string]int{"a": 1}))
+}
+
+func TestBuildTraceAddsRootInputFromInvocation(t *testing.T) {
+	s := New()
+	state := newInvocationState("inv-root", "root", "structure", true)
+	trace := s.buildTrace(state, &agent.AfterAgentArgs{
+		Invocation: &agent.Invocation{
+			Message: model.NewUserMessage("match-123"),
+		},
+	})
+
+	require.NotNil(t, trace.Input)
+	assert.Equal(t, "match-123", trace.Input.Text)
+}
+
+func TestBuildTraceFinalOutputPrefersStructuredOutput(t *testing.T) {
+	s := New()
+	state := newInvocationState("inv-root", "root", "structure", true)
+	trace := s.buildTrace(state, &agent.AfterAgentArgs{
+		Invocation: &agent.Invocation{},
+		FullResponseEvent: event.New(
+			"inv-root",
+			"root",
+			event.WithStructuredOutputPayload(map[string]any{"answer": "ok"}),
+		),
+	})
+
+	require.NotNil(t, trace.FinalOutput)
+	assert.JSONEq(t, `{"answer":"ok"}`, trace.FinalOutput.Text)
+}
+
+func TestBuildTraceFinalOutputUsesGraphLastResponse(t *testing.T) {
+	s := New()
+	state := newInvocationState("inv-root", "root", "structure", true)
+	raw, err := json.Marshal("graph final")
+	require.NoError(t, err)
+	trace := s.buildTrace(state, &agent.AfterAgentArgs{
+		Invocation: &agent.Invocation{},
+		FullResponseEvent: event.New(
+			"inv-root",
+			"graph",
+			event.WithStateDelta(map[string][]byte{lastResponseKey: raw}),
+			event.WithResponse(&model.Response{
+				Done: true,
+				Choices: []model.Choice{
+					{Message: model.NewAssistantMessage("response final")},
+				},
+			}),
+		),
+	})
+
+	require.NotNil(t, trace.FinalOutput)
+	assert.Equal(t, "graph final", trace.FinalOutput.Text)
 }
 
 // ---- Writer layer tests ----

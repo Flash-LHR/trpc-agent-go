@@ -7054,7 +7054,7 @@ func TestRunner_Run_WithSurfacePatchForNode_AppliesGraphChildAgentPatch(
 		t,
 		snapshot,
 		"researcher",
-		structure.NodeKindLLM,
+		structure.NodeKindAgent,
 	)
 	var patch agent.SurfacePatch
 	patch.SetInstruction("child patched instruction")

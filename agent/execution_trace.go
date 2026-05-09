@@ -195,6 +195,21 @@ func NextExecutionTracePredecessors(inv *Invocation) []string {
 	return inv.traceCapture.PredecessorsForInvocation(inv.InvocationID, inv.entryPredecessorStepIDs)
 }
 
+// ExecutionTraceTerminalStepIDs returns actual terminal steps for this invocation.
+//
+// Unlike NextExecutionTracePredecessors, this does not fall back to entry
+// predecessors when the invocation produced no trace step.
+func ExecutionTraceTerminalStepIDs(inv *Invocation) []string {
+	if inv == nil {
+		return nil
+	}
+	inv.initializeExecutionTrace()
+	if inv.traceCapture == nil {
+		return nil
+	}
+	return inv.traceCapture.EffectiveTerminalStepIDs(inv.InvocationID)
+}
+
 // BuildExecutionTrace builds the final trace for the root invocation.
 func BuildExecutionTrace(
 	inv *Invocation,

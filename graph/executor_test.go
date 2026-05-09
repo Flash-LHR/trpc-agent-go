@@ -401,7 +401,7 @@ func TestExecutor_RecordTraceChannelSource_RespectsChannelBehavior(t *testing.T)
 		channels:                   channelManager,
 		traceChannelSources:        make(map[string][]string),
 		traceChannelSourceSteps:    make(map[string]int),
-		traceBarrierChannelSources: make(map[string]map[string]string),
+		traceBarrierChannelSources: make(map[string]map[string][]string),
 	}
 	exec.recordTraceChannelSource(execCtx, "last", "", "s1", 1)
 	exec.recordTraceChannelSource(execCtx, "last", "", "s2", 1)
@@ -413,7 +413,7 @@ func TestExecutor_RecordTraceChannelSource_RespectsChannelBehavior(t *testing.T)
 	exec.recordTraceChannelSource(execCtx, "barrier", "right", "s3", 2)
 	assert.Equal(t, []string{"s3"}, execCtx.traceChannelSources["last"])
 	assert.Equal(t, []string{"s1", "s2"}, execCtx.traceChannelSources["topic"])
-	assert.Equal(t, map[string]string{"left": "s2", "right": "s3"}, execCtx.traceBarrierChannelSources["barrier"])
+	assert.Equal(t, map[string][]string{"left": []string{"s2"}, "right": []string{"s3"}}, execCtx.traceBarrierChannelSources["barrier"])
 	assert.ElementsMatch(t, []string{"s2", "s3"}, exec.tracePredecessorsForChannels(execCtx, []string{"barrier"}))
 }
 
@@ -431,6 +431,41 @@ func TestExecutor_RecordTraceChannelSource_LastValueKeepsSameStepFanIn(t *testin
 	require.Equal(t, []string{"s1", "s2"}, exec.tracePredecessorsForChannels(execCtx, []string{"last"}))
 	exec.recordTraceChannelSource(execCtx, "last", "", "s3", 2)
 	require.Equal(t, []string{"s3"}, exec.tracePredecessorsForChannels(execCtx, []string{"last"}))
+}
+
+func TestExecutor_TraceSourceStepIDs_NormalizesAndCopies(t *testing.T) {
+	exec := &Executor{}
+	execCtx := &ExecutionContext{
+		traceSourceStepIDsByTaskID: make(map[string][]string),
+	}
+	exec.recordTraceSourceStepIDs(execCtx, "task", []string{"s1", "", "s2", "s1"})
+	got := exec.traceSourceStepIDsForTask(execCtx, "task")
+	require.Equal(t, []string{"s1", "s2"}, got)
+
+	got[0] = "mutated"
+	require.Equal(t, []string{"s1", "s2"}, exec.traceSourceStepIDsForTask(execCtx, "task"))
+}
+
+func TestExecutor_ProcessChannelWrites_RecordsMultipleTraceSources(t *testing.T) {
+	exec := &Executor{graph: New(NewStateSchema())}
+	channelManager := ichannel.NewChannelManager()
+	channelManager.AddChannel("out", ichannel.BehaviorLastValue)
+	channelManager.AddChannel("barrier", ichannel.BehaviorBarrier)
+	execCtx := &ExecutionContext{
+		channels:                   channelManager,
+		traceChannelSources:        make(map[string][]string),
+		traceChannelSourceSteps:    make(map[string]int),
+		traceBarrierChannelSources: make(map[string]map[string][]string),
+		traceSourceStepIDsByTaskID: map[string][]string{
+			"task": []string{"s1", "s2"},
+		},
+	}
+	exec.processChannelWrites(context.Background(), nil, execCtx, "task", []channelWriteEntry{
+		{Channel: "out", Value: "value"},
+		{Channel: "barrier", Value: "sender"},
+	}, 1)
+	require.Equal(t, []string{"s1", "s2"}, exec.tracePredecessorsForChannels(execCtx, []string{"out"}))
+	require.Equal(t, []string{"s1", "s2"}, exec.tracePredecessorsForChannels(execCtx, []string{"barrier"}))
 }
 
 func TestExecutor_DisableGraphExecutorEvents_SuppressesEventHelpers(t *testing.T) {

@@ -64,6 +64,8 @@ type Trace struct {
 	AgentName string `json:"agent_name"`
 	// Status indicates the completion status of this trace.
 	Status TraceStatus `json:"status"`
+	// Input contains the root invocation input.
+	Input *TraceInput `json:"input,omitempty"`
 	// FinalOutput contains the final textual output of the execution.
 	FinalOutput *TraceOutput `json:"final_output,omitempty"`
 	// Steps contains all steps recorded during execution, in completion order.

@@ -1003,8 +1003,8 @@ func (e *Executor) buildExecutionContext(
 		channels:                   channelManager,
 		traceChannelSources:        make(map[string][]string),
 		traceChannelSourceSteps:    make(map[string]int),
-		traceBarrierChannelSources: make(map[string]map[string]string),
-		traceStepIDByTaskID:        make(map[string]string),
+		traceBarrierChannelSources: make(map[string]map[string][]string),
+		traceSourceStepIDsByTaskID: make(map[string][]string),
 	}
 
 	// For resumed executions, seed channel versions from the last checkpoint so
@@ -2224,15 +2224,16 @@ func (e *Executor) tracePredecessorsForChannels(
 			}
 			sort.Strings(senderKeys)
 			for _, senderKey := range senderKeys {
-				stepID := barrierSources[senderKey]
-				if stepID == "" {
-					continue
+				for _, stepID := range barrierSources[senderKey] {
+					if stepID == "" {
+						continue
+					}
+					if _, exists := seen[stepID]; exists {
+						continue
+					}
+					seen[stepID] = struct{}{}
+					predecessors = append(predecessors, stepID)
 				}
-				if _, exists := seen[stepID]; exists {
-					continue
-				}
-				seen[stepID] = struct{}{}
-				predecessors = append(predecessors, stepID)
 			}
 			continue
 		}
@@ -2288,7 +2289,7 @@ func (e *Executor) recordTraceChannelSource(
 		execCtx.traceChannelSourceSteps = make(map[string]int)
 	}
 	if execCtx.traceBarrierChannelSources == nil {
-		execCtx.traceBarrierChannelSources = make(map[string]map[string]string)
+		execCtx.traceBarrierChannelSources = make(map[string]map[string][]string)
 	}
 	if channelBehavior == channel.BehaviorBarrier {
 		if senderKey == "" {
@@ -2297,10 +2298,10 @@ func (e *Executor) recordTraceChannelSource(
 		}
 		sources := execCtx.traceBarrierChannelSources[channelName]
 		if sources == nil {
-			sources = make(map[string]string)
+			sources = make(map[string][]string)
 			execCtx.traceBarrierChannelSources[channelName] = sources
 		}
-		sources[senderKey] = stepID
+		sources[senderKey] = []string{stepID}
 		return
 	}
 	if channelBehavior == channel.BehaviorLastValue || channelBehavior == channel.BehaviorEphemeral {
@@ -2321,31 +2322,97 @@ func (e *Executor) recordTraceChannelSource(
 	execCtx.traceChannelSources[channelName] = append(execCtx.traceChannelSources[channelName], stepID)
 }
 
-func (e *Executor) recordTraceStepID(execCtx *ExecutionContext, taskID string, stepID string) {
-	if execCtx == nil || taskID == "" || stepID == "" {
+func (e *Executor) recordTraceChannelSources(
+	execCtx *ExecutionContext,
+	channelName string,
+	senderKey string,
+	stepIDs []string,
+	step int,
+) {
+	normalized := normalizeTraceStepIDs(stepIDs)
+	if len(normalized) == 0 {
+		return
+	}
+	if traceChannelBehavior(execCtx, channelName) == channel.BehaviorBarrier && senderKey != "" {
+		execCtx.traceMu.Lock()
+		defer execCtx.traceMu.Unlock()
+		if execCtx.traceBarrierChannelSources == nil {
+			execCtx.traceBarrierChannelSources = make(map[string]map[string][]string)
+		}
+		sources := execCtx.traceBarrierChannelSources[channelName]
+		if sources == nil {
+			sources = make(map[string][]string)
+			execCtx.traceBarrierChannelSources[channelName] = sources
+		}
+		sources[senderKey] = normalized
+		return
+	}
+	for _, stepID := range normalized {
+		e.recordTraceChannelSource(execCtx, channelName, senderKey, stepID, step)
+	}
+}
+
+func traceChannelBehavior(execCtx *ExecutionContext, channelName string) channel.Behavior {
+	if execCtx == nil || execCtx.channels == nil {
+		return channel.BehaviorTopic
+	}
+	if ch, ok := execCtx.channels.GetChannel(channelName); ok && ch != nil {
+		return ch.Behavior
+	}
+	return channel.BehaviorTopic
+}
+
+func (e *Executor) recordTraceSourceStepIDs(execCtx *ExecutionContext, taskID string, stepIDs []string) {
+	if execCtx == nil || taskID == "" || len(stepIDs) == 0 {
+		return
+	}
+	normalized := normalizeTraceStepIDs(stepIDs)
+	if len(normalized) == 0 {
 		return
 	}
 	execCtx.traceMu.Lock()
 	defer execCtx.traceMu.Unlock()
-	execCtx.traceStepIDByTaskID[taskID] = stepID
+	if execCtx.traceSourceStepIDsByTaskID == nil {
+		execCtx.traceSourceStepIDsByTaskID = make(map[string][]string)
+	}
+	execCtx.traceSourceStepIDsByTaskID[taskID] = normalized
 }
 
-func (e *Executor) traceStepIDForTask(execCtx *ExecutionContext, taskID string) string {
+func (e *Executor) traceSourceStepIDsForTask(execCtx *ExecutionContext, taskID string) []string {
 	if execCtx == nil || taskID == "" {
-		return ""
+		return nil
 	}
 	execCtx.traceMu.Lock()
 	defer execCtx.traceMu.Unlock()
-	return execCtx.traceStepIDByTaskID[taskID]
+	return append([]string(nil), execCtx.traceSourceStepIDsByTaskID[taskID]...)
 }
 
-func (e *Executor) clearTraceStepID(execCtx *ExecutionContext, taskID string) {
+func (e *Executor) clearTraceSourceStepIDs(execCtx *ExecutionContext, taskID string) {
 	if execCtx == nil || taskID == "" {
 		return
 	}
 	execCtx.traceMu.Lock()
 	defer execCtx.traceMu.Unlock()
-	delete(execCtx.traceStepIDByTaskID, taskID)
+	delete(execCtx.traceSourceStepIDsByTaskID, taskID)
+}
+
+func normalizeTraceStepIDs(stepIDs []string) []string {
+	if len(stepIDs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(stepIDs))
+	normalized := make([]string, 0, len(stepIDs))
+	for _, stepID := range stepIDs {
+		if stepID == "" {
+			continue
+		}
+		if _, ok := seen[stepID]; ok {
+			continue
+		}
+		seen[stepID] = struct{}{}
+		normalized = append(normalized, stepID)
+	}
+	return normalized
 }
 
 func consumeGraphInterruptInput(state State, nodeID string) (State, bool) {
@@ -2736,7 +2803,7 @@ func (e *Executor) executeSingleTask(
 	// Initialize node execution context with retry policies and metadata.
 	nodeCtx := e.initializeNodeContext(ctx, invocation, execCtx, t, step)
 	if execCtx != nil && t != nil && t.TaskID != "" {
-		defer e.clearTraceStepID(execCtx, t.TaskID)
+		defer e.clearTraceSourceStepIDs(execCtx, t.TaskID)
 	}
 	if report != nil && nodeCtx != nil && t != nil {
 		report.recordInput(t, nodeCtx.stateCopy)
@@ -2800,15 +2867,20 @@ func (e *Executor) initializeNodeContext(
 
 	// Build per-task state copy.
 	stateCopy := e.buildTaskStateCopy(execCtx, t)
-	traceStepID := agent.StartExecutionTraceStep(
-		invocation,
-		e.traceNodeIDForTask(invocation, t),
-		traceSnapshotFromValue(stateCopy),
-		t.PredecessorStepIDs,
-	)
-	e.recordTraceStepID(execCtx, t.TaskID, traceStepID)
-	if traceStepID != "" {
-		stateCopy[currentTraceStepIDStateKey] = traceStepID
+	traceStepID := ""
+	if shouldFlattenAgentNodeTrace(invocation, nodeType) {
+		stateCopy[currentTracePredecessorStepIDsStateKey] = append([]string(nil), t.PredecessorStepIDs...)
+	} else {
+		traceStepID = agent.StartExecutionTraceStep(
+			invocation,
+			e.traceNodeIDForTask(invocation, t),
+			traceSnapshotFromValue(stateCopy),
+			t.PredecessorStepIDs,
+		)
+		e.recordTraceSourceStepIDs(execCtx, t.TaskID, []string{traceStepID})
+		if traceStepID != "" {
+			stateCopy[currentTraceStepIDStateKey] = traceStepID
+		}
 	}
 
 	// Merge callbacks: global callbacks run first, then per-node callbacks.
@@ -2823,6 +2895,12 @@ func (e *Executor) initializeNodeContext(
 		mergedCallbacks: mergedCallbacks,
 		traceStepID:     traceStepID,
 	}
+}
+
+func shouldFlattenAgentNodeTrace(invocation *agent.Invocation, nodeType NodeType) bool {
+	return nodeType == NodeTypeAgent &&
+		invocation != nil &&
+		invocation.RunOptions.GraphFlattenAgentNodeTrace
 }
 
 // getNodeRetryPolicies retrieves retry policies for the given node.
@@ -3095,7 +3173,7 @@ func (e *Executor) finalizeSuccessfulExecution(
 			}
 			if keyBytes, kerr := pol.KeyFunc(sanitized); kerr == nil {
 				ns := e.graph.cacheNamespace(t.NodeID)
-				c.Set(ns, string(keyBytes), result, pol.TTL)
+				c.Set(ns, string(keyBytes), stripTraceHintsFromResult(result), pol.TTL)
 			}
 		}
 	}
@@ -3135,6 +3213,7 @@ func (e *Executor) finalizeFailedExecution(
 		if nodeCtx != nil {
 			traceStepID = nodeCtx.traceStepID
 		}
+		e.ensureTraceSourceForTask(invocation, execCtx, t, result, nil, retryErr)
 		agent.FinishExecutionTraceStep(invocation, traceStepID, traceSnapshotFromValue(result), retryErr)
 		return retryErr
 	}
@@ -3153,10 +3232,12 @@ func (e *Executor) finalizeFailedExecution(
 		step,
 	)
 	if aerr != nil {
+		e.ensureTraceSourceForTask(invocation, execCtx, t, result, nil, aerr)
 		agent.FinishExecutionTraceStep(invocation, nodeCtx.traceStepID, traceSnapshotFromValue(result), aerr)
 		return aerr
 	}
 	if !overridden {
+		e.ensureTraceSourceForTask(invocation, execCtx, t, result, nil, retryErr)
 		agent.FinishExecutionTraceStep(invocation, nodeCtx.traceStepID, traceSnapshotFromValue(result), retryErr)
 		return retryErr
 	}
@@ -3530,6 +3611,7 @@ func (e *Executor) runBeforeCallbacks(
 	}
 	customResult, err := callbacks.RunBeforeNode(ctx, cbCtx, stateCopy)
 	if err != nil {
+		e.ensureTraceSourceForTask(invocation, execCtx, t, nil, nil, err)
 		agent.FinishExecutionTraceStep(invocation, traceStepID, nil, err)
 		callbacks.RunOnNodeError(ctx, cbCtx, stateCopy, err)
 		e.syncResumeState(execCtx, stateCopy)
@@ -3859,6 +3941,8 @@ func (e *Executor) handleNodeResult(
 	// have explicit routing (Command with GoTo) or fan-out ([]*Command).
 
 	routed := false
+	fallbackPredecessors := e.applyTraceHintsFromResult(execCtx, t, result)
+	e.ensureTraceSourceForTask(invocation, execCtx, t, result, fallbackPredecessors, nil)
 
 	if result != nil {
 		// Handle node result by concrete type.
@@ -3901,7 +3985,7 @@ func (e *Executor) handleNodeResult(
 					}
 				}
 			}
-			e.enqueueCommands(execCtx, t, v, step, []string{e.traceStepIDForTask(execCtx, t.TaskID)})
+			e.enqueueCommands(execCtx, t, v, step, e.traceSourceStepIDsForTask(execCtx, t.TaskID))
 		default:
 		}
 	}
@@ -3921,6 +4005,95 @@ func (e *Executor) handleNodeResult(
 	}
 
 	return routed, nil
+}
+
+func (e *Executor) applyTraceHintsFromResult(
+	execCtx *ExecutionContext,
+	t *Task,
+	result any,
+) []string {
+	var stateResult State
+	switch v := result.(type) {
+	case State:
+		stateResult = v
+	case *Command:
+		if v != nil {
+			stateResult = v.Update
+		}
+	default:
+		return nil
+	}
+	if stateResult == nil || t == nil {
+		return nil
+	}
+	outputStepIDs := traceStepIDsFromState(stateResult, traceOutputStepIDsStateKey)
+	if len(outputStepIDs) > 0 {
+		e.recordTraceSourceStepIDs(execCtx, t.TaskID, outputStepIDs)
+	}
+	return traceStepIDsFromState(stateResult, traceFallbackPredecessorStepIDsKey)
+}
+
+func stripTraceHintsFromResult(result any) any {
+	stateResult, ok := result.(State)
+	if !ok || stateResult == nil {
+		return result
+	}
+	copied := stateResult.Clone()
+	delete(copied, traceOutputStepIDsStateKey)
+	delete(copied, traceFallbackPredecessorStepIDsKey)
+	return copied
+}
+
+func traceStepIDsFromState(state State, key string) []string {
+	if state == nil || key == "" {
+		return nil
+	}
+	switch values := state[key].(type) {
+	case []string:
+		return normalizeTraceStepIDs(values)
+	case []any:
+		stepIDs := make([]string, 0, len(values))
+		for _, value := range values {
+			if stepID, ok := value.(string); ok {
+				stepIDs = append(stepIDs, stepID)
+			}
+		}
+		return normalizeTraceStepIDs(stepIDs)
+	default:
+		return nil
+	}
+}
+
+func (e *Executor) ensureTraceSourceForTask(
+	invocation *agent.Invocation,
+	execCtx *ExecutionContext,
+	t *Task,
+	result any,
+	fallbackPredecessors []string,
+	stepErr error,
+) {
+	if execCtx == nil || t == nil || t.TaskID == "" || e.getNodeType(t.NodeID) != NodeTypeAgent {
+		return
+	}
+	currentSources := e.traceSourceStepIDsForTask(execCtx, t.TaskID)
+	if len(currentSources) > 0 && len(fallbackPredecessors) == 0 {
+		return
+	}
+	predecessors := normalizeTraceStepIDs(fallbackPredecessors)
+	if len(predecessors) == 0 {
+		predecessors = normalizeTraceStepIDs(t.PredecessorStepIDs)
+	}
+	traceStepID := agent.StartExecutionTraceStep(
+		invocation,
+		e.traceNodeIDForTask(invocation, t),
+		traceSnapshotFromValue(t.Input),
+		predecessors,
+	)
+	if traceStepID == "" {
+		return
+	}
+	agent.FinishExecutionTraceStep(invocation, traceStepID, traceSnapshotFromValue(result), stepErr)
+	e.recordTraceSourceStepIDs(execCtx, t.TaskID, []string{traceStepID})
 }
 
 // resolveTargetByEnds resolves a symbolic target name using the node's per-node
@@ -4090,7 +4263,7 @@ func (e *Executor) handleCommandResult(
 			invocation,
 			execCtx,
 			taskID,
-			e.traceStepIDForTask(execCtx, taskID),
+			e.traceSourceStepIDsForTask(execCtx, taskID),
 			cmdResult.GoTo,
 			step,
 		)
@@ -4105,7 +4278,7 @@ func (e *Executor) handleCommandRouting(
 	invocation *agent.Invocation,
 	execCtx *ExecutionContext,
 	taskID string,
-	sourceStepID string,
+	sourceStepIDs []string,
 	targetNode string,
 	step int,
 ) {
@@ -4126,7 +4299,7 @@ func (e *Executor) handleCommandRouting(
 				Sequence: execCtx.seq.Add(1),
 			})
 			execCtx.pendingMu.Unlock()
-			e.recordTraceChannelSource(execCtx, triggerChannel, "", sourceStepID, step)
+			e.recordTraceChannelSources(execCtx, triggerChannel, "", sourceStepIDs, step)
 		}
 	}
 
@@ -4147,7 +4320,7 @@ func (e *Executor) processChannelWrites(ctx context.Context, invocation *agent.I
 	if execCtx == nil || execCtx.channels == nil {
 		return
 	}
-	sourceStepID := e.traceStepIDForTask(execCtx, taskID)
+	sourceStepIDs := e.traceSourceStepIDsForTask(execCtx, taskID)
 	for _, write := range writes {
 		ch, ok := execCtx.channels.GetChannel(write.Channel)
 		if !ok || ch == nil {
@@ -4172,7 +4345,7 @@ func (e *Executor) processChannelWrites(ctx context.Context, invocation *agent.I
 				senderKey = sender
 			}
 		}
-		e.recordTraceChannelSource(execCtx, write.Channel, senderKey, sourceStepID, step)
+		e.recordTraceChannelSources(execCtx, write.Channel, senderKey, sourceStepIDs, step)
 	}
 }
 
@@ -4481,7 +4654,7 @@ func (e *Executor) processConditionalResult(
 				Sequence: execCtx.seq.Add(1),
 			})
 			execCtx.pendingMu.Unlock()
-			e.recordTraceChannelSource(execCtx, channelName, "", e.traceStepIDForTask(execCtx, sourceTaskID), step)
+			e.recordTraceChannelSources(execCtx, channelName, "", e.traceSourceStepIDsForTask(execCtx, sourceTaskID), step)
 		} else {
 			log.WarnfContext(
 				ctx,

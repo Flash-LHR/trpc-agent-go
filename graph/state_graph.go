@@ -2747,6 +2747,27 @@ func finalizeAgentNodeOutput(
 	return upd
 }
 
+func attachAgentTraceOutput(result any, childTerminalStepIDs []string, needsAdapter bool) any {
+	stepIDs := normalizeTraceStepIDs(childTerminalStepIDs)
+	if len(stepIDs) == 0 {
+		return result
+	}
+	key := traceOutputStepIDsStateKey
+	if needsAdapter {
+		key = traceFallbackPredecessorStepIDsKey
+	}
+	switch v := result.(type) {
+	case State:
+		copied := v.Clone()
+		copied[key] = stepIDs
+		return copied
+	case nil:
+		return State{key: stepIDs}
+	default:
+		return result
+	}
+}
+
 // NewAgentNodeFunc creates a NodeFunc that looks up and uses a sub-agent by name.
 // The agent name should correspond to a sub-agent in the parent GraphAgent's sub-agent list.
 func NewAgentNodeFunc(agentName string, opts ...Option) NodeFunc {
@@ -2845,13 +2866,13 @@ func NewAgentNodeFunc(agentName string, opts ...Option) NodeFunc {
 			startTime,
 			endTime,
 		)
-		return finalizeAgentNodeOutput(
+		return attachAgentTraceOutput(finalizeAgentNodeOutput(
 			state,
 			nodeID,
 			streamRes,
 			cfg.outputMapper,
 			cfg.userInputKey,
-		), nil
+		), agent.ExecutionTraceTerminalStepIDs(invocation), cfg.outputMapper != nil), nil
 	}
 }
 
@@ -3543,7 +3564,7 @@ func buildAgentInvocationWithStateScopeAndInputKey(
 		if traceNodeID := buildAgentNodeTraceNodeID(parentInvocation, nodeID); traceNodeID != "" {
 			invocationOpts = append(invocationOpts, agent.WithInvocationTraceNodeID(traceNodeID))
 		}
-		if surfaceRootNodeID := buildAgentNodeSurfaceRoot(parentInvocation, nodeID, targetAgent); surfaceRootNodeID != "" {
+		if surfaceRootNodeID := buildAgentNodeSurfaceRoot(parentInvocation, nodeID); surfaceRootNodeID != "" {
 			invocationOpts = append(invocationOpts, func(inv *agent.Invocation) {
 				agent.SetInvocationSurfaceRootNodeID(inv, surfaceRootNodeID)
 			})
@@ -3573,6 +3594,9 @@ func buildAgentInvocationWithStateScopeAndInputKey(
 func currentTraceStepPredecessors(state State) []string {
 	if state == nil {
 		return nil
+	}
+	if stepIDs := traceStepIDsFromState(state, currentTracePredecessorStepIDsStateKey); len(stepIDs) > 0 {
+		return stepIDs
 	}
 	if stepID, ok := GetStateValue[string](state, currentTraceStepIDStateKey); ok && stepID != "" {
 		return []string{stepID}
@@ -3615,7 +3639,6 @@ func buildAgentNodeTraceNodeID(
 func buildAgentNodeSurfaceRoot(
 	parentInvocation *agent.Invocation,
 	nodeID string,
-	targetAgent agent.Agent,
 ) string {
 	if parentInvocation == nil {
 		return ""
@@ -3624,10 +3647,7 @@ func buildAgentNodeSurfaceRoot(
 	if nodeID != "" {
 		baseNodeID = istructure.JoinNodeID(baseNodeID, nodeID)
 	}
-	if targetAgent == nil || targetAgent.Info().Name == "" {
-		return baseNodeID
-	}
-	return istructure.JoinNodeID(baseNodeID, targetAgent.Info().Name)
+	return baseNodeID
 }
 
 const (

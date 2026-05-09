@@ -285,6 +285,9 @@ func buildBackwardRequest(
 		if surfaceID == "" {
 			return nil, fmt.Errorf("step %q applied surface id is empty", step.StepID)
 		}
+		if isUnsupportedPromptIterRuntimeSurface(surfaceID) {
+			continue
+		}
 		if _, ok := seenSurfaces[surfaceID]; ok {
 			continue
 		}

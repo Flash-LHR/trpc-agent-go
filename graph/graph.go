@@ -517,10 +517,10 @@ type ExecutionContext struct {
 	traceChannelSources map[string][]string
 	// traceChannelSourceSteps tracks the step number for last-value/ephemeral provenance.
 	traceChannelSourceSteps map[string]int
-	// traceBarrierChannelSources tracks the latest source step id for each barrier sender.
-	traceBarrierChannelSources map[string]map[string]string
-	// traceStepIDByTaskID tracks the real trace step created for each task.
-	traceStepIDByTaskID map[string]string
+	// traceBarrierChannelSources tracks the latest source step ids for each barrier sender.
+	traceBarrierChannelSources map[string]map[string][]string
+	// traceSourceStepIDsByTaskID tracks the trace source steps produced by each task.
+	traceSourceStepIDsByTaskID map[string][]string
 }
 
 func (e *ExecutionContext) setCompletionIdentity(text, identity string) {

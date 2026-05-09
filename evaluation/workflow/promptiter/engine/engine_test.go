@@ -680,6 +680,9 @@ func TestRunCompilesProfileIntoEvaluationRunOptions(t *testing.T) {
 	assert.True(t, evalService.runOptions[0].ExecutionTraceEnabled)
 	assert.True(t, evalService.runOptions[1].ExecutionTraceEnabled)
 	assert.True(t, evalService.runOptions[2].ExecutionTraceEnabled)
+	assert.True(t, evalService.runOptions[0].GraphFlattenAgentNodeTrace)
+	assert.True(t, evalService.runOptions[1].GraphFlattenAgentNodeTrace)
+	assert.True(t, evalService.runOptions[2].GraphFlattenAgentNodeTrace)
 	assert.Equal(t, "accepted prompt", profileText(result.Rounds[0].OutputProfile))
 	assert.Equal(t, "accepted prompt", profileText(result.AcceptedProfile))
 }
@@ -727,6 +730,7 @@ func TestCompileProfileRunOptionsUsesNodeSurfacePatchForNonEntryNode(t *testing.
 	opts := agent.NewRunOptions(runOptions...)
 	assert.Empty(t, opts.Instruction)
 	assert.True(t, opts.ExecutionTraceEnabled)
+	assert.True(t, opts.GraphFlattenAgentNodeTrace)
 	patch, ok := surfacepatch.PatchForNode(opts.CustomAgentConfigs, "reviewer")
 	assert.True(t, ok)
 	instruction, ok := patch.Instruction()
@@ -1056,6 +1060,89 @@ func TestBuildBackwardRequestKeepsContextSurfacesButRestrictsAllowedGradientSurf
 		assert.Len(t, request.Surfaces, 2)
 		assert.Equal(t, []string{instructionSurfaceID}, request.AllowedGradientSurfaceIDs)
 	}
+}
+
+func TestPromptIterTraceSurfaceSanitize_FiltersUnsupportedRuntimeSurfaces(t *testing.T) {
+	structure, err := newStructureState(testStructureSnapshot(t))
+	require.NoError(t, err)
+	instructionSurfaceID := astructure.SurfaceID("node_1", astructure.SurfaceTypeInstruction)
+	toolSurfaceID := astructure.SurfaceID("node_1", astructure.SurfaceTypeTool)
+	trace := &atrace.Trace{
+		Steps: []atrace.Step{
+			{
+				StepID:            "step_1",
+				NodeID:            "node_1",
+				AppliedSurfaceIDs: []string{instructionSurfaceID, toolSurfaceID},
+			},
+		},
+	}
+
+	sanitizePromptIterTraceSurfaces(trace)
+	require.NoError(t, validateTraceAgainstStructure(structure, trace))
+	require.Equal(t, []string{instructionSurfaceID}, trace.Steps[0].AppliedSurfaceIDs)
+}
+
+func TestPromptIterTraceSurfaceSanitize_KeepsSupportedUnknownSurfaceError(t *testing.T) {
+	structure, err := newStructureState(testStructureSnapshot(t))
+	require.NoError(t, err)
+	trace := &atrace.Trace{
+		Steps: []atrace.Step{
+			{
+				StepID: "step_1",
+				NodeID: "node_1",
+				AppliedSurfaceIDs: []string{
+					astructure.SurfaceID("node_1", astructure.SurfaceTypeGlobalInstruction),
+				},
+			},
+		},
+	}
+
+	sanitizePromptIterTraceSurfaces(trace)
+	require.Error(t, validateTraceAgainstStructure(structure, trace))
+}
+
+func TestBuildBackwardRequestSkipsUnsupportedRuntimeSurfaces(t *testing.T) {
+	structure, err := newStructureState(testStructureSnapshot(t))
+	require.NoError(t, err)
+	instructionSurfaceID := astructure.SurfaceID("node_1", astructure.SurfaceTypeInstruction)
+	step := atrace.Step{
+		StepID: "step_1",
+		NodeID: "node_1",
+		AppliedSurfaceIDs: []string{
+			instructionSurfaceID,
+			astructure.SurfaceID("node_1", astructure.SurfaceTypeTool),
+		},
+		Input:  &atrace.Snapshot{Text: "input"},
+		Output: &atrace.Snapshot{Text: "output"},
+	}
+
+	request, err := buildBackwardRequest(
+		structure,
+		nil,
+		map[string]indexedTraceStep{"step_1": {step: step}},
+		CaseResult{EvalSetID: "train", EvalCaseID: "case_1"},
+		step,
+		[]backwarder.GradientPacket{{FromStepID: "step_1", Gradient: "loss"}},
+		nil,
+	)
+	require.NoError(t, err)
+	require.Len(t, request.Surfaces, 1)
+	require.Equal(t, instructionSurfaceID, request.Surfaces[0].SurfaceID)
+}
+
+func TestTraceTerminalStepIDs_UsesRealDownstreamTerminalOnly(t *testing.T) {
+	trace := &atrace.Trace{
+		Steps: []atrace.Step{
+			{StepID: "s1", NodeID: "start"},
+			{StepID: "s2", NodeID: "agent", PredecessorStepIDs: []string{"s1"}},
+			{StepID: "s3", NodeID: "agent", PredecessorStepIDs: []string{"s2"}},
+			{StepID: "s4", NodeID: "after", PredecessorStepIDs: []string{"s3"}},
+		},
+	}
+
+	terminalIDs, err := traceTerminalStepIDs(trace)
+	require.NoError(t, err)
+	require.Equal(t, []string{"s4"}, terminalIDs)
 }
 
 func TestAggregateRejectsOutOfScopeGradient(t *testing.T) {
@@ -2811,6 +2898,120 @@ func scriptedOutcome(evalSetID string, profileValue string) scriptedEvalOutcome 
 			appliedSurfaceIDs: []string{testSurfaceID},
 		}
 	}
+}
+
+func TestSlimRunResultReturnsOriginalForZeroPolicy(t *testing.T) {
+	result := &RunResult{ID: "run-1"}
+	assert.Same(t, result, SlimRunResult(result, RunResultSlimming{}))
+	assert.Nil(t, SlimRunResult(nil, RunResultSlimming{OmitStructure: true}))
+}
+
+func TestSlimRunResultOmitsConfiguredFields(t *testing.T) {
+	result := &RunResult{
+		ID:           "run-1",
+		Status:       RunStatusSucceeded,
+		CurrentRound: 1,
+		Structure:    &astructure.Snapshot{StructureID: "structure_1", EntryNodeID: "node_1"},
+		BaselineValidation: &EvaluationResult{
+			OverallScore: 0.5,
+			EvalSets: []EvalSetResult{
+				{
+					EvalSetID:    "validation",
+					OverallScore: 0.5,
+					Cases: []CaseResult{
+						{
+							EvalSetID:  "validation",
+							EvalCaseID: "case_1",
+							SessionID:  "session_1",
+							Trace: &atrace.Trace{
+								Steps: []atrace.Step{
+									{
+										StepID: "step_1",
+										Input:  &atrace.Snapshot{Text: "input"},
+										Output: &atrace.Snapshot{Text: "output"},
+									},
+								},
+							},
+							Metrics: []MetricResult{{MetricName: "quality", Score: 0.5}},
+						},
+					},
+				},
+			},
+		},
+		AcceptedProfile: &promptiter.Profile{
+			StructureID: "structure_1",
+			Overrides: []promptiter.SurfaceOverride{
+				{SurfaceID: testSurfaceID, Value: astructure.SurfaceValue{Text: stringPtr("accepted")}},
+			},
+		},
+		Rounds: []RoundResult{
+			{
+				Round:        1,
+				InputProfile: &promptiter.Profile{StructureID: "structure_1"},
+				Train: &EvaluationResult{
+					OverallScore: 0.4,
+					EvalSets: []EvalSetResult{
+						{
+							EvalSetID:    "train",
+							OverallScore: 0.4,
+							Cases:        []CaseResult{{EvalSetID: "train", EvalCaseID: "case_1"}},
+						},
+					},
+				},
+				Losses: []promptiter.CaseLoss{{EvalSetID: "train", EvalCaseID: "case_1"}},
+				Backward: &BackwardResult{
+					Cases: []CaseBackwardResult{{EvalSetID: "train", EvalCaseID: "case_1"}},
+				},
+				Aggregation: &AggregationResult{
+					Surfaces: []promptiter.AggregatedSurfaceGradient{
+						{SurfaceID: testSurfaceID, NodeID: "node_1"},
+					},
+				},
+				Patches: &promptiter.PatchSet{
+					Patches: []promptiter.SurfacePatch{
+						{SurfaceID: testSurfaceID, Value: astructure.SurfaceValue{Text: stringPtr("candidate")}},
+					},
+				},
+				OutputProfile: &promptiter.Profile{StructureID: "structure_1"},
+				Validation:    &EvaluationResult{OverallScore: 0.7},
+				Acceptance:    &AcceptanceDecision{Accepted: true},
+				Stop:          &StopDecision{ShouldStop: true},
+			},
+		},
+	}
+
+	slimmed := SlimRunResult(result, RunResultSlimming{
+		OmitStructure:       true,
+		OmitEvaluationCases: true,
+		OmitBackward:        true,
+		OmitAggregation:     true,
+		OmitPatches:         true,
+		OmitProfiles:        true,
+		OmitLosses:          true,
+	})
+
+	require.NotSame(t, result, slimmed)
+	assert.Nil(t, slimmed.Structure)
+	assert.Nil(t, slimmed.AcceptedProfile)
+	require.NotNil(t, slimmed.BaselineValidation)
+	require.Len(t, slimmed.BaselineValidation.EvalSets, 1)
+	assert.Empty(t, slimmed.BaselineValidation.EvalSets[0].Cases)
+	require.Len(t, slimmed.Rounds, 1)
+	round := slimmed.Rounds[0]
+	assert.Nil(t, round.InputProfile)
+	assert.Nil(t, round.OutputProfile)
+	assert.Nil(t, round.Backward)
+	assert.Nil(t, round.Aggregation)
+	assert.Nil(t, round.Patches)
+	assert.Empty(t, round.Losses)
+	require.NotNil(t, round.Train)
+	require.Len(t, round.Train.EvalSets, 1)
+	assert.Empty(t, round.Train.EvalSets[0].Cases)
+	require.NotNil(t, round.Acceptance)
+	require.NotNil(t, round.Stop)
+	require.NotNil(t, result.Structure)
+	require.NotNil(t, result.BaselineValidation.EvalSets[0].Cases[0].Trace)
+	require.NotNil(t, result.Rounds[0].Backward)
 }
 
 func testStructureSnapshot(t *testing.T) *astructure.Snapshot {

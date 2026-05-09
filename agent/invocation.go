@@ -370,6 +370,16 @@ func WithGraphTerminalMessagesOnly(enabled bool) RunOption {
 	}
 }
 
+// WithGraphFlattenAgentNodeTrace makes AgentNode traces use child steps as public steps.
+//
+// When disabled, AgentNode keeps the legacy wrapper step for compatibility.
+// The executor may still use child terminal steps as downstream trace sources.
+func WithGraphFlattenAgentNodeTrace(enabled bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.GraphFlattenAgentNodeTrace = enabled
+	}
+}
+
 // WithStreamMode sets StreamMode selection for this run.
 //
 // When StreamModeMessages is present, graph-based Large Language Model (LLM)
@@ -883,6 +893,9 @@ type RunOptions struct {
 	// caller-visible message events are forwarded only for terminal LLM nodes
 	// and terminal sub-agent nodes.
 	GraphTerminalMessagesOnly bool
+
+	// GraphFlattenAgentNodeTrace hides AgentNode wrapper steps from public traces.
+	GraphFlattenAgentNodeTrace bool
 
 	// StreamModeEnabled indicates whether the caller explicitly configured
 	// StreamModes for this run.

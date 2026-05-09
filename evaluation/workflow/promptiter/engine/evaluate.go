@@ -24,6 +24,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/evalresult"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/status"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/workflow/promptiter"
+	isurface "trpc.group/trpc-go/trpc-agent-go/evaluation/workflow/promptiter/internal/surface"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/provider"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
@@ -200,6 +201,7 @@ func compileProfileRunOptions(
 	}
 	runOptions := []agent.RunOption{
 		agent.WithExecutionTraceEnabled(true),
+		agent.WithGraphFlattenAgentNodeTrace(true),
 	}
 	if profile == nil {
 		return runOptions, nil
@@ -490,6 +492,7 @@ func extractInferenceTraceDetails(
 		)
 	}
 	executionTrace := result.ExecutionTraces[0]
+	sanitizePromptIterTraceSurfaces(executionTrace)
 	if err := validateTraceAgainstStructure(structure, executionTrace); err != nil {
 		return nil, "", err
 	}
@@ -528,6 +531,39 @@ func validateTraceAgainstStructure(
 		}
 	}
 	return nil
+}
+
+func sanitizePromptIterTraceSurfaces(trace *atrace.Trace) {
+	if trace == nil {
+		return
+	}
+	for idx := range trace.Steps {
+		surfaces := trace.Steps[idx].AppliedSurfaceIDs
+		if len(surfaces) == 0 {
+			continue
+		}
+		filtered := surfaces[:0]
+		for _, surfaceID := range surfaces {
+			if isUnsupportedPromptIterRuntimeSurface(surfaceID) {
+				continue
+			}
+			filtered = append(filtered, surfaceID)
+		}
+		trace.Steps[idx].AppliedSurfaceIDs = append([]string(nil), filtered...)
+	}
+}
+
+func isUnsupportedPromptIterRuntimeSurface(surfaceID string) bool {
+	surfaceType, ok := promptIterSurfaceTypeFromID(surfaceID)
+	return ok && !isurface.IsSupportedType(surfaceType)
+}
+
+func promptIterSurfaceTypeFromID(surfaceID string) (astructure.SurfaceType, bool) {
+	idx := strings.LastIndex(surfaceID, "#")
+	if idx < 0 || idx == len(surfaceID)-1 {
+		return "", false
+	}
+	return astructure.SurfaceType(surfaceID[idx+1:]), true
 }
 
 func adaptMetricResults(results []*evalresult.EvalMetricResult) ([]MetricResult, error) {

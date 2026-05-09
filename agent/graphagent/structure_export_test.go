@@ -213,7 +213,7 @@ func TestExport_GraphAgent_ToolNodeSurface(t *testing.T) {
 	})
 }
 
-func TestExport_GraphAgent_AgentNodeRecursesIntoChild(t *testing.T) {
+func TestExport_GraphAgent_AgentNodeMergesChildRootSurfaces(t *testing.T) {
 	compiled := graph.NewStateGraph(graph.NewStateSchema()).
 		AddAgentNode("researcher").
 		SetEntryPoint("researcher").
@@ -230,22 +230,20 @@ func TestExport_GraphAgent_AgentNodeRecursesIntoChild(t *testing.T) {
 		Nodes: []structure.Node{
 			{NodeID: "assistant", Kind: structure.NodeKindAgent, Name: "assistant"},
 			{NodeID: "assistant/researcher", Kind: structure.NodeKindAgent, Name: "researcher"},
-			{NodeID: "assistant/researcher/researcher", Kind: structure.NodeKindLLM, Name: "researcher"},
 		},
 		Edges: []structure.Edge{
 			{FromNodeID: "assistant", ToNodeID: "assistant/researcher"},
-			{FromNodeID: "assistant/researcher", ToNodeID: "assistant/researcher/researcher"},
 		},
 		Surfaces: []structure.Surface{
 			{
-				SurfaceID: "assistant/researcher/researcher#global_instruction",
-				NodeID:    "assistant/researcher/researcher",
+				SurfaceID: "assistant/researcher#global_instruction",
+				NodeID:    "assistant/researcher",
 				Type:      structure.SurfaceTypeGlobalInstruction,
 				Value:     structure.SurfaceValue{Text: stringPtr("")},
 			},
 			{
-				SurfaceID: "assistant/researcher/researcher#instruction",
-				NodeID:    "assistant/researcher/researcher",
+				SurfaceID: "assistant/researcher#instruction",
+				NodeID:    "assistant/researcher",
 				Type:      structure.SurfaceTypeInstruction,
 				Value:     structure.SurfaceValue{Text: stringPtr("")},
 			},

@@ -2193,7 +2193,7 @@ func TestExecutor_HandleCommandRouting_SetsStepMark(t *testing.T) {
 		nil,
 		ec,
 		taskID,
-		"",
+		nil,
 		targetNode,
 		step,
 	)

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/plugin"
@@ -30,6 +31,7 @@ const (
 	defaultPluginName = "promptsampler"
 	defaultSampleRate = 0.0
 	defaultMaxSteps   = 1000
+	lastResponseKey   = "last_response"
 
 	// teamMemberToolPrefix is the prefix for team-member tools (sub-agent
 	// calls surfaced as tools). Their steps are filtered out so that the
@@ -455,6 +457,11 @@ func (s *PromptSampler) afterAgent(
 		"[promptsampler-test] trace recorded: invocation_id=%s agent=%s status=%s steps=%d duration=%s",
 		trace.InvocationID, trace.AgentName, trace.Status, len(trace.Steps), trace.Duration,
 	)
+	log.ErrorfContext(ctx,
+		"[promptsampler-report-payload] invocation_id=%s agent=%s status=%s steps=%d input=%q final_output=%q",
+		trace.InvocationID, trace.AgentName, trace.Status, len(trace.Steps),
+		traceText(trace.Input), traceText(trace.FinalOutput),
+	)
 
 	if err := s.writer.Write(ctx, trace); err != nil {
 		// Writer implementations already log their own errors; we add a
@@ -473,6 +480,23 @@ func (s *PromptSampler) afterAgent(
 	return nil, nil
 }
 
+func traceText(value any) string {
+	switch v := value.(type) {
+	case *TraceInput:
+		if v == nil {
+			return ""
+		}
+		return v.Text
+	case *TraceOutput:
+		if v == nil {
+			return ""
+		}
+		return v.Text
+	default:
+		return ""
+	}
+}
+
 // buildTrace converts the accumulated state into the wire-level Trace.
 func (s *PromptSampler) buildTrace(state *invocationState, args *agent.AfterAgentArgs) *Trace {
 	endTime := time.Now()
@@ -485,24 +509,9 @@ func (s *PromptSampler) buildTrace(state *invocationState, args *agent.AfterAgen
 		errMsg = args.Error.Error()
 	}
 
-	// Prefer the last model step's output as the final answer: in team
-	// orchestration the FullResponseEvent can contain a coordinator-synthesized
-	// response that duplicates member agent content.
-	var finalOutput *TraceOutput
-	for i := len(steps) - 1; i >= 0; i-- {
-		step := steps[i]
-		if step.StepType == StepTypeModel && step.Output != nil && step.Output.Text != "" {
-			finalOutput = &TraceOutput{Text: step.Output.Text}
-			break
-		}
-	}
-	if finalOutput == nil && args.FullResponseEvent != nil && args.FullResponseEvent.Response != nil {
-		if len(args.FullResponseEvent.Response.Choices) > 0 {
-			text := args.FullResponseEvent.Response.Choices[0].Message.Content
-			if text != "" {
-				finalOutput = &TraceOutput{Text: text}
-			}
-		}
+	finalOutput := traceOutputFromEvent(args.FullResponseEvent)
+	if finalOutput == nil {
+		finalOutput = lastModelStepOutput(steps)
 	}
 
 	return &Trace{
@@ -510,6 +519,7 @@ func (s *PromptSampler) buildTrace(state *invocationState, args *agent.AfterAgen
 		InvocationID: state.invocationID,
 		AgentName:    state.agentName,
 		Status:       status,
+		Input:        traceInputFromInvocation(args.Invocation),
 		FinalOutput:  finalOutput,
 		Steps:        steps,
 		StartTime:    state.startTime,
@@ -517,6 +527,69 @@ func (s *PromptSampler) buildTrace(state *invocationState, args *agent.AfterAgen
 		Duration:     endTime.Sub(state.startTime),
 		Error:        errMsg,
 	}
+}
+
+func traceInputFromInvocation(inv *agent.Invocation) *TraceInput {
+	if inv == nil || inv.Message.Content == "" {
+		return nil
+	}
+	return &TraceInput{Text: truncate(inv.Message.Content, inputTextMaxLen)}
+}
+
+func traceOutputFromEvent(ev *event.Event) *TraceOutput {
+	if ev == nil {
+		return nil
+	}
+	if output := traceOutputFromStructuredPayload(ev.StructuredOutput); output != nil {
+		return output
+	}
+	if output := traceOutputFromStateDelta(ev.StateDelta); output != nil {
+		return output
+	}
+	if ev.Response == nil || len(ev.Response.Choices) == 0 {
+		return nil
+	}
+	text := ev.Response.Choices[0].Message.Content
+	if text == "" {
+		return nil
+	}
+	return &TraceOutput{Text: truncate(text, outputTextMaxLen)}
+}
+
+func traceOutputFromStructuredPayload(payload any) *TraceOutput {
+	if payload == nil {
+		return nil
+	}
+	data, err := json.Marshal(payload)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	return &TraceOutput{Text: truncate(string(data), outputTextMaxLen)}
+}
+
+func traceOutputFromStateDelta(stateDelta map[string][]byte) *TraceOutput {
+	if len(stateDelta) == 0 {
+		return nil
+	}
+	raw := stateDelta[lastResponseKey]
+	if len(raw) == 0 {
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil || text == "" {
+		return nil
+	}
+	return &TraceOutput{Text: truncate(text, outputTextMaxLen)}
+}
+
+func lastModelStepOutput(steps []TraceStep) *TraceOutput {
+	for i := len(steps) - 1; i >= 0; i-- {
+		step := steps[i]
+		if step.StepType == StepTypeModel && step.Output != nil && step.Output.Text != "" {
+			return &TraceOutput{Text: step.Output.Text}
+		}
+	}
+	return nil
 }
 
 // ---------- model callbacks ----------

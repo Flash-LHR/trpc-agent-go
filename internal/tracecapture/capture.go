@@ -210,6 +210,16 @@ func (c *Capture) TerminalStepIDs(invocationID string) []string {
 	return c.sortedStepIDsLocked(terminalSet)
 }
 
+// EffectiveTerminalStepIDs returns terminal steps for an invocation and its children.
+func (c *Capture) EffectiveTerminalStepIDs(invocationID string) []string {
+	if c == nil || invocationID == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.effectiveTerminalStepIDsLocked(invocationID, make(map[string]struct{}))
+}
+
 // Build materializes the final public trace.
 func (c *Capture) Build(status trace.TraceStatus, endedAt time.Time) *trace.Trace {
 	if c == nil {
