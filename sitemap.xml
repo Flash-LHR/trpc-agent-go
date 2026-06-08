@@ -274,6 +274,55 @@
         <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/agui/history/"/>
     </url>
     <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/blog/agui/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/agui/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/agui/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/blog/evaluation/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/evaluation/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/evaluation/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/blog/graphagent/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/graphagent/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/graphagent/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/blog/openclaw/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/openclaw/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/openclaw/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/blog/promptiter/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/promptiter/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/promptiter/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/blog/skill/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/skill/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/skill/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/blog/trpcagentgo/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/trpcagentgo/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/trpcagentgo/"/>
+    </url>
+    <url>
         <loc>https://trpc-group.github.io/trpc-agent-go/knowledge/</loc>
         <lastmod>2026-06-08</lastmod>
         <changefreq>daily</changefreq>
@@ -734,6 +783,55 @@
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/agui/history/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/agui/history/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/zh/blog/agui/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/agui/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/agui/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/zh/blog/evaluation/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/evaluation/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/evaluation/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/zh/blog/graphagent/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/graphagent/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/graphagent/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/zh/blog/openclaw/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/openclaw/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/openclaw/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/zh/blog/promptiter/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/promptiter/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/promptiter/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/zh/blog/skill/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/skill/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/skill/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/zh/blog/trpcagentgo/</loc>
+        <lastmod>2026-06-08</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/blog/trpcagentgo/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/blog/trpcagentgo/"/>
     </url>
     <url>
         <loc>https://trpc-group.github.io/trpc-agent-go/zh/knowledge/</loc>
