@@ -5629,7 +5629,7 @@
 <h4 id="_33">核心特性</h4>
 <ul>
 <li>会话持久化：保存完整的对话历史和上下文</li>
-<li>多存储后端：支持内存存储和 Redis 存储，内网版本可无缝接入 tRPC Redis 插件</li>
+<li>多存储后端：支持内存存储和 Redis 存储，可按需扩展更多存储实现</li>
 <li>事件追踪：完整记录会话中的所有交互事件</li>
 </ul>
 <h4 id="_34">会话层次结构</h4>
@@ -5693,33 +5693,19 @@
 </span><span id="__span-32-20"><a id="__codelineno-32-20" name="__codelineno-32-20"></a><span class="p">}</span>
 </span></code></pre></div></td></tr></table></div>
 <h4 id="_36">存储后端支持</h4>
-<div class="language-go highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-33-1"> 1</a></span>
-<span class="normal"><a href="#__codelineno-33-2"> 2</a></span>
-<span class="normal"><a href="#__codelineno-33-3"> 3</a></span>
-<span class="normal"><a href="#__codelineno-33-4"> 4</a></span>
-<span class="normal"><a href="#__codelineno-33-5"> 5</a></span>
-<span class="normal"><a href="#__codelineno-33-6"> 6</a></span>
-<span class="normal"><a href="#__codelineno-33-7"> 7</a></span>
-<span class="normal"><a href="#__codelineno-33-8"> 8</a></span>
-<span class="normal"><a href="#__codelineno-33-9"> 9</a></span>
-<span class="normal"><a href="#__codelineno-33-10">10</a></span>
-<span class="normal"><a href="#__codelineno-33-11">11</a></span>
-<span class="normal"><a href="#__codelineno-33-12">12</a></span>
-<span class="normal"><a href="#__codelineno-33-13">13</a></span>
-<span class="normal"><a href="#__codelineno-33-14">14</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1"></a><span class="c1">// 内存存储（适用于开发测试）</span>
+<div class="language-go highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-33-1">1</a></span>
+<span class="normal"><a href="#__codelineno-33-2">2</a></span>
+<span class="normal"><a href="#__codelineno-33-3">3</a></span>
+<span class="normal"><a href="#__codelineno-33-4">4</a></span>
+<span class="normal"><a href="#__codelineno-33-5">5</a></span>
+<span class="normal"><a href="#__codelineno-33-6">6</a></span>
+<span class="normal"><a href="#__codelineno-33-7">7</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-33-1"><a id="__codelineno-33-1" name="__codelineno-33-1"></a><span class="c1">// 内存存储（适用于开发测试）</span>
 </span><span id="__span-33-2"><a id="__codelineno-33-2" name="__codelineno-33-2"></a><span class="nx">sessionService</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">inmemory</span><span class="p">.</span><span class="nx">NewSessionService</span><span class="p">()</span>
 </span><span id="__span-33-3"><a id="__codelineno-33-3" name="__codelineno-33-3"></a>
 </span><span id="__span-33-4"><a id="__codelineno-33-4" name="__codelineno-33-4"></a><span class="c1">// Redis存储（适用于生产环境）</span>
 </span><span id="__span-33-5"><a id="__codelineno-33-5" name="__codelineno-33-5"></a><span class="nx">sessionService</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">redis</span><span class="p">.</span><span class="nx">NewService</span><span class="p">(</span>
 </span><span id="__span-33-6"><a id="__codelineno-33-6" name="__codelineno-33-6"></a><span class="w">    </span><span class="nx">redis</span><span class="p">.</span><span class="nx">WithURL</span><span class="p">(</span><span class="s">&quot;redis://localhost:6379/0&quot;</span><span class="p">),</span>
 </span><span id="__span-33-7"><a id="__codelineno-33-7" name="__codelineno-33-7"></a><span class="p">)</span>
-</span><span id="__span-33-8"><a id="__codelineno-33-8" name="__codelineno-33-8"></a>
-</span><span id="__span-33-9"><a id="__codelineno-33-9" name="__codelineno-33-9"></a><span class="c1">// 内网版本使用tRPC Redis插件，同样的方式，只需额外引入内网的redis包，即可使用tRPC Redis插件</span>
-</span><span id="__span-33-10"><a id="__codelineno-33-10" name="__codelineno-33-10"></a><span class="kn">import</span><span class="w"> </span><span class="nx">_</span><span class="w"> </span><span class="s">&quot;git.woa.com/trpc-go/trpc-agent-go/trpc/storage/redis&quot;</span>
-</span><span id="__span-33-11"><a id="__codelineno-33-11" name="__codelineno-33-11"></a>
-</span><span id="__span-33-12"><a id="__codelineno-33-12" name="__codelineno-33-12"></a><span class="nx">sessionService</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">redis</span><span class="p">.</span><span class="nx">NewService</span><span class="p">(</span>
-</span><span id="__span-33-13"><a id="__codelineno-33-13" name="__codelineno-33-13"></a><span class="w">    </span><span class="nx">redis</span><span class="p">.</span><span class="nx">WithURL</span><span class="p">(</span><span class="s">&quot;redis://localhost:6379/0&quot;</span><span class="p">),</span>
-</span><span id="__span-33-14"><a id="__codelineno-33-14" name="__codelineno-33-14"></a><span class="p">)</span>
 </span></code></pre></div></td></tr></table></div>
 <h4 id="runner">与 Runner 集成</h4>
 <div class="language-go highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-34-1">1</a></span>
@@ -6226,7 +6212,7 @@
     <span class="md-icon" title="最后更新">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime" title="2026年6月8日 14:19:24 UTC">2026-06-08 14:19:24</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime" title="2026年6月9日 08:42:05 UTC">2026-06-09 08:42:05</span>
   </span>
 
     
@@ -6236,7 +6222,7 @@
     <span class="md-icon" title="创建日期">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime" title="2026年6月8日 12:15:23 UTC">2026-06-08 12:15:23</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime" title="2026年6月9日 08:42:05 UTC">2026-06-09 08:42:05</span>
   </span>
 
     
