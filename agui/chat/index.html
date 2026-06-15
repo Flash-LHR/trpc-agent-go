@@ -2374,6 +2374,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#concurrent-message-streams" class="md-nav__link">
+    <span class="md-ellipsis">
+      Concurrent Message Streams
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#best-practices" class="md-nav__link">
     <span class="md-ellipsis">
       Best Practices
@@ -2706,6 +2715,29 @@
   
   <span class="md-ellipsis">
     A Go Agent Framework for Building Intelligent AI Applications
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../blog/summary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Context Management Design and Evaluation for Long-Running Agents
     
   </span>
   
@@ -3194,6 +3226,15 @@
   <a href="#observability-reporting" class="md-nav__link">
     <span class="md-ellipsis">
       Observability Reporting
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#concurrent-message-streams" class="md-nav__link">
+    <span class="md-ellipsis">
+      Concurrent Message Streams
     </span>
   </a>
   
@@ -4227,19 +4268,21 @@
 <span class="normal"><a href="#__codelineno-27-8"> 8</a></span>
 <span class="normal"><a href="#__codelineno-27-9"> 9</a></span>
 <span class="normal"><a href="#__codelineno-27-10">10</a></span>
-<span class="normal"><a href="#__codelineno-27-11">11</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1"></a><span class="p">{</span>
+<span class="normal"><a href="#__codelineno-27-11">11</a></span>
+<span class="normal"><a href="#__codelineno-27-12">12</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-27-1"><a id="__codelineno-27-1" name="__codelineno-27-1"></a><span class="p">{</span>
 </span><span id="__span-27-2"><a id="__codelineno-27-2" name="__codelineno-27-2"></a><span class="w">  </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;TOOL_CALL_START&quot;</span><span class="p">,</span>
-</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3"></a><span class="w">  </span><span class="nt">&quot;toolCallId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tool-call-1&quot;</span><span class="p">,</span>
-</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4"></a><span class="w">  </span><span class="nt">&quot;rawEvent&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5"></a><span class="w">    </span><span class="nt">&quot;eventId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;evt-tool-call&quot;</span><span class="p">,</span>
-</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6"></a><span class="w">    </span><span class="nt">&quot;author&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;member-a&quot;</span><span class="p">,</span>
-</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7"></a><span class="w">    </span><span class="nt">&quot;invocationId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;inv-1&quot;</span><span class="p">,</span>
-</span><span id="__span-27-8"><a id="__codelineno-27-8" name="__codelineno-27-8"></a><span class="w">    </span><span class="nt">&quot;parentInvocationId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;parent-1&quot;</span><span class="p">,</span>
-</span><span id="__span-27-9"><a id="__codelineno-27-9" name="__codelineno-27-9"></a><span class="w">    </span><span class="nt">&quot;branch&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;root.member-a&quot;</span>
-</span><span id="__span-27-10"><a id="__codelineno-27-10" name="__codelineno-27-10"></a><span class="w">  </span><span class="p">}</span>
-</span><span id="__span-27-11"><a id="__codelineno-27-11" name="__codelineno-27-11"></a><span class="p">}</span>
+</span><span id="__span-27-3"><a id="__codelineno-27-3" name="__codelineno-27-3"></a><span class="w">  </span><span class="nt">&quot;timestamp&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1781258400000</span><span class="p">,</span>
+</span><span id="__span-27-4"><a id="__codelineno-27-4" name="__codelineno-27-4"></a><span class="w">  </span><span class="nt">&quot;toolCallId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tool-call-1&quot;</span><span class="p">,</span>
+</span><span id="__span-27-5"><a id="__codelineno-27-5" name="__codelineno-27-5"></a><span class="w">  </span><span class="nt">&quot;rawEvent&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-27-6"><a id="__codelineno-27-6" name="__codelineno-27-6"></a><span class="w">    </span><span class="nt">&quot;eventId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;evt-tool-call&quot;</span><span class="p">,</span>
+</span><span id="__span-27-7"><a id="__codelineno-27-7" name="__codelineno-27-7"></a><span class="w">    </span><span class="nt">&quot;author&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;member-a&quot;</span><span class="p">,</span>
+</span><span id="__span-27-8"><a id="__codelineno-27-8" name="__codelineno-27-8"></a><span class="w">    </span><span class="nt">&quot;invocationId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;inv-1&quot;</span><span class="p">,</span>
+</span><span id="__span-27-9"><a id="__codelineno-27-9" name="__codelineno-27-9"></a><span class="w">    </span><span class="nt">&quot;parentInvocationId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;parent-1&quot;</span><span class="p">,</span>
+</span><span id="__span-27-10"><a id="__codelineno-27-10" name="__codelineno-27-10"></a><span class="w">    </span><span class="nt">&quot;branch&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;root.member-a&quot;</span>
+</span><span id="__span-27-11"><a id="__codelineno-27-11" name="__codelineno-27-11"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-27-12"><a id="__codelineno-27-12" name="__codelineno-27-12"></a><span class="p">}</span>
 </span></code></pre></div></td></tr></table></div>
-<p><code>author</code> indicates the event author and is usually used to group by agent or member. <code>invocationId</code> identifies the current execution, <code>parentInvocationId</code> identifies the parent execution, and <code>branch</code> identifies the current execution's branch in the call chain. When the same agent name appears multiple times in a single run, <code>branch</code> can distinguish different execution branches.</p>
+<p>The top-level <code>timestamp</code> on a real-time AG-UI event is the protocol event timestamp in Unix milliseconds. <code>author</code> indicates the event author and is usually used to group by agent or member. <code>invocationId</code> identifies the current execution, <code>parentInvocationId</code> identifies the parent execution, and <code>branch</code> identifies the current execution's branch in the call chain. When the same agent name appears multiple times in a single run, <code>branch</code> can distinguish different execution branches.</p>
 <p>The <code>MESSAGES_SNAPSHOT</code> event returned by the message snapshot route can also carry source information. In this case, <code>rawEvent</code> is not source information for one event, but a source index built by message and tool call:</p>
 <div class="language-json highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-28-1"> 1</a></span>
 <span class="normal"><a href="#__codelineno-28-2"> 2</a></span>
@@ -4261,7 +4304,9 @@
 <span class="normal"><a href="#__codelineno-28-18">18</a></span>
 <span class="normal"><a href="#__codelineno-28-19">19</a></span>
 <span class="normal"><a href="#__codelineno-28-20">20</a></span>
-<span class="normal"><a href="#__codelineno-28-21">21</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1"></a><span class="p">{</span>
+<span class="normal"><a href="#__codelineno-28-21">21</a></span>
+<span class="normal"><a href="#__codelineno-28-22">22</a></span>
+<span class="normal"><a href="#__codelineno-28-23">23</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-28-1"><a id="__codelineno-28-1" name="__codelineno-28-1"></a><span class="p">{</span>
 </span><span id="__span-28-2"><a id="__codelineno-28-2" name="__codelineno-28-2"></a><span class="w">  </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;MESSAGES_SNAPSHOT&quot;</span><span class="p">,</span>
 </span><span id="__span-28-3"><a id="__codelineno-28-3" name="__codelineno-28-3"></a><span class="w">  </span><span class="nt">&quot;rawEvent&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 </span><span id="__span-28-4"><a id="__codelineno-28-4" name="__codelineno-28-4"></a><span class="w">    </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
@@ -4269,21 +4314,23 @@
 </span><span id="__span-28-6"><a id="__codelineno-28-6" name="__codelineno-28-6"></a><span class="w">        </span><span class="nt">&quot;eventId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;evt-assistant&quot;</span><span class="p">,</span>
 </span><span id="__span-28-7"><a id="__codelineno-28-7" name="__codelineno-28-7"></a><span class="w">        </span><span class="nt">&quot;author&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;member-a&quot;</span><span class="p">,</span>
 </span><span id="__span-28-8"><a id="__codelineno-28-8" name="__codelineno-28-8"></a><span class="w">        </span><span class="nt">&quot;invocationId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;inv-1&quot;</span><span class="p">,</span>
-</span><span id="__span-28-9"><a id="__codelineno-28-9" name="__codelineno-28-9"></a><span class="w">        </span><span class="nt">&quot;branch&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;root.member-a&quot;</span>
-</span><span id="__span-28-10"><a id="__codelineno-28-10" name="__codelineno-28-10"></a><span class="w">      </span><span class="p">}</span>
-</span><span id="__span-28-11"><a id="__codelineno-28-11" name="__codelineno-28-11"></a><span class="w">    </span><span class="p">},</span>
-</span><span id="__span-28-12"><a id="__codelineno-28-12" name="__codelineno-28-12"></a><span class="w">    </span><span class="nt">&quot;toolCalls&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-28-13"><a id="__codelineno-28-13" name="__codelineno-28-13"></a><span class="w">      </span><span class="nt">&quot;tool-call-1&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-28-14"><a id="__codelineno-28-14" name="__codelineno-28-14"></a><span class="w">        </span><span class="nt">&quot;eventId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;evt-tool-call&quot;</span><span class="p">,</span>
-</span><span id="__span-28-15"><a id="__codelineno-28-15" name="__codelineno-28-15"></a><span class="w">        </span><span class="nt">&quot;author&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;member-a&quot;</span><span class="p">,</span>
-</span><span id="__span-28-16"><a id="__codelineno-28-16" name="__codelineno-28-16"></a><span class="w">        </span><span class="nt">&quot;invocationId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;inv-1&quot;</span><span class="p">,</span>
-</span><span id="__span-28-17"><a id="__codelineno-28-17" name="__codelineno-28-17"></a><span class="w">        </span><span class="nt">&quot;branch&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;root.member-a&quot;</span>
-</span><span id="__span-28-18"><a id="__codelineno-28-18" name="__codelineno-28-18"></a><span class="w">      </span><span class="p">}</span>
-</span><span id="__span-28-19"><a id="__codelineno-28-19" name="__codelineno-28-19"></a><span class="w">    </span><span class="p">}</span>
-</span><span id="__span-28-20"><a id="__codelineno-28-20" name="__codelineno-28-20"></a><span class="w">  </span><span class="p">}</span>
-</span><span id="__span-28-21"><a id="__codelineno-28-21" name="__codelineno-28-21"></a><span class="p">}</span>
+</span><span id="__span-28-9"><a id="__codelineno-28-9" name="__codelineno-28-9"></a><span class="w">        </span><span class="nt">&quot;branch&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;root.member-a&quot;</span><span class="p">,</span>
+</span><span id="__span-28-10"><a id="__codelineno-28-10" name="__codelineno-28-10"></a><span class="w">        </span><span class="nt">&quot;timestamp&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1781258400000</span>
+</span><span id="__span-28-11"><a id="__codelineno-28-11" name="__codelineno-28-11"></a><span class="w">      </span><span class="p">}</span>
+</span><span id="__span-28-12"><a id="__codelineno-28-12" name="__codelineno-28-12"></a><span class="w">    </span><span class="p">},</span>
+</span><span id="__span-28-13"><a id="__codelineno-28-13" name="__codelineno-28-13"></a><span class="w">    </span><span class="nt">&quot;toolCalls&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-28-14"><a id="__codelineno-28-14" name="__codelineno-28-14"></a><span class="w">      </span><span class="nt">&quot;tool-call-1&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-28-15"><a id="__codelineno-28-15" name="__codelineno-28-15"></a><span class="w">        </span><span class="nt">&quot;eventId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;evt-tool-call&quot;</span><span class="p">,</span>
+</span><span id="__span-28-16"><a id="__codelineno-28-16" name="__codelineno-28-16"></a><span class="w">        </span><span class="nt">&quot;author&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;member-a&quot;</span><span class="p">,</span>
+</span><span id="__span-28-17"><a id="__codelineno-28-17" name="__codelineno-28-17"></a><span class="w">        </span><span class="nt">&quot;invocationId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;inv-1&quot;</span><span class="p">,</span>
+</span><span id="__span-28-18"><a id="__codelineno-28-18" name="__codelineno-28-18"></a><span class="w">        </span><span class="nt">&quot;branch&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;root.member-a&quot;</span><span class="p">,</span>
+</span><span id="__span-28-19"><a id="__codelineno-28-19" name="__codelineno-28-19"></a><span class="w">        </span><span class="nt">&quot;timestamp&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1781258401000</span>
+</span><span id="__span-28-20"><a id="__codelineno-28-20" name="__codelineno-28-20"></a><span class="w">      </span><span class="p">}</span>
+</span><span id="__span-28-21"><a id="__codelineno-28-21" name="__codelineno-28-21"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-28-22"><a id="__codelineno-28-22" name="__codelineno-28-22"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-28-23"><a id="__codelineno-28-23" name="__codelineno-28-23"></a><span class="p">}</span>
 </span></code></pre></div></td></tr></table></div>
-<p>When restoring historical messages, use <code>rawEvent.messages[messageId]</code> to get the message source, or <code>rawEvent.toolCalls[toolCallId]</code> to get the tool call source. Source information in the index uses the same fields as <code>rawEvent</code> in real-time events, so the frontend can reuse those field semantics to restore grouping state.</p>
+<p>When restoring historical messages, use <code>rawEvent.messages[messageId]</code> to get the message source and timestamp, or <code>rawEvent.toolCalls[toolCallId]</code> to get the tool call source and timestamp. The indexed <code>timestamp</code> first reuses the top-level <code>timestamp</code> from the historical real-time event; only old data without an event <code>timestamp</code> falls back to the persisted track event time. Source information in the index uses the same fields as <code>rawEvent</code> in real-time events, so the frontend can reuse those field semantics to restore grouping state.</p>
 <h2 id="external-tools">External Tools</h2>
 <p>External tools are used when tool calls are executed by the caller. The AG-UI server does not directly run these tools, but it still lets the agent generate tool calls, sends call information to the caller, receives tool results, and passes those results back to the agent to continue running.</p>
 <p>The general flow is:</p>
@@ -5149,6 +5196,79 @@ custom resolver only needs to return additional run options.</p>
 </span></code></pre></div></td></tr></table></div>
 <p>On the output side, accumulate text events in the <code>AfterTranslate</code> event translation callback, then write <code>trace.output</code> after output ends. This aligns frontend streaming events with backend traces for the same run, making it easier to inspect both input and final output in the observability platform.</p>
 <p>For the Langfuse observability integration example, see <a href="https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/server/langfuse">examples/agui/server/langfuse</a>.</p>
+<h2 id="concurrent-message-streams">Concurrent Message Streams</h2>
+<p>In multi-agent or sub-agent stream forwarding scenarios, a single real-time conversation event stream may contain multiple text messages being generated at the same time. For example, when a parent agent executes multiple <code>AgentTool</code>s in parallel and the child agents all produce streaming output, text chunks from different child agents may arrive at the AG-UI server interleaved.</p>
+<p>AG-UI message events use <code>messageId</code> to associate lifecycle events. When handling streaming messages, the frontend should maintain message state by <code>messageId</code> and merge <code>TEXT_MESSAGE_CONTENT</code> events with the same <code>messageId</code> into the same message.</p>
+<p>By default, the AG-UI server keeps the compatible behavior: only one message stream stays open at a time. When later events switch to a new <code>messageId</code>, the Translator closes the current message stream before starting the new message stream. This behavior is suitable for frontends that render output as a linear stream.</p>
+<p>The default event sequence looks like this:</p>
+<div class="language-text highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-50-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-50-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-50-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-50-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-50-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-50-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-50-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-50-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-50-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-50-10">10</a></span>
+<span class="normal"><a href="#__codelineno-50-11">11</a></span>
+<span class="normal"><a href="#__codelineno-50-12">12</a></span>
+<span class="normal"><a href="#__codelineno-50-13">13</a></span>
+<span class="normal"><a href="#__codelineno-50-14">14</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-50-1"><a id="__codelineno-50-1" name="__codelineno-50-1"></a>RUN_STARTED
+</span><span id="__span-50-2"><a id="__codelineno-50-2" name="__codelineno-50-2"></a>→ TEXT_MESSAGE_START messageId=msg-a
+</span><span id="__span-50-3"><a id="__codelineno-50-3" name="__codelineno-50-3"></a>→ TEXT_MESSAGE_CONTENT messageId=msg-a delta=a1
+</span><span id="__span-50-4"><a id="__codelineno-50-4" name="__codelineno-50-4"></a>→ TEXT_MESSAGE_END messageId=msg-a
+</span><span id="__span-50-5"><a id="__codelineno-50-5" name="__codelineno-50-5"></a>→ TEXT_MESSAGE_START messageId=msg-b
+</span><span id="__span-50-6"><a id="__codelineno-50-6" name="__codelineno-50-6"></a>→ TEXT_MESSAGE_CONTENT messageId=msg-b delta=b1
+</span><span id="__span-50-7"><a id="__codelineno-50-7" name="__codelineno-50-7"></a>→ TEXT_MESSAGE_END messageId=msg-b
+</span><span id="__span-50-8"><a id="__codelineno-50-8" name="__codelineno-50-8"></a>→ TEXT_MESSAGE_START messageId=msg-a
+</span><span id="__span-50-9"><a id="__codelineno-50-9" name="__codelineno-50-9"></a>→ TEXT_MESSAGE_CONTENT messageId=msg-a delta=a2
+</span><span id="__span-50-10"><a id="__codelineno-50-10" name="__codelineno-50-10"></a>→ TEXT_MESSAGE_END messageId=msg-a
+</span><span id="__span-50-11"><a id="__codelineno-50-11" name="__codelineno-50-11"></a>→ TEXT_MESSAGE_START messageId=msg-b
+</span><span id="__span-50-12"><a id="__codelineno-50-12" name="__codelineno-50-12"></a>→ TEXT_MESSAGE_CONTENT messageId=msg-b delta=b2
+</span><span id="__span-50-13"><a id="__codelineno-50-13" name="__codelineno-50-13"></a>→ TEXT_MESSAGE_END messageId=msg-b
+</span><span id="__span-50-14"><a id="__codelineno-50-14" name="__codelineno-50-14"></a>→ RUN_FINISHED
+</span></code></pre></div></td></tr></table></div>
+<p>If the frontend supports maintaining multiple open message streams by <code>messageId</code>, enable concurrent message streams:</p>
+<div class="language-go highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-51-1">1</a></span>
+<span class="normal"><a href="#__codelineno-51-2">2</a></span>
+<span class="normal"><a href="#__codelineno-51-3">3</a></span>
+<span class="normal"><a href="#__codelineno-51-4">4</a></span>
+<span class="normal"><a href="#__codelineno-51-5">5</a></span>
+<span class="normal"><a href="#__codelineno-51-6">6</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-51-1"><a id="__codelineno-51-1" name="__codelineno-51-1"></a><span class="kn">import</span><span class="w"> </span><span class="s">&quot;trpc.group/trpc-go/trpc-agent-go/server/agui&quot;</span>
+</span><span id="__span-51-2"><a id="__codelineno-51-2" name="__codelineno-51-2"></a>
+</span><span id="__span-51-3"><a id="__codelineno-51-3" name="__codelineno-51-3"></a><span class="nx">server</span><span class="p">,</span><span class="w"> </span><span class="nx">err</span><span class="w"> </span><span class="o">:=</span><span class="w"> </span><span class="nx">agui</span><span class="p">.</span><span class="nx">New</span><span class="p">(</span>
+</span><span id="__span-51-4"><a id="__codelineno-51-4" name="__codelineno-51-4"></a><span class="w">    </span><span class="nx">runner</span><span class="p">,</span>
+</span><span id="__span-51-5"><a id="__codelineno-51-5" name="__codelineno-51-5"></a><span class="w">    </span><span class="nx">agui</span><span class="p">.</span><span class="nx">WithConcurrentMessageStreamsEnabled</span><span class="p">(</span><span class="kc">true</span><span class="p">),</span>
+</span><span id="__span-51-6"><a id="__codelineno-51-6" name="__codelineno-51-6"></a><span class="p">)</span>
+</span></code></pre></div></td></tr></table></div>
+<p>After this is enabled, message streams with different <code>messageId</code> values can stay open at the same time. The same logical message keeps its lifecycle when chunks from other messages are inserted; later chunks with the same <code>messageId</code> continue to append to the original message until that message receives its own end event, or the run finalization phase fills in the end event.</p>
+<p>The enabled event sequence looks like this:</p>
+<div class="language-text highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-52-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-52-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-52-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-52-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-52-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-52-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-52-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-52-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-52-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-52-10">10</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-52-1"><a id="__codelineno-52-1" name="__codelineno-52-1"></a>RUN_STARTED
+</span><span id="__span-52-2"><a id="__codelineno-52-2" name="__codelineno-52-2"></a>→ TEXT_MESSAGE_START messageId=msg-a
+</span><span id="__span-52-3"><a id="__codelineno-52-3" name="__codelineno-52-3"></a>→ TEXT_MESSAGE_CONTENT messageId=msg-a delta=a1
+</span><span id="__span-52-4"><a id="__codelineno-52-4" name="__codelineno-52-4"></a>→ TEXT_MESSAGE_START messageId=msg-b
+</span><span id="__span-52-5"><a id="__codelineno-52-5" name="__codelineno-52-5"></a>→ TEXT_MESSAGE_CONTENT messageId=msg-b delta=b1
+</span><span id="__span-52-6"><a id="__codelineno-52-6" name="__codelineno-52-6"></a>→ TEXT_MESSAGE_CONTENT messageId=msg-a delta=a2
+</span><span id="__span-52-7"><a id="__codelineno-52-7" name="__codelineno-52-7"></a>→ TEXT_MESSAGE_CONTENT messageId=msg-b delta=b2
+</span><span id="__span-52-8"><a id="__codelineno-52-8" name="__codelineno-52-8"></a>→ TEXT_MESSAGE_END messageId=msg-a
+</span><span id="__span-52-9"><a id="__codelineno-52-9" name="__codelineno-52-9"></a>→ TEXT_MESSAGE_END messageId=msg-b
+</span><span id="__span-52-10"><a id="__codelineno-52-10" name="__codelineno-52-10"></a>→ RUN_FINISHED
+</span></code></pre></div></td></tr></table></div>
+<p>Frontend handling needs to follow two rules:</p>
+<ul>
+<li><code>TEXT_MESSAGE_CONTENT</code> events with the same <code>messageId</code> may appear in different positions in the event stream. Accumulate content by <code>messageId</code>.</li>
+<li>The order of <code>TEXT_MESSAGE_END</code> for different <code>messageId</code> values depends on the actual end order of those messages. Use the <code>TEXT_MESSAGE_END</code> events in the stream as the end order.</li>
+</ul>
 <h2 id="best-practices">Best Practices</h2>
 <p>Prefer server-side tool execution by default. Use the external tool pattern when a tool must run on the client side or business side. Treat this scenario as an advanced use case that should be designed and evaluated carefully.</p>
 <h3 id="generating-documents">Generating Documents</h3>
@@ -5164,37 +5284,37 @@ custom resolver only needs to return additional run options.</p>
 <li>Call the "close document panel" tool last</li>
 </ol>
 <p>Converted into an AG-UI event stream, it roughly looks like this:</p>
-<div class="language-text highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-50-1"> 1</a></span>
-<span class="normal"><a href="#__codelineno-50-2"> 2</a></span>
-<span class="normal"><a href="#__codelineno-50-3"> 3</a></span>
-<span class="normal"><a href="#__codelineno-50-4"> 4</a></span>
-<span class="normal"><a href="#__codelineno-50-5"> 5</a></span>
-<span class="normal"><a href="#__codelineno-50-6"> 6</a></span>
-<span class="normal"><a href="#__codelineno-50-7"> 7</a></span>
-<span class="normal"><a href="#__codelineno-50-8"> 8</a></span>
-<span class="normal"><a href="#__codelineno-50-9"> 9</a></span>
-<span class="normal"><a href="#__codelineno-50-10">10</a></span>
-<span class="normal"><a href="#__codelineno-50-11">11</a></span>
-<span class="normal"><a href="#__codelineno-50-12">12</a></span>
-<span class="normal"><a href="#__codelineno-50-13">13</a></span>
-<span class="normal"><a href="#__codelineno-50-14">14</a></span>
-<span class="normal"><a href="#__codelineno-50-15">15</a></span>
-<span class="normal"><a href="#__codelineno-50-16">16</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-50-1"><a id="__codelineno-50-1" name="__codelineno-50-1"></a>Open document panel tool
-</span><span id="__span-50-2"><a id="__codelineno-50-2" name="__codelineno-50-2"></a>  → ToolCallStart
-</span><span id="__span-50-3"><a id="__codelineno-50-3" name="__codelineno-50-3"></a>  → ToolCallArgs
-</span><span id="__span-50-4"><a id="__codelineno-50-4" name="__codelineno-50-4"></a>  → ToolCallEnd
-</span><span id="__span-50-5"><a id="__codelineno-50-5" name="__codelineno-50-5"></a>  → ToolCallResult
-</span><span id="__span-50-6"><a id="__codelineno-50-6" name="__codelineno-50-6"></a>
-</span><span id="__span-50-7"><a id="__codelineno-50-7" name="__codelineno-50-7"></a>Document content
-</span><span id="__span-50-8"><a id="__codelineno-50-8" name="__codelineno-50-8"></a>  → TextMessageStart
-</span><span id="__span-50-9"><a id="__codelineno-50-9" name="__codelineno-50-9"></a>  → TextMessageContent
-</span><span id="__span-50-10"><a id="__codelineno-50-10" name="__codelineno-50-10"></a>  → TextMessageEnd
-</span><span id="__span-50-11"><a id="__codelineno-50-11" name="__codelineno-50-11"></a>
-</span><span id="__span-50-12"><a id="__codelineno-50-12" name="__codelineno-50-12"></a>Close document panel tool
-</span><span id="__span-50-13"><a id="__codelineno-50-13" name="__codelineno-50-13"></a>  → ToolCallStart
-</span><span id="__span-50-14"><a id="__codelineno-50-14" name="__codelineno-50-14"></a>  → ToolCallArgs
-</span><span id="__span-50-15"><a id="__codelineno-50-15" name="__codelineno-50-15"></a>  → ToolCallEnd
-</span><span id="__span-50-16"><a id="__codelineno-50-16" name="__codelineno-50-16"></a>  → ToolCallResult
+<div class="language-text highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-53-1"> 1</a></span>
+<span class="normal"><a href="#__codelineno-53-2"> 2</a></span>
+<span class="normal"><a href="#__codelineno-53-3"> 3</a></span>
+<span class="normal"><a href="#__codelineno-53-4"> 4</a></span>
+<span class="normal"><a href="#__codelineno-53-5"> 5</a></span>
+<span class="normal"><a href="#__codelineno-53-6"> 6</a></span>
+<span class="normal"><a href="#__codelineno-53-7"> 7</a></span>
+<span class="normal"><a href="#__codelineno-53-8"> 8</a></span>
+<span class="normal"><a href="#__codelineno-53-9"> 9</a></span>
+<span class="normal"><a href="#__codelineno-53-10">10</a></span>
+<span class="normal"><a href="#__codelineno-53-11">11</a></span>
+<span class="normal"><a href="#__codelineno-53-12">12</a></span>
+<span class="normal"><a href="#__codelineno-53-13">13</a></span>
+<span class="normal"><a href="#__codelineno-53-14">14</a></span>
+<span class="normal"><a href="#__codelineno-53-15">15</a></span>
+<span class="normal"><a href="#__codelineno-53-16">16</a></span></pre></div></td><td class="code"><div><pre><span></span><code><span id="__span-53-1"><a id="__codelineno-53-1" name="__codelineno-53-1"></a>Open document panel tool
+</span><span id="__span-53-2"><a id="__codelineno-53-2" name="__codelineno-53-2"></a>  → ToolCallStart
+</span><span id="__span-53-3"><a id="__codelineno-53-3" name="__codelineno-53-3"></a>  → ToolCallArgs
+</span><span id="__span-53-4"><a id="__codelineno-53-4" name="__codelineno-53-4"></a>  → ToolCallEnd
+</span><span id="__span-53-5"><a id="__codelineno-53-5" name="__codelineno-53-5"></a>  → ToolCallResult
+</span><span id="__span-53-6"><a id="__codelineno-53-6" name="__codelineno-53-6"></a>
+</span><span id="__span-53-7"><a id="__codelineno-53-7" name="__codelineno-53-7"></a>Document content
+</span><span id="__span-53-8"><a id="__codelineno-53-8" name="__codelineno-53-8"></a>  → TextMessageStart
+</span><span id="__span-53-9"><a id="__codelineno-53-9" name="__codelineno-53-9"></a>  → TextMessageContent
+</span><span id="__span-53-10"><a id="__codelineno-53-10" name="__codelineno-53-10"></a>  → TextMessageEnd
+</span><span id="__span-53-11"><a id="__codelineno-53-11" name="__codelineno-53-11"></a>
+</span><span id="__span-53-12"><a id="__codelineno-53-12" name="__codelineno-53-12"></a>Close document panel tool
+</span><span id="__span-53-13"><a id="__codelineno-53-13" name="__codelineno-53-13"></a>  → ToolCallStart
+</span><span id="__span-53-14"><a id="__codelineno-53-14" name="__codelineno-53-14"></a>  → ToolCallArgs
+</span><span id="__span-53-15"><a id="__codelineno-53-15" name="__codelineno-53-15"></a>  → ToolCallEnd
+</span><span id="__span-53-16"><a id="__codelineno-53-16" name="__codelineno-53-16"></a>  → ToolCallResult
 </span></code></pre></div></td></tr></table></div>
 </li>
 <li>
@@ -5230,7 +5350,7 @@ custom resolver only needs to return additional run options.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime" title="June 10, 2026 09:21:51 UTC">2026-06-10 09:21:51</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_datetime" title="June 15, 2026 03:21:03 UTC">2026-06-15 03:21:03</span>
   </span>
 
     
