@@ -43,6 +43,7 @@ import (
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
+	a2aserver "trpc.group/trpc-go/trpc-agent-go/server/a2a"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	sessionmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/metrics"
@@ -4838,6 +4839,154 @@ func TestNew_URLChanges(t *testing.T) {
 			t.Errorf("expected agent card URL to be %s, got %s", server.URL, agent.agentCard.URL)
 		}
 	})
+}
+
+const (
+	responseIDRoundTripStreamID         = "server-stream-response-id"
+	responseIDRoundTripToolCallID       = "server-tool-call-response-id"
+	responseIDRoundTripStreamContent    = "hello"
+	responseIDRoundTripAggregateContent = "hello world"
+	responseIDRoundTripToolName         = "lookup_status"
+)
+
+var _ agent.Agent = (*responseIDRoundTripAgent)(nil)
+
+type responseIDRoundTripAgent struct {
+	name string
+}
+
+func (a *responseIDRoundTripAgent) Run(_ context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
+	out := make(chan *event.Event, 3)
+	out <- event.NewResponseEvent(invocation.InvocationID, a.name, &model.Response{
+		ID:        responseIDRoundTripStreamID,
+		Object:    model.ObjectTypeChatCompletionChunk,
+		IsPartial: true,
+		Choices: []model.Choice{{
+			Delta: model.Message{
+				Role:    model.RoleAssistant,
+				Content: responseIDRoundTripStreamContent,
+			},
+		}},
+	})
+	out <- event.NewResponseEvent(invocation.InvocationID, a.name, &model.Response{
+		ID:        responseIDRoundTripStreamID,
+		Object:    model.ObjectTypeChatCompletion,
+		Done:      true,
+		IsPartial: false,
+		Choices: []model.Choice{{
+			Message: model.Message{
+				Role:    model.RoleAssistant,
+				Content: responseIDRoundTripAggregateContent,
+			},
+		}},
+	})
+	out <- event.NewResponseEvent(invocation.InvocationID, a.name, &model.Response{
+		ID:        responseIDRoundTripToolCallID,
+		Object:    model.ObjectTypeChatCompletion,
+		IsPartial: false,
+		Choices: []model.Choice{{
+			Message: model.Message{
+				Role: model.RoleAssistant,
+				ToolCalls: []model.ToolCall{{
+					ID:   "call-status",
+					Type: "function",
+					Function: model.FunctionDefinitionParam{
+						Name:      responseIDRoundTripToolName,
+						Arguments: []byte(`{"scope":"round-trip"}`),
+					},
+				}},
+			},
+		}},
+	})
+	close(out)
+	return out, nil
+}
+
+func (a *responseIDRoundTripAgent) Tools() []tool.Tool {
+	return nil
+}
+
+func (a *responseIDRoundTripAgent) Info() agent.Info {
+	return agent.Info{Name: a.name, Description: "response ID round trip test agent"}
+}
+
+func (a *responseIDRoundTripAgent) SubAgents() []agent.Agent {
+	return nil
+}
+
+func (a *responseIDRoundTripAgent) FindSubAgent(name string) agent.Agent {
+	return nil
+}
+
+func TestA2AAgentRunStreamingPreservesServerResponseIDs(t *testing.T) {
+	localAgent := &responseIDRoundTripAgent{name: "response-id-round-trip"}
+	var handler http.Handler
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handler == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+	card := server.AgentCard{
+		Name:        localAgent.name,
+		Description: "response ID round trip",
+		URL:         httpServer.URL,
+		Capabilities: server.AgentCapabilities{
+			Streaming: boolPtr(true),
+		},
+	}
+	a2aServer, err := a2aserver.New(
+		a2aserver.WithAgent(localAgent, true),
+		a2aserver.WithAgentCard(card),
+	)
+	require.NoError(t, err)
+	handler = a2aServer.Handler()
+	remoteAgent, err := New(
+		WithAgentCard(&card),
+		WithEnableStreaming(true),
+	)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	eventChannel, err := remoteAgent.Run(ctx, &agent.Invocation{
+		InvocationID: "response-id-round-trip-invocation",
+		Message:      model.NewUserMessage("hello"),
+		Session: &session.Session{
+			ID:     "response-id-round-trip-context",
+			UserID: "response-id-round-trip-user",
+		},
+	})
+	require.NoError(t, err)
+	var streamResponseID string
+	var aggregateResponseID string
+	var flushedAggregateResponseID string
+	var toolCallResponseID string
+	for evt := range eventChannel {
+		if evt == nil || evt.Response == nil || len(evt.Response.Choices) == 0 {
+			continue
+		}
+		choice := evt.Response.Choices[0]
+		switch {
+		case choice.Delta.Content == responseIDRoundTripStreamContent:
+			streamResponseID = evt.Response.ID
+		case choice.Delta.Content == responseIDRoundTripAggregateContent:
+			aggregateResponseID = evt.Response.ID
+		case choice.Message.Role == model.RoleAssistant &&
+			choice.Message.Content != "" &&
+			len(choice.Message.ToolCalls) == 0 &&
+			!evt.Response.IsPartial:
+			flushedAggregateResponseID = evt.Response.ID
+		case len(choice.Message.ToolCalls) == 1 &&
+			choice.Message.ToolCalls[0].Function.Name == responseIDRoundTripToolName:
+			toolCallResponseID = evt.Response.ID
+		}
+	}
+	require.Equal(t, responseIDRoundTripStreamID, streamResponseID)
+	require.Equal(t, responseIDRoundTripStreamID, aggregateResponseID)
+	require.Equal(t, responseIDRoundTripStreamID, flushedAggregateResponseID)
+	require.Equal(t, responseIDRoundTripToolCallID, toolCallResponseID)
 }
 
 func TestA2AAgentRunStreamingPreservesResponseID(t *testing.T) {
