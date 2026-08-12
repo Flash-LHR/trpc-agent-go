@@ -452,24 +452,24 @@ func mysqlDiagEventAuthor(evt *event.Event) string {
 }
 
 func mysqlDiagEventObject(evt *event.Event) string {
-	if evt == nil {
+	if evt == nil || evt.Response == nil {
 		return ""
 	}
-	return string(evt.Object)
+	return string(evt.Response.Object)
 }
 
 func mysqlDiagEventPartial(evt *event.Event) bool {
-	if evt == nil {
+	if evt == nil || evt.Response == nil {
 		return false
 	}
-	return evt.IsPartial
+	return evt.Response.IsPartial
 }
 
 func mysqlDiagEventDone(evt *event.Event) bool {
-	if evt == nil {
+	if evt == nil || evt.Response == nil {
 		return false
 	}
-	return evt.Done
+	return evt.Response.Done
 }
 
 func mysqlDiagEventRequiresCompletion(evt *event.Event) bool {
@@ -486,18 +486,54 @@ func mysqlDiagEventStateDeltaLen(evt *event.Event) int {
 	return len(evt.StateDelta)
 }
 
+func mysqlDiagTrackName(trackEvent *session.TrackEvent) string {
+	if trackEvent == nil {
+		return ""
+	}
+	return string(trackEvent.Track)
+}
+
 // addTrackEvent adds a track event to a session (MySQL syntax).
-func (s *Service) addTrackEvent(ctx context.Context, key session.Key, trackEvent *session.TrackEvent) error {
+func (s *Service) addTrackEvent(ctx context.Context, key session.Key, trackEvent *session.TrackEvent) (retErr error) {
+	started := time.Now()
+	trackName := mysqlDiagTrackName(trackEvent)
+	payloadBytes := 0
+	defer func() {
+		slowlog.Logf(
+			ctx,
+			"mysql.add_track_event app=%s user=%s session=%s track=%s payload_bytes=%d err=%v elapsed=%v",
+			key.AppName,
+			key.UserID,
+			key.SessionID,
+			trackName,
+			payloadBytes,
+			retErr,
+			time.Since(started),
+		)
+	}()
 	eventBytes, err := json.Marshal(trackEvent)
 	if err != nil {
 		return fmt.Errorf("marshal track event failed: %w", err)
 	}
+	payloadBytes = len(eventBytes)
 	var updatedAt time.Time
 	var updatedStateBytes []byte
 
 	// Use transaction to update session state and insert track event.
+	transactionStarted := time.Now()
 	err = s.mysqlClient.Transaction(ctx, func(tx *sql.Tx) error {
+		loadStarted := time.Now()
 		sessState, currentExpiresAt, err := loadSessionStateForUpdate(ctx, tx, s.tableSessionStates, key)
+		slowlog.Logf(
+			ctx,
+			"mysql.add_track_event.load_for_update app=%s user=%s session=%s track=%s err=%v elapsed=%v",
+			key.AppName,
+			key.UserID,
+			key.SessionID,
+			trackName,
+			err,
+			time.Since(loadStarted),
+		)
 		if err != nil {
 			return err
 		}
@@ -532,26 +568,60 @@ func (s *Service) addTrackEvent(ctx context.Context, key session.Key, trackEvent
 		expiresAt := calculateExpiresAt(s.opts.sessionTTL)
 
 		// Update session state.
+		updateStarted := time.Now()
 		_, err = tx.ExecContext(ctx,
 			fmt.Sprintf(`UPDATE %s SET state = ?, updated_at = ?, expires_at = ?
 			 WHERE app_name = ? AND user_id = ? AND session_id = ? AND deleted_at IS NULL`, s.tableSessionStates),
 			string(updatedStateBytes), updatedAt, expiresAt,
 			key.AppName, key.UserID, key.SessionID)
+		slowlog.Logf(
+			ctx,
+			"mysql.add_track_event.update_session app=%s user=%s session=%s track=%s state_bytes=%d err=%v elapsed=%v",
+			key.AppName,
+			key.UserID,
+			key.SessionID,
+			trackName,
+			len(updatedStateBytes),
+			err,
+			time.Since(updateStarted),
+		)
 		if err != nil {
 			return fmt.Errorf("update session state failed: %w", err)
 		}
 
 		// Insert track event.
+		insertStarted := time.Now()
 		_, err = tx.ExecContext(ctx,
 			fmt.Sprintf(`INSERT INTO %s (app_name, user_id, session_id, track, event, created_at, updated_at, expires_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, s.tableSessionTracks),
 			key.AppName, key.UserID, key.SessionID, trackEvent.Track, string(eventBytes),
 			trackEvent.Timestamp, trackEvent.Timestamp, expiresAt)
+		slowlog.Logf(
+			ctx,
+			"mysql.add_track_event.insert_track_event app=%s user=%s session=%s track=%s payload_bytes=%d err=%v elapsed=%v",
+			key.AppName,
+			key.UserID,
+			key.SessionID,
+			trackName,
+			payloadBytes,
+			err,
+			time.Since(insertStarted),
+		)
 		if err != nil {
 			return fmt.Errorf("insert track event failed: %w", err)
 		}
 		return nil
 	})
+	slowlog.Logf(
+		ctx,
+		"mysql.add_track_event.transaction app=%s user=%s session=%s track=%s err=%v elapsed=%v",
+		key.AppName,
+		key.UserID,
+		key.SessionID,
+		trackName,
+		err,
+		time.Since(transactionStarted),
+	)
 	if err != nil {
 		return fmt.Errorf("store track event failed: %w", err)
 	}
