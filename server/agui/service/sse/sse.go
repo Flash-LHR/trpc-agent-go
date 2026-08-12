@@ -73,6 +73,25 @@ func (s *sse) Handler() http.Handler {
 // handle handles an AG-UI run request.
 func (s *sse) handle(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	handleStarted := time.Now()
+	slowlog.Logf(
+		ctx,
+		"agui.sse.handle.start path=%s method=%s drain=%t",
+		s.path,
+		r.Method,
+		true,
+	)
+	defer func() {
+		slowlog.Logf(
+			ctx,
+			"agui.sse.handle.finish path=%s method=%s drain=%t ctx_err=%v elapsed=%v",
+			s.path,
+			r.Method,
+			true,
+			ctx.Err(),
+			time.Since(handleStarted),
+		)
+	}()
 	log.DebugfContext(
 		ctx,
 		"agui handle: path: %s, method: %s",
@@ -107,7 +126,19 @@ func (s *sse) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "runner not configured", http.StatusInternalServerError)
 		return
 	}
+	parseStarted := time.Now()
 	runAgentInput, err := runAgentInputFromReader(r.Body)
+	slowlog.Logf(
+		ctx,
+		"agui.sse.parse_input path=%s method=%s thread_id=%s run_id=%s messages=%d err=%v elapsed=%v",
+		s.path,
+		r.Method,
+		sseDiagRunAgentInputThreadID(runAgentInput),
+		sseDiagRunAgentInputRunID(runAgentInput),
+		sseDiagRunAgentInputMessages(runAgentInput),
+		err,
+		time.Since(parseStarted),
+	)
 	if err != nil {
 		log.WarnfContext(
 			ctx,
@@ -117,7 +148,19 @@ func (s *sse) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	runStarted := time.Now()
 	eventsCh, err := s.runner.Run(ctx, runAgentInput)
+	slowlog.Logf(
+		ctx,
+		"agui.sse.runner_run path=%s method=%s thread_id=%s run_id=%s events_nil=%t err=%v elapsed=%v",
+		s.path,
+		r.Method,
+		runAgentInput.ThreadID,
+		runAgentInput.RunID,
+		eventsCh == nil,
+		err,
+		time.Since(runStarted),
+	)
 	if err != nil {
 		log.ErrorfContext(
 			ctx,
@@ -137,7 +180,20 @@ func (s *sse) handle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	if err := s.handleEvents(ctx, w, eventsCh, true); err != nil {
+	handleEventsStarted := time.Now()
+	err = s.handleEvents(ctx, w, eventsCh, true)
+	slowlog.Logf(
+		ctx,
+		"agui.sse.handle_events_return path=%s method=%s thread_id=%s run_id=%s drain=%t err=%v elapsed=%v",
+		s.path,
+		r.Method,
+		runAgentInput.ThreadID,
+		runAgentInput.RunID,
+		true,
+		err,
+		time.Since(handleEventsStarted),
+	)
+	if err != nil {
 		log.ErrorfContext(
 			ctx,
 			"agui handle: threadID: %s, runID: %s, write event: %v",
@@ -152,6 +208,25 @@ func (s *sse) handle(w http.ResponseWriter, r *http.Request) {
 // handleMessagesSnapshot streams a synthetic snapshot run to the client.
 func (s *sse) handleMessagesSnapshot(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	handleStarted := time.Now()
+	slowlog.Logf(
+		ctx,
+		"agui.sse.handle.start path=%s method=%s drain=%t",
+		s.messagesSnapshotPath,
+		r.Method,
+		false,
+	)
+	defer func() {
+		slowlog.Logf(
+			ctx,
+			"agui.sse.handle.finish path=%s method=%s drain=%t ctx_err=%v elapsed=%v",
+			s.messagesSnapshotPath,
+			r.Method,
+			false,
+			ctx.Err(),
+			time.Since(handleStarted),
+		)
+	}()
 	log.DebugfContext(
 		ctx,
 		"agui handle messages snapshot: path: %s, method: %s",
@@ -190,7 +265,19 @@ func (s *sse) handleMessagesSnapshot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "runner not configured", http.StatusInternalServerError)
 		return
 	}
+	parseStarted := time.Now()
 	runAgentInput, err := runAgentInputFromReader(r.Body)
+	slowlog.Logf(
+		ctx,
+		"agui.sse.parse_input path=%s method=%s thread_id=%s run_id=%s messages=%d err=%v elapsed=%v",
+		s.messagesSnapshotPath,
+		r.Method,
+		sseDiagRunAgentInputThreadID(runAgentInput),
+		sseDiagRunAgentInputRunID(runAgentInput),
+		sseDiagRunAgentInputMessages(runAgentInput),
+		err,
+		time.Since(parseStarted),
+	)
 	if err != nil {
 		log.WarnfContext(
 			ctx,
@@ -211,7 +298,20 @@ func (s *sse) handleMessagesSnapshot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "runner does not support messages snapshot", http.StatusNotImplemented)
 		return
 	}
+	runStarted := time.Now()
 	eventsCh, err := messagesSnapshotter.MessagesSnapshot(ctx, runAgentInput)
+	slowlog.Logf(
+		ctx,
+		"agui.sse.runner_run path=%s method=%s thread_id=%s run_id=%s events_nil=%t snapshot=%t err=%v elapsed=%v",
+		s.messagesSnapshotPath,
+		r.Method,
+		runAgentInput.ThreadID,
+		runAgentInput.RunID,
+		eventsCh == nil,
+		true,
+		err,
+		time.Since(runStarted),
+	)
 	if err != nil {
 		log.ErrorfContext(
 			ctx,
@@ -228,7 +328,20 @@ func (s *sse) handleMessagesSnapshot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	if err := s.handleEvents(ctx, w, eventsCh, false); err != nil {
+	handleEventsStarted := time.Now()
+	err = s.handleEvents(ctx, w, eventsCh, false)
+	slowlog.Logf(
+		ctx,
+		"agui.sse.handle_events_return path=%s method=%s thread_id=%s run_id=%s drain=%t err=%v elapsed=%v",
+		s.messagesSnapshotPath,
+		r.Method,
+		runAgentInput.ThreadID,
+		runAgentInput.RunID,
+		false,
+		err,
+		time.Since(handleEventsStarted),
+	)
+	if err != nil {
 		log.ErrorfContext(
 			ctx,
 			"agui handle messages snapshot: threadID: %s, "+
@@ -250,17 +363,27 @@ func (s *sse) handleEvents(
 	started := time.Now()
 	eventCount := 0
 	eventElapsed := time.Duration(0)
+	eventWaitElapsed := time.Duration(0)
+	selectWaitElapsed := time.Duration(0)
+	ctxDoneElapsed := time.Duration(0)
 	heartbeatCount := 0
 	heartbeatElapsed := time.Duration(0)
+	lastThreadID := ""
+	lastRunID := ""
 	defer func() {
 		slowlog.Logf(
 			ctx,
-			"agui.sse.handle_events drain=%t events=%d event_elapsed=%v heartbeats=%d heartbeat_elapsed=%v err=%v ctx_err=%v elapsed=%v",
+			"agui.sse.handle_events thread_id=%s run_id=%s drain=%t events=%d select_wait_elapsed=%v event_wait_elapsed=%v event_elapsed=%v heartbeats=%d heartbeat_elapsed=%v ctx_done_elapsed=%v err=%v ctx_err=%v elapsed=%v",
+			lastThreadID,
+			lastRunID,
 			drain,
 			eventCount,
+			selectWaitElapsed,
+			eventWaitElapsed,
 			eventElapsed,
 			heartbeatCount,
 			heartbeatElapsed,
+			ctxDoneElapsed,
 			retErr,
 			ctx.Err(),
 			time.Since(started),
@@ -273,13 +396,26 @@ func (s *sse) handleEvents(
 		heartbeat = ticker.C
 	}
 	for {
+		waitStarted := time.Now()
 		select {
 		case <-ctx.Done():
+			waitElapsed := time.Since(waitStarted)
+			selectWaitElapsed += waitElapsed
+			ctxDoneElapsed += waitElapsed
+			slowlog.Logf(
+				ctx,
+				"agui.sse.wait_event thread_id=%s run_id=%s ok=false reason=ctx_done err=%v elapsed=%v",
+				lastThreadID,
+				lastRunID,
+				ctx.Err(),
+				waitElapsed,
+			)
 			if drain {
 				go drainEvents(events)
 			}
 			return nil
 		case <-heartbeat:
+			selectWaitElapsed += time.Since(waitStarted)
 			heartbeatStarted := time.Now()
 			err := writeHeartbeat(w)
 			heartbeatWriteElapsed := time.Since(heartbeatStarted)
@@ -287,7 +423,9 @@ func (s *sse) handleEvents(
 			heartbeatCount++
 			slowlog.Logf(
 				ctx,
-				"agui.sse.write_heartbeat err=%v elapsed=%v",
+				"agui.sse.write_heartbeat thread_id=%s run_id=%s err=%v elapsed=%v",
+				lastThreadID,
+				lastRunID,
 				err,
 				heartbeatWriteElapsed,
 			)
@@ -298,9 +436,35 @@ func (s *sse) handleEvents(
 				return err
 			}
 		case evt, ok := <-events:
+			waitElapsed := time.Since(waitStarted)
+			selectWaitElapsed += waitElapsed
+			eventWaitElapsed += waitElapsed
 			if !ok {
+				slowlog.Logf(
+					ctx,
+					"agui.sse.wait_event thread_id=%s run_id=%s ok=false reason=closed err=<nil> elapsed=%v",
+					lastThreadID,
+					lastRunID,
+					waitElapsed,
+				)
 				return nil
 			}
+			if threadID := sseDiagThreadID(evt); threadID != "" {
+				lastThreadID = threadID
+			}
+			if runID := sseDiagRunID(evt); runID != "" {
+				lastRunID = runID
+			}
+			slowlog.Logf(
+				ctx,
+				"agui.sse.wait_event thread_id=%s run_id=%s event_type=%s message_id=%s tool_call_id=%s ok=true err=<nil> elapsed=%v",
+				lastThreadID,
+				lastRunID,
+				sseDiagEventType(evt),
+				sseDiagMessageID(evt),
+				sseDiagToolCallID(evt),
+				waitElapsed,
+			)
 			writeStarted := time.Now()
 			err := s.writer.WriteEvent(ctx, w, evt)
 			writeElapsed := time.Since(writeStarted)
@@ -308,7 +472,9 @@ func (s *sse) handleEvents(
 			eventCount++
 			slowlog.Logf(
 				ctx,
-				"agui.sse.write_event event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d err=%v elapsed=%v",
+				"agui.sse.write_event thread_id=%s run_id=%s event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d err=%v elapsed=%v",
+				lastThreadID,
+				lastRunID,
 				sseDiagEventType(evt),
 				sseDiagMessageID(evt),
 				sseDiagToolCallID(evt),
@@ -331,6 +497,41 @@ func sseDiagEventType(event aguievents.Event) string {
 		return ""
 	}
 	return string(event.Type())
+}
+
+func sseDiagRunAgentInputThreadID(input *adapter.RunAgentInput) string {
+	if input == nil {
+		return ""
+	}
+	return input.ThreadID
+}
+
+func sseDiagRunAgentInputRunID(input *adapter.RunAgentInput) string {
+	if input == nil {
+		return ""
+	}
+	return input.RunID
+}
+
+func sseDiagRunAgentInputMessages(input *adapter.RunAgentInput) int {
+	if input == nil {
+		return 0
+	}
+	return len(input.Messages)
+}
+
+func sseDiagThreadID(event aguievents.Event) string {
+	if event == nil {
+		return ""
+	}
+	return event.ThreadID()
+}
+
+func sseDiagRunID(event aguievents.Event) string {
+	if event == nil {
+		return ""
+	}
+	return event.RunID()
 }
 
 func sseDiagMessageID(event aguievents.Event) string {
