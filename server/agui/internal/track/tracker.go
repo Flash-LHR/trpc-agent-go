@@ -20,6 +20,7 @@ import (
 	aguievents "github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
 	"go.uber.org/multierr"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/internal/slowlog"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/server/agui/aggregator"
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -82,14 +83,58 @@ func (t *tracker) AppendEvent(ctx context.Context, key session.Key, event aguiev
 	if err := key.CheckSessionKey(); err != nil {
 		return fmt.Errorf("session key: %w", err)
 	}
+	started := time.Now()
 	state := t.getSessionState(ctx, key)
+	lockStarted := time.Now()
 	state.mu.Lock()
+	slowlog.Slowf(
+		ctx,
+		lockStarted,
+		"agui.track.lock_wait app=%s user=%s session=%s event_type=%s message_id=%s tool_call_id=%s",
+		key.AppName,
+		key.UserID,
+		key.SessionID,
+		trackDiagEventType(event),
+		trackDiagMessageID(event),
+		trackDiagToolCallID(event),
+	)
 	defer state.mu.Unlock()
+	aggregateStarted := time.Now()
 	aggregated, err := state.aggregator.Append(ctx, event)
+	aggregateElapsed := time.Since(aggregateStarted)
+	if aggregateElapsed >= slowlog.Threshold() || len(aggregated) > 0 || err != nil {
+		slowlog.Logf(
+			ctx,
+			"agui.track.aggregate app=%s user=%s session=%s event_type=%s message_id=%s tool_call_id=%s output_events=%d err=%v elapsed=%v",
+			key.AppName,
+			key.UserID,
+			key.SessionID,
+			trackDiagEventType(event),
+			trackDiagMessageID(event),
+			trackDiagToolCallID(event),
+			len(aggregated),
+			err,
+			aggregateElapsed,
+		)
+	}
 	if err != nil {
 		return fmt.Errorf("aggregate event: %w", err)
 	}
-	return t.persistEvents(ctx, key, state, aggregated)
+	err = t.persistEvents(ctx, key, state, aggregated)
+	slowlog.Logf(
+		ctx,
+		"agui.track.append_event app=%s user=%s session=%s event_type=%s message_id=%s tool_call_id=%s output_events=%d err=%v elapsed=%v",
+		key.AppName,
+		key.UserID,
+		key.SessionID,
+		trackDiagEventType(event),
+		trackDiagMessageID(event),
+		trackDiagToolCallID(event),
+		len(aggregated),
+		err,
+		time.Since(started),
+	)
+	return err
 }
 
 // GetEvents retrieves the AG-UI track events from the session.
@@ -125,16 +170,39 @@ func (t *tracker) Flush(ctx context.Context, key session.Key) error {
 }
 
 // persistEvents ensures the session exists and appends track events to storage.
-func (t *tracker) persistEvents(ctx context.Context, key session.Key, state *sessionState, events []aguievents.Event) error {
+func (t *tracker) persistEvents(ctx context.Context, key session.Key, state *sessionState, events []aguievents.Event) (retErr error) {
 	if len(events) == 0 {
 		return nil
 	}
+	started := time.Now()
+	defer func() {
+		slowlog.Logf(
+			ctx,
+			"agui.track.persist_events app=%s user=%s session=%s events=%d err=%v elapsed=%v",
+			key.AppName,
+			key.UserID,
+			key.SessionID,
+			len(events),
+			retErr,
+			time.Since(started),
+		)
+	}()
+	ensureStarted := time.Now()
 	sess, err := t.ensureSessionExists(ctx, key, state)
+	slowlog.Slowf(
+		ctx,
+		ensureStarted,
+		"agui.track.ensure_session app=%s user=%s session=%s err=%v",
+		key.AppName,
+		key.UserID,
+		key.SessionID,
+		err,
+	)
 	if err != nil {
 		return fmt.Errorf("ensure session exists: %w", err)
 	}
 	var overallErr error
-	for _, e := range events {
+	for i, e := range events {
 		payload, err := e.ToJSON()
 		if err != nil {
 			multierr.AppendInto(&overallErr, fmt.Errorf("marshal event %v: %w", e, err))
@@ -149,7 +217,24 @@ func (t *tracker) persistEvents(ctx context.Context, key session.Key, state *ses
 			multierr.AppendInto(&overallErr, fmt.Errorf("append track event %v: session unavailable", trackEvent))
 			break
 		}
-		if err := t.trackService.AppendTrackEvent(ctx, sess, trackEvent); err != nil {
+		appendStarted := time.Now()
+		err = t.trackService.AppendTrackEvent(ctx, sess, trackEvent)
+		slowlog.Logf(
+			ctx,
+			"agui.track.append_storage app=%s user=%s session=%s index=%d total=%d event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d err=%v elapsed=%v",
+			key.AppName,
+			key.UserID,
+			key.SessionID,
+			i,
+			len(events),
+			trackDiagEventType(e),
+			trackDiagMessageID(e),
+			trackDiagToolCallID(e),
+			len(payload),
+			err,
+			time.Since(appendStarted),
+		)
+		if err != nil {
 			state.session = nil
 			multierr.AppendInto(&overallErr, fmt.Errorf("append track event %v: %w", trackEvent, err))
 			break
@@ -236,11 +321,69 @@ func (t *tracker) flushPeriodically(ctx context.Context, key session.Key, state 
 
 // flush flushes the session state.
 func (t *tracker) flush(ctx context.Context, key session.Key, state *sessionState) error {
+	started := time.Now()
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	events, err := state.aggregator.Flush(ctx)
 	if err != nil {
 		return fmt.Errorf("aggregator flush: %w", err)
 	}
-	return t.persistEvents(ctx, key, state, events)
+	err = t.persistEvents(ctx, key, state, events)
+	slowlog.Logf(
+		ctx,
+		"agui.track.flush app=%s user=%s session=%s events=%d err=%v elapsed=%v",
+		key.AppName,
+		key.UserID,
+		key.SessionID,
+		len(events),
+		err,
+		time.Since(started),
+	)
+	return err
+}
+
+func trackDiagEventType(event aguievents.Event) string {
+	if event == nil {
+		return ""
+	}
+	return string(event.Type())
+}
+
+func trackDiagMessageID(event aguievents.Event) string {
+	switch e := event.(type) {
+	case *aguievents.TextMessageStartEvent:
+		return e.MessageID
+	case *aguievents.TextMessageContentEvent:
+		return e.MessageID
+	case *aguievents.TextMessageEndEvent:
+		return e.MessageID
+	case *aguievents.ToolCallStartEvent:
+		return trackDiagStringPtr(e.ParentMessageID)
+	case *aguievents.ToolCallResultEvent:
+		return e.MessageID
+	default:
+		return ""
+	}
+}
+
+func trackDiagToolCallID(event aguievents.Event) string {
+	switch e := event.(type) {
+	case *aguievents.ToolCallStartEvent:
+		return e.ToolCallID
+	case *aguievents.ToolCallArgsEvent:
+		return e.ToolCallID
+	case *aguievents.ToolCallEndEvent:
+		return e.ToolCallID
+	case *aguievents.ToolCallResultEvent:
+		return e.ToolCallID
+	default:
+		return ""
+	}
+}
+
+func trackDiagStringPtr(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

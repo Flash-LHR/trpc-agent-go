@@ -25,6 +25,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
+	"trpc.group/trpc-go/trpc-agent-go/internal/slowlog"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	trunner "trpc.group/trpc-go/trpc-agent-go/runner"
@@ -513,9 +514,20 @@ func (r *runner) run(ctx context.Context, cancel context.CancelCauseFunc, key se
 }
 
 func (r *runner) flushTrack(ctx context.Context, key session.Key) error {
+	started := time.Now()
 	flushCtx, cancel := r.newTrackPersistenceContext(ctx)
 	defer cancel()
-	return r.tracker.Flush(flushCtx, key)
+	err := r.tracker.Flush(flushCtx, key)
+	slowlog.Logf(
+		ctx,
+		"agui.flush_track app=%s user=%s session=%s err=%v elapsed=%v",
+		key.AppName,
+		key.UserID,
+		key.SessionID,
+		err,
+		time.Since(started),
+	)
+	return err
 }
 
 func (r *runner) emitPostRunTerminalEvent(ctx context.Context, events chan<- aguievents.Event, input *runInput) {
@@ -763,7 +775,23 @@ func (r *runner) handleAgentEvent(ctx context.Context, events chan<- aguievents.
 			aguievents.WithRunID(runID)), input)
 		return false
 	}
+	translateStarted := time.Now()
 	aguiEvents, err := input.translator.Translate(ctx, customEvent)
+	translateElapsed := time.Since(translateStarted)
+	if translateElapsed >= slowlog.Threshold() || len(aguiEvents) != 1 || err != nil {
+		slowlog.Logf(
+			ctx,
+			"agui.translate agent_event_id=%s author=%s object=%s partial=%t done=%t output_events=%d err=%v elapsed=%v",
+			aguiDiagAgentEventID(customEvent),
+			aguiDiagAgentEventAuthor(customEvent),
+			aguiDiagAgentEventObject(customEvent),
+			aguiDiagAgentEventPartial(customEvent),
+			aguiDiagAgentEventDone(customEvent),
+			len(aguiEvents),
+			err,
+			translateElapsed,
+		)
+	}
 	if err != nil {
 		log.ErrorfContext(
 			ctx,
@@ -891,8 +919,23 @@ func (r *runner) emitEvent(ctx context.Context, events chan<- aguievents.Event, 
 			)
 		}
 	}
+	sendStarted := time.Now()
+	eventType := aguiDiagEventType(event)
+	messageID, toolCallID := aguiDiagEventIDs(event)
+	payloadBytes := aguiDiagPayloadBytes(event)
 	select {
 	case events <- event:
+		slowlog.Slowf(
+			ctx,
+			sendStarted,
+			"agui.channel_send event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d thread_id=%s run_id=%s err=<nil>",
+			eventType,
+			messageID,
+			toolCallID,
+			payloadBytes,
+			input.threadID,
+			input.runID,
+		)
 		if input != nil && isTerminal {
 			input.terminalEmitted = true
 		}
@@ -1002,9 +1045,111 @@ func (r *runner) unregister(key session.Key) {
 }
 
 func (r *runner) recordTrackEvent(ctx context.Context, key session.Key, event aguievents.Event) error {
+	started := time.Now()
 	trackCtx, cancel := r.newTrackPersistenceContext(ctx)
 	defer cancel()
-	return r.tracker.AppendEvent(trackCtx, key, event)
+	err := r.tracker.AppendEvent(trackCtx, key, event)
+	messageID, toolCallID := aguiDiagEventIDs(event)
+	slowlog.Logf(
+		ctx,
+		"agui.record_track_event app=%s user=%s session=%s event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d err=%v elapsed=%v",
+		key.AppName,
+		key.UserID,
+		key.SessionID,
+		aguiDiagEventType(event),
+		messageID,
+		toolCallID,
+		aguiDiagPayloadBytes(event),
+		err,
+		time.Since(started),
+	)
+	return err
+}
+
+func aguiDiagEventType(event aguievents.Event) string {
+	if event == nil {
+		return ""
+	}
+	return string(event.Type())
+}
+
+func aguiDiagEventIDs(event aguievents.Event) (string, string) {
+	switch e := event.(type) {
+	case *aguievents.TextMessageStartEvent:
+		return e.MessageID, ""
+	case *aguievents.TextMessageContentEvent:
+		return e.MessageID, ""
+	case *aguievents.TextMessageEndEvent:
+		return e.MessageID, ""
+	case *aguievents.ToolCallStartEvent:
+		return aguiDiagStringPtr(e.ParentMessageID), e.ToolCallID
+	case *aguievents.ToolCallArgsEvent:
+		return "", e.ToolCallID
+	case *aguievents.ToolCallEndEvent:
+		return "", e.ToolCallID
+	case *aguievents.ToolCallResultEvent:
+		return e.MessageID, e.ToolCallID
+	default:
+		return "", ""
+	}
+}
+
+func aguiDiagPayloadBytes(event aguievents.Event) int {
+	switch e := event.(type) {
+	case *aguievents.TextMessageContentEvent:
+		return len(e.Delta)
+	case *aguievents.ToolCallArgsEvent:
+		return len(e.Delta)
+	case *aguievents.ToolCallResultEvent:
+		return len(e.Content)
+	default:
+		return 0
+	}
+}
+
+func aguiDiagStringPtr(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func aguiDiagAgentEventID(agentEvent *event.Event) string {
+	if agentEvent == nil {
+		return ""
+	}
+	if agentEvent.Response != nil && agentEvent.Response.ID != "" {
+		return agentEvent.Response.ID
+	}
+	return agentEvent.ID
+}
+
+func aguiDiagAgentEventAuthor(agentEvent *event.Event) string {
+	if agentEvent == nil {
+		return ""
+	}
+	return agentEvent.Author
+}
+
+func aguiDiagAgentEventObject(agentEvent *event.Event) string {
+	if agentEvent == nil || agentEvent.Response == nil {
+		return ""
+	}
+	return string(agentEvent.Response.Object)
+}
+
+func aguiDiagAgentEventPartial(agentEvent *event.Event) bool {
+	if agentEvent == nil || agentEvent.Response == nil {
+		return false
+	}
+	return agentEvent.Response.IsPartial
+}
+
+func aguiDiagAgentEventDone(agentEvent *event.Event) bool {
+	if agentEvent == nil || agentEvent.Response == nil {
+		return false
+	}
+	return agentEvent.Response.Done
 }
 
 func isExplicitRunCancel(ctx context.Context) bool {

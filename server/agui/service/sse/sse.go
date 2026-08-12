@@ -20,6 +20,7 @@ import (
 
 	aguievents "github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
 	aguisse "github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/encoding/sse"
+	"trpc.group/trpc-go/trpc-agent-go/internal/slowlog"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/server/agui/adapter"
 	aguirunner "trpc.group/trpc-go/trpc-agent-go/server/agui/runner"
@@ -270,7 +271,19 @@ func (s *sse) handleEvents(
 			if !ok {
 				return nil
 			}
-			if err := s.writer.WriteEvent(ctx, w, evt); err != nil {
+			started := time.Now()
+			err := s.writer.WriteEvent(ctx, w, evt)
+			slowlog.Logf(
+				ctx,
+				"agui.sse.write_event event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d err=%v elapsed=%v",
+				sseDiagEventType(evt),
+				sseDiagMessageID(evt),
+				sseDiagToolCallID(evt),
+				sseDiagPayloadBytes(evt),
+				err,
+				time.Since(started),
+			)
+			if err != nil {
 				if drain {
 					go drainEvents(events)
 				}
@@ -278,6 +291,65 @@ func (s *sse) handleEvents(
 			}
 		}
 	}
+}
+
+func sseDiagEventType(event aguievents.Event) string {
+	if event == nil {
+		return ""
+	}
+	return string(event.Type())
+}
+
+func sseDiagMessageID(event aguievents.Event) string {
+	switch e := event.(type) {
+	case *aguievents.TextMessageStartEvent:
+		return e.MessageID
+	case *aguievents.TextMessageContentEvent:
+		return e.MessageID
+	case *aguievents.TextMessageEndEvent:
+		return e.MessageID
+	case *aguievents.ToolCallStartEvent:
+		return sseDiagStringPtr(e.ParentMessageID)
+	case *aguievents.ToolCallResultEvent:
+		return e.MessageID
+	default:
+		return ""
+	}
+}
+
+func sseDiagToolCallID(event aguievents.Event) string {
+	switch e := event.(type) {
+	case *aguievents.ToolCallStartEvent:
+		return e.ToolCallID
+	case *aguievents.ToolCallArgsEvent:
+		return e.ToolCallID
+	case *aguievents.ToolCallEndEvent:
+		return e.ToolCallID
+	case *aguievents.ToolCallResultEvent:
+		return e.ToolCallID
+	default:
+		return ""
+	}
+}
+
+func sseDiagPayloadBytes(event aguievents.Event) int {
+	switch e := event.(type) {
+	case *aguievents.TextMessageContentEvent:
+		return len(e.Delta)
+	case *aguievents.ToolCallArgsEvent:
+		return len(e.Delta)
+	case *aguievents.ToolCallResultEvent:
+		return len(e.Content)
+	default:
+		return 0
+	}
+}
+
+func sseDiagStringPtr(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func writeHeartbeat(w http.ResponseWriter) error {

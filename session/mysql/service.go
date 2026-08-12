@@ -24,6 +24,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/internal/session/hook"
 	"trpc.group/trpc-go/trpc-agent-go/internal/session/sqldb"
+	"trpc.group/trpc-go/trpc-agent-go/internal/slowlog"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	isummary "trpc.group/trpc-go/trpc-agent-go/session/internal/summary"
@@ -762,12 +763,26 @@ func (s *Service) AppendTrackEvent(
 	sess *session.Session,
 	trackEvent *session.TrackEvent,
 	opts ...session.Option,
-) error {
+) (retErr error) {
+	started := time.Now()
 	key := session.Key{
 		AppName:   sess.AppName,
 		UserID:    sess.UserID,
 		SessionID: sess.ID,
 	}
+	defer func() {
+		slowlog.Logf(
+			ctx,
+			"mysql.append_track_event app=%s user=%s session=%s track=%s async=%t err=%v elapsed=%v",
+			key.AppName,
+			key.UserID,
+			key.SessionID,
+			mysqlDiagTrackName(trackEvent),
+			s.opts.enableAsyncPersist,
+			retErr,
+			time.Since(started),
+		)
+	}()
 	if err := key.CheckSessionKey(); err != nil {
 		return err
 	}
@@ -787,10 +802,37 @@ func (s *Service) AppendTrackEvent(
 		}()
 
 		index := sess.Hash % len(s.trackEventChans)
+		enqueueStarted := time.Now()
 		select {
 		case s.trackEventChans[index] <- &trackEventPair{key: key, event: trackEvent}:
+			slowlog.Logf(
+				ctx,
+				"mysql.append_track_event.enqueue app=%s user=%s session=%s track=%s worker=%d queue_len=%d queue_cap=%d err=<nil> elapsed=%v",
+				key.AppName,
+				key.UserID,
+				key.SessionID,
+				mysqlDiagTrackName(trackEvent),
+				index,
+				len(s.trackEventChans[index]),
+				cap(s.trackEventChans[index]),
+				time.Since(enqueueStarted),
+			)
 		case <-ctx.Done():
-			return ctx.Err()
+			err := ctx.Err()
+			slowlog.Logf(
+				ctx,
+				"mysql.append_track_event.enqueue app=%s user=%s session=%s track=%s worker=%d queue_len=%d queue_cap=%d err=%v elapsed=%v",
+				key.AppName,
+				key.UserID,
+				key.SessionID,
+				mysqlDiagTrackName(trackEvent),
+				index,
+				len(s.trackEventChans[index]),
+				cap(s.trackEventChans[index]),
+				err,
+				time.Since(enqueueStarted),
+			)
+			return err
 		}
 		return nil
 	}

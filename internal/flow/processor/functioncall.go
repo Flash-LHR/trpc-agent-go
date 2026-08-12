@@ -2642,18 +2642,18 @@ func processorDiagEventAuthor(evt *event.Event) string {
 }
 
 func processorDiagEventObject(evt *event.Event) string {
-	if evt == nil {
+	if evt == nil || evt.Response == nil {
 		return ""
 	}
-	return string(evt.Object)
+	return string(evt.Response.Object)
 }
 
 func processorDiagEventPartial(evt *event.Event) bool {
-	return evt != nil && evt.IsPartial
+	return evt != nil && evt.Response != nil && evt.Response.IsPartial
 }
 
 func processorDiagEventDone(evt *event.Event) bool {
-	return evt != nil && evt.Done
+	return evt != nil && evt.Response != nil && evt.Response.Done
 }
 
 func processorDiagEventRequiresCompletion(evt *event.Event) bool {

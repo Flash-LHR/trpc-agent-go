@@ -1940,24 +1940,24 @@ func runnerDiagEventAuthor(evt *event.Event) string {
 }
 
 func runnerDiagEventObject(evt *event.Event) string {
-	if evt == nil {
+	if evt == nil || evt.Response == nil {
 		return ""
 	}
-	return string(evt.Object)
+	return string(evt.Response.Object)
 }
 
 func runnerDiagEventPartial(evt *event.Event) bool {
-	if evt == nil {
+	if evt == nil || evt.Response == nil {
 		return false
 	}
-	return evt.IsPartial
+	return evt.Response.IsPartial
 }
 
 func runnerDiagEventDone(evt *event.Event) bool {
-	if evt == nil {
+	if evt == nil || evt.Response == nil {
 		return false
 	}
-	return evt.Done
+	return evt.Response.Done
 }
 
 func runnerDiagEventRequiresCompletion(evt *event.Event) bool {

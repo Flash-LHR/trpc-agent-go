@@ -976,18 +976,18 @@ func agentToolDiagEventAuthor(evt *event.Event) string {
 }
 
 func agentToolDiagEventObject(evt *event.Event) string {
-	if evt == nil {
+	if evt == nil || evt.Response == nil {
 		return ""
 	}
-	return string(evt.Object)
+	return string(evt.Response.Object)
 }
 
 func agentToolDiagEventPartial(evt *event.Event) bool {
-	return evt != nil && evt.IsPartial
+	return evt != nil && evt.Response != nil && evt.Response.IsPartial
 }
 
 func agentToolDiagEventDone(evt *event.Event) bool {
-	return evt != nil && evt.Done
+	return evt != nil && evt.Response != nil && evt.Response.Done
 }
 
 func agentToolDiagEventRequiresCompletion(evt *event.Event) bool {
