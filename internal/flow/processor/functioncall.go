@@ -2974,15 +2974,16 @@ func (f *FunctionCallResponseProcessor) consumeStream(
 	for {
 		recvStarted := time.Now()
 		chunk, err := reader.Recv()
-		slowlog.Slowf(
+		recvElapsed := time.Since(recvStarted)
+		slowlog.Logf(
 			ctx,
-			recvStarted,
-			"functioncall.stream_reader_recv tool_name=%s tool_call_id=%s invocation_id=%s chunk_type=%T err=%v",
+			"functioncall.stream_reader_recv tool_name=%s tool_call_id=%s invocation_id=%s chunk_type=%T err=%v elapsed=%v",
 			toolCall.Function.Name,
 			toolCall.ID,
 			processorDiagInvocationID(invocation),
 			chunk.Content,
 			err,
+			recvElapsed,
 		)
 		if err == io.EOF {
 			break
@@ -3012,26 +3013,28 @@ func (f *FunctionCallResponseProcessor) consumeStream(
 			innerTextMode,
 			structuredErrors,
 		); err != nil {
-			slowlog.Slowf(
+			processElapsed := time.Since(processStarted)
+			slowlog.Logf(
 				ctx,
-				processStarted,
-				"functioncall.process_stream_chunk tool_name=%s tool_call_id=%s invocation_id=%s chunk_type=%T err=%v",
+				"functioncall.process_stream_chunk tool_name=%s tool_call_id=%s invocation_id=%s chunk_type=%T err=%v elapsed=%v",
 				toolCall.Function.Name,
 				toolCall.ID,
 				processorDiagInvocationID(invocation),
 				chunk.Content,
 				err,
+				processElapsed,
 			)
 			return contents, finalResult, err
 		}
-		slowlog.Slowf(
+		processElapsed := time.Since(processStarted)
+		slowlog.Logf(
 			ctx,
-			processStarted,
-			"functioncall.process_stream_chunk tool_name=%s tool_call_id=%s invocation_id=%s chunk_type=%T err=<nil>",
+			"functioncall.process_stream_chunk tool_name=%s tool_call_id=%s invocation_id=%s chunk_type=%T err=<nil> elapsed=%v",
 			toolCall.Function.Name,
 			toolCall.ID,
 			processorDiagInvocationID(invocation),
 			chunk.Content,
+			processElapsed,
 		)
 	}
 	if structuredErrors && innerEventState.pendingGraphToolErrorEvent != nil {
@@ -3566,16 +3569,17 @@ func (f *FunctionCallResponseProcessor) handleFinalResultChunk(
 	deltaEvent := f.buildStateDeltaToolResponseEvent(invocation, toolCall, finalChunk.stateDelta)
 	emitStarted := time.Now()
 	err := agent.EmitEvent(ctx, invocation, eventChan, deltaEvent)
-	slowlog.Slowf(
+	emitElapsed := time.Since(emitStarted)
+	slowlog.Logf(
 		ctx,
-		emitStarted,
-		"functioncall.final_result_state_emit tool_name=%s tool_call_id=%s invocation_id=%s event_id=%s state_delta=%d err=%v",
+		"functioncall.final_result_state_emit tool_name=%s tool_call_id=%s invocation_id=%s event_id=%s state_delta=%d err=%v elapsed=%v",
 		toolCall.Function.Name,
 		toolCall.ID,
 		processorDiagInvocationID(invocation),
 		processorDiagEventID(deltaEvent),
 		len(finalChunk.stateDelta),
 		err,
+		emitElapsed,
 	)
 	return err
 }
@@ -3598,11 +3602,12 @@ func (f *FunctionCallResponseProcessor) handleStreamInnerEvent(
 	)
 	if shouldEmit {
 		emitStarted := time.Now()
-		if err := event.EmitEvent(ctx, eventChan, filteredEvent); err != nil {
-			slowlog.Slowf(
+		err := event.EmitEvent(ctx, eventChan, filteredEvent)
+		emitElapsed := time.Since(emitStarted)
+		if err != nil {
+			slowlog.Logf(
 				ctx,
-				emitStarted,
-				"functioncall.emit_inner_event event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d err=%v",
+				"functioncall.emit_inner_event event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d err=%v elapsed=%v",
 				processorDiagEventID(filteredEvent),
 				processorDiagEventAuthor(filteredEvent),
 				processorDiagEventObject(filteredEvent),
@@ -3611,13 +3616,13 @@ func (f *FunctionCallResponseProcessor) handleStreamInnerEvent(
 				processorDiagEventRequiresCompletion(filteredEvent),
 				processorDiagEventStateDeltaLen(filteredEvent),
 				err,
+				emitElapsed,
 			)
 			return err
 		}
-		slowlog.Slowf(
+		slowlog.Logf(
 			ctx,
-			emitStarted,
-			"functioncall.emit_inner_event event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d err=<nil>",
+			"functioncall.emit_inner_event event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d err=<nil> elapsed=%v",
 			processorDiagEventID(filteredEvent),
 			processorDiagEventAuthor(filteredEvent),
 			processorDiagEventObject(filteredEvent),
@@ -3625,6 +3630,7 @@ func (f *FunctionCallResponseProcessor) handleStreamInnerEvent(
 			processorDiagEventDone(filteredEvent),
 			processorDiagEventRequiresCompletion(filteredEvent),
 			processorDiagEventStateDeltaLen(filteredEvent),
+			emitElapsed,
 		)
 	}
 	f.appendInnerEventContent(ev, contents)

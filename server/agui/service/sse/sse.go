@@ -246,7 +246,26 @@ func (s *sse) handleEvents(
 	w http.ResponseWriter,
 	events <-chan aguievents.Event,
 	drain bool,
-) error {
+) (retErr error) {
+	started := time.Now()
+	eventCount := 0
+	eventElapsed := time.Duration(0)
+	heartbeatCount := 0
+	heartbeatElapsed := time.Duration(0)
+	defer func() {
+		slowlog.Logf(
+			ctx,
+			"agui.sse.handle_events drain=%t events=%d event_elapsed=%v heartbeats=%d heartbeat_elapsed=%v err=%v ctx_err=%v elapsed=%v",
+			drain,
+			eventCount,
+			eventElapsed,
+			heartbeatCount,
+			heartbeatElapsed,
+			retErr,
+			ctx.Err(),
+			time.Since(started),
+		)
+	}()
 	var heartbeat <-chan time.Time
 	if s.heartbeatInterval > 0 {
 		ticker := time.NewTicker(s.heartbeatInterval)
@@ -261,7 +280,18 @@ func (s *sse) handleEvents(
 			}
 			return nil
 		case <-heartbeat:
-			if err := writeHeartbeat(w); err != nil {
+			heartbeatStarted := time.Now()
+			err := writeHeartbeat(w)
+			heartbeatWriteElapsed := time.Since(heartbeatStarted)
+			heartbeatElapsed += heartbeatWriteElapsed
+			heartbeatCount++
+			slowlog.Logf(
+				ctx,
+				"agui.sse.write_heartbeat err=%v elapsed=%v",
+				err,
+				heartbeatWriteElapsed,
+			)
+			if err != nil {
 				if drain {
 					go drainEvents(events)
 				}
@@ -271,8 +301,11 @@ func (s *sse) handleEvents(
 			if !ok {
 				return nil
 			}
-			started := time.Now()
+			writeStarted := time.Now()
 			err := s.writer.WriteEvent(ctx, w, evt)
+			writeElapsed := time.Since(writeStarted)
+			eventElapsed += writeElapsed
+			eventCount++
 			slowlog.Logf(
 				ctx,
 				"agui.sse.write_event event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d err=%v elapsed=%v",
@@ -281,7 +314,7 @@ func (s *sse) handleEvents(
 				sseDiagToolCallID(evt),
 				sseDiagPayloadBytes(evt),
 				err,
-				time.Since(started),
+				writeElapsed,
 			)
 			if err != nil {
 				if drain {

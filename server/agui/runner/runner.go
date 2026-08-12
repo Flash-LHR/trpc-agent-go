@@ -165,6 +165,27 @@ type runInput struct {
 	span            trace.Span
 	resume          *resumeInfo
 	terminalEmitted bool
+	diag            *runDiag
+}
+
+type runDiag struct {
+	started                time.Time
+	agentEvents            int
+	translatedEvents       int
+	emitAttempts           int
+	emittedEvents          int
+	trackedEvents          int
+	skippedTrackEvents     int
+	terminalEvents         int
+	userMessages           int
+	beforeTranslateElapsed time.Duration
+	translateElapsed       time.Duration
+	afterTranslateElapsed  time.Duration
+	trackElapsed           time.Duration
+	channelSendElapsed     time.Duration
+	emitElapsed            time.Duration
+	flushTrackElapsed      time.Duration
+	userMessageElapsed     time.Duration
 }
 
 type runAgentMessages struct {
@@ -411,8 +432,21 @@ func (r *runner) Run(ctx context.Context, runAgentInput *adapter.RunAgentInput) 
 		enableTrack: r.tracker != nil,
 		span:        span,
 		resume:      parseResumeInfo(runOption),
+		diag:        &runDiag{started: time.Now()},
 	}
 	events := make(chan aguievents.Event)
+	slowlog.Logf(
+		ctx,
+		"agui.run.start app=%s user=%s session=%s thread_id=%s run_id=%s track_enabled=%t events_cap=%d timeout=%v",
+		input.key.AppName,
+		input.key.UserID,
+		input.key.SessionID,
+		input.threadID,
+		input.runID,
+		input.enableTrack,
+		cap(events),
+		r.timeout,
+	)
 	ctx, cancel := r.newExecutionContext(ctx, r.timeout)
 	if err := r.register(input.key, ctx, cancel); err != nil {
 		cancel(nil)
@@ -433,6 +467,36 @@ func (r *runner) Run(ctx context.Context, runAgentInput *adapter.RunAgentInput) 
 
 func (r *runner) run(ctx context.Context, cancel context.CancelCauseFunc, key session.Key, input *runInput, events chan<- aguievents.Event) {
 	defer func() {
+		if input != nil && input.diag != nil {
+			slowlog.Logf(
+				ctx,
+				"agui.run.finish app=%s user=%s session=%s thread_id=%s run_id=%s agent_events=%d translated_events=%d emit_attempts=%d emitted_events=%d tracked_events=%d skipped_track_events=%d terminal_events=%d user_messages=%d before_translate_elapsed=%v translate_elapsed=%v after_translate_elapsed=%v track_elapsed=%v channel_send_elapsed=%v emit_elapsed=%v flush_track_elapsed=%v user_message_elapsed=%v terminal_emitted=%t ctx_err=%v elapsed=%v",
+				key.AppName,
+				key.UserID,
+				key.SessionID,
+				input.threadID,
+				input.runID,
+				input.diag.agentEvents,
+				input.diag.translatedEvents,
+				input.diag.emitAttempts,
+				input.diag.emittedEvents,
+				input.diag.trackedEvents,
+				input.diag.skippedTrackEvents,
+				input.diag.terminalEvents,
+				input.diag.userMessages,
+				input.diag.beforeTranslateElapsed,
+				input.diag.translateElapsed,
+				input.diag.afterTranslateElapsed,
+				input.diag.trackElapsed,
+				input.diag.channelSendElapsed,
+				input.diag.emitElapsed,
+				input.diag.flushTrackElapsed,
+				input.diag.userMessageElapsed,
+				input.terminalEmitted,
+				ctx.Err(),
+				time.Since(input.diag.started),
+			)
+		}
 		cancel(nil)
 		r.finishDistributedCancel(ctx, key)
 		r.unregister(key)
@@ -443,6 +507,7 @@ func (r *runner) run(ctx context.Context, cancel context.CancelCauseFunc, key se
 	runID := input.runID
 	if input.enableTrack {
 		defer func() {
+			flushStarted := time.Now()
 			if err := r.flushTrack(ctx, input.key); err != nil {
 				log.WarnfContext(
 					ctx,
@@ -453,9 +518,29 @@ func (r *runner) run(ctx context.Context, cancel context.CancelCauseFunc, key se
 					err,
 				)
 			}
+			if input.diag != nil {
+				input.diag.flushTrackElapsed += time.Since(flushStarted)
+			}
 		}()
 		if input.messages.inputMessage.Role == model.RoleUser {
-			if err := r.recordUserMessage(ctx, input.key, input.messages.userMessage); err != nil {
+			userMessageStarted := time.Now()
+			err := r.recordUserMessage(ctx, input.key, input.messages.userMessage)
+			if input.diag != nil {
+				input.diag.userMessages++
+				input.diag.userMessageElapsed += time.Since(userMessageStarted)
+			}
+			slowlog.Logf(
+				ctx,
+				"agui.record_user_message app=%s user=%s session=%s thread_id=%s run_id=%s err=%v elapsed=%v",
+				input.key.AppName,
+				input.key.UserID,
+				input.key.SessionID,
+				threadID,
+				runID,
+				err,
+				time.Since(userMessageStarted),
+			)
+			if err != nil {
 				log.WarnfContext(
 					ctx,
 					"agui run: threadID: %s, runID: %s, record input "+
@@ -761,7 +846,28 @@ func newToolResultInputEvent(messageID string, msg *model.Message) *event.Event 
 func (r *runner) handleAgentEvent(ctx context.Context, events chan<- aguievents.Event, input *runInput, event *event.Event) bool {
 	threadID := input.threadID
 	runID := input.runID
+	if input.diag != nil {
+		input.diag.agentEvents++
+	}
+	beforeStarted := time.Now()
 	customEvent, err := r.handleBeforeTranslate(ctx, event)
+	beforeElapsed := time.Since(beforeStarted)
+	if input.diag != nil {
+		input.diag.beforeTranslateElapsed += beforeElapsed
+	}
+	if beforeElapsed >= slowlog.Threshold() || err != nil {
+		slowlog.Logf(
+			ctx,
+			"agui.before_translate agent_event_id=%s author=%s object=%s partial=%t done=%t err=%v elapsed=%v",
+			aguiDiagAgentEventID(event),
+			aguiDiagAgentEventAuthor(event),
+			aguiDiagAgentEventObject(event),
+			aguiDiagAgentEventPartial(event),
+			aguiDiagAgentEventDone(event),
+			err,
+			beforeElapsed,
+		)
+	}
 	if err != nil {
 		log.ErrorfContext(
 			ctx,
@@ -778,6 +884,10 @@ func (r *runner) handleAgentEvent(ctx context.Context, events chan<- aguievents.
 	translateStarted := time.Now()
 	aguiEvents, err := input.translator.Translate(ctx, customEvent)
 	translateElapsed := time.Since(translateStarted)
+	if input.diag != nil {
+		input.diag.translateElapsed += translateElapsed
+		input.diag.translatedEvents += len(aguiEvents)
+	}
 	if translateElapsed >= slowlog.Threshold() || len(aguiEvents) != 1 || err != nil {
 		slowlog.Logf(
 			ctx,
@@ -872,28 +982,105 @@ func (r *runner) handleAfterTranslate(ctx context.Context, event aguievents.Even
 
 func (r *runner) emitEvent(ctx context.Context, events chan<- aguievents.Event, event aguievents.Event,
 	input *runInput) bool {
+	emitStarted := time.Now()
+	emitAttempt := 0
+	if input != nil && input.diag != nil {
+		input.diag.emitAttempts++
+		emitAttempt = input.diag.emitAttempts
+	}
 	if input != nil && input.terminalEmitted {
 		return false
 	}
+	originalEvent := event
+	afterStarted := time.Now()
 	event, err := r.handleAfterTranslate(ctx, event)
+	afterElapsed := time.Since(afterStarted)
+	if input != nil && input.diag != nil {
+		input.diag.afterTranslateElapsed += afterElapsed
+	}
+	if afterElapsed >= slowlog.Threshold() || err != nil {
+		slowlog.Logf(
+			ctx,
+			"agui.after_translate attempt=%d event_type=%s message_id=%s tool_call_id=%s err=%v elapsed=%v",
+			emitAttempt,
+			aguiDiagEventType(originalEvent),
+			aguiDiagEventMessageID(originalEvent),
+			aguiDiagEventToolCallID(originalEvent),
+			err,
+			afterElapsed,
+		)
+	}
 	if err != nil {
 		log.ErrorfContext(
 			ctx,
 			"agui emit event: original event: %v, threadID: %s, "+
 				"runID: %s, after translate callback: %v",
-			event,
+			originalEvent,
 			input.threadID,
 			input.runID,
 			err,
 		)
 		runErr := aguievents.NewRunErrorEvent(fmt.Sprintf("after translate callback: %v", err),
 			aguievents.WithRunID(input.runID))
+		sendStarted := time.Now()
 		select {
 		case events <- runErr:
+			sendElapsed := time.Since(sendStarted)
+			if input != nil && input.diag != nil {
+				input.diag.channelSendElapsed += sendElapsed
+				input.diag.emitElapsed += time.Since(emitStarted)
+				input.diag.emittedEvents++
+				input.diag.terminalEvents++
+			}
+			slowlog.Logf(
+				ctx,
+				"agui.channel_send attempt=%d event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d thread_id=%s run_id=%s err=<nil> elapsed=%v",
+				emitAttempt,
+				aguiDiagEventType(runErr),
+				aguiDiagEventMessageID(runErr),
+				aguiDiagEventToolCallID(runErr),
+				aguiDiagPayloadBytes(runErr),
+				input.threadID,
+				input.runID,
+				sendElapsed,
+			)
+			slowlog.Logf(
+				ctx,
+				"agui.emit_event attempt=%d event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d tracked=%t track_enabled=%t should_track=%t terminal=%t track_err=<nil> err=%v elapsed=%v",
+				emitAttempt,
+				aguiDiagEventType(runErr),
+				aguiDiagEventMessageID(runErr),
+				aguiDiagEventToolCallID(runErr),
+				aguiDiagPayloadBytes(runErr),
+				false,
+				false,
+				false,
+				true,
+				err,
+				time.Since(emitStarted),
+			)
 			if input != nil {
 				input.terminalEmitted = true
 			}
 		case <-ctx.Done():
+			sendElapsed := time.Since(sendStarted)
+			if input != nil && input.diag != nil {
+				input.diag.channelSendElapsed += sendElapsed
+				input.diag.emitElapsed += time.Since(emitStarted)
+			}
+			slowlog.Logf(
+				ctx,
+				"agui.channel_send attempt=%d event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d thread_id=%s run_id=%s err=%v elapsed=%v",
+				emitAttempt,
+				aguiDiagEventType(runErr),
+				aguiDiagEventMessageID(runErr),
+				aguiDiagEventToolCallID(runErr),
+				aguiDiagPayloadBytes(runErr),
+				input.threadID,
+				input.runID,
+				ctx.Err(),
+				sendElapsed,
+			)
 			log.ErrorfContext(ctx, "agui emit event: context done, threadID: %s, runID: %s, err: %v",
 				input.threadID, input.runID, ctx.Err())
 		}
@@ -907,17 +1094,43 @@ func (r *runner) emitEvent(ctx context.Context, events chan<- aguievents.Event, 
 		input.threadID,
 		input.runID,
 	)
-	if input.enableTrack && r.shouldTrackEvent(event) {
-		if err := r.recordTrackEvent(ctx, input.key, event); err != nil {
+	trackEnabled := input.enableTrack
+	shouldTrack := r.shouldTrackEvent(event)
+	tracked := false
+	var trackErr error
+	if trackEnabled && shouldTrack {
+		trackStarted := time.Now()
+		trackErr = r.recordTrackEvent(ctx, input.key, event)
+		trackElapsed := time.Since(trackStarted)
+		if input.diag != nil {
+			input.diag.trackElapsed += trackElapsed
+			input.diag.trackedEvents++
+		}
+		tracked = true
+		if trackErr != nil {
 			log.WarnfContext(
 				ctx,
 				"agui emit event: record track event failed: "+
 					"threadID: %s, runID: %s, err: %v",
 				input.threadID,
 				input.runID,
-				err,
+				trackErr,
 			)
 		}
+	} else {
+		if input.diag != nil {
+			input.diag.skippedTrackEvents++
+		}
+		slowlog.Logf(
+			ctx,
+			"agui.track.skip attempt=%d event_type=%s message_id=%s tool_call_id=%s track_enabled=%t should_track=%t",
+			emitAttempt,
+			aguiDiagEventType(event),
+			aguiDiagEventMessageID(event),
+			aguiDiagEventToolCallID(event),
+			trackEnabled,
+			shouldTrack,
+		)
 	}
 	sendStarted := time.Now()
 	eventType := aguiDiagEventType(event)
@@ -925,22 +1138,81 @@ func (r *runner) emitEvent(ctx context.Context, events chan<- aguievents.Event, 
 	payloadBytes := aguiDiagPayloadBytes(event)
 	select {
 	case events <- event:
-		slowlog.Slowf(
+		sendElapsed := time.Since(sendStarted)
+		if input.diag != nil {
+			input.diag.channelSendElapsed += sendElapsed
+			input.diag.emitElapsed += time.Since(emitStarted)
+			input.diag.emittedEvents++
+			if isTerminal {
+				input.diag.terminalEvents++
+			}
+		}
+		slowlog.Logf(
 			ctx,
-			sendStarted,
-			"agui.channel_send event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d thread_id=%s run_id=%s err=<nil>",
+			"agui.channel_send attempt=%d event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d thread_id=%s run_id=%s err=<nil> elapsed=%v",
+			emitAttempt,
 			eventType,
 			messageID,
 			toolCallID,
 			payloadBytes,
 			input.threadID,
 			input.runID,
+			sendElapsed,
+		)
+		slowlog.Logf(
+			ctx,
+			"agui.emit_event attempt=%d event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d tracked=%t track_enabled=%t should_track=%t terminal=%t track_err=%v err=<nil> elapsed=%v",
+			emitAttempt,
+			eventType,
+			messageID,
+			toolCallID,
+			payloadBytes,
+			tracked,
+			trackEnabled,
+			shouldTrack,
+			isTerminal,
+			trackErr,
+			time.Since(emitStarted),
 		)
 		if input != nil && isTerminal {
 			input.terminalEmitted = true
 		}
 		return true
 	case <-ctx.Done():
+		sendElapsed := time.Since(sendStarted)
+		if input.diag != nil {
+			input.diag.channelSendElapsed += sendElapsed
+			input.diag.emitElapsed += time.Since(emitStarted)
+		}
+		slowlog.Logf(
+			ctx,
+			"agui.channel_send attempt=%d event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d thread_id=%s run_id=%s err=%v elapsed=%v",
+			emitAttempt,
+			eventType,
+			messageID,
+			toolCallID,
+			payloadBytes,
+			input.threadID,
+			input.runID,
+			ctx.Err(),
+			sendElapsed,
+		)
+		slowlog.Logf(
+			ctx,
+			"agui.emit_event attempt=%d event_type=%s message_id=%s tool_call_id=%s payload_bytes=%d tracked=%t track_enabled=%t should_track=%t terminal=%t track_err=%v err=%v elapsed=%v",
+			emitAttempt,
+			eventType,
+			messageID,
+			toolCallID,
+			payloadBytes,
+			tracked,
+			trackEnabled,
+			shouldTrack,
+			isTerminal,
+			trackErr,
+			ctx.Err(),
+			time.Since(emitStarted),
+		)
 		log.ErrorfContext(ctx, "agui emit event: context done, threadID: %s, runID: %s, err: %v",
 			input.threadID, input.runID, ctx.Err())
 		return false
@@ -1092,6 +1364,16 @@ func aguiDiagEventIDs(event aguievents.Event) (string, string) {
 	default:
 		return "", ""
 	}
+}
+
+func aguiDiagEventMessageID(event aguievents.Event) string {
+	messageID, _ := aguiDiagEventIDs(event)
+	return messageID
+}
+
+func aguiDiagEventToolCallID(event aguievents.Event) string {
+	_, toolCallID := aguiDiagEventIDs(event)
+	return toolCallID
 }
 
 func aguiDiagPayloadBytes(event aguievents.Event) int {

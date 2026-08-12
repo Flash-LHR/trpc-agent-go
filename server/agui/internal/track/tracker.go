@@ -87,16 +87,17 @@ func (t *tracker) AppendEvent(ctx context.Context, key session.Key, event aguiev
 	state := t.getSessionState(ctx, key)
 	lockStarted := time.Now()
 	state.mu.Lock()
-	slowlog.Slowf(
+	lockElapsed := time.Since(lockStarted)
+	slowlog.Logf(
 		ctx,
-		lockStarted,
-		"agui.track.lock_wait app=%s user=%s session=%s event_type=%s message_id=%s tool_call_id=%s",
+		"agui.track.lock_wait app=%s user=%s session=%s event_type=%s message_id=%s tool_call_id=%s elapsed=%v",
 		key.AppName,
 		key.UserID,
 		key.SessionID,
 		trackDiagEventType(event),
 		trackDiagMessageID(event),
 		trackDiagToolCallID(event),
+		lockElapsed,
 	)
 	defer state.mu.Unlock()
 	aggregateStarted := time.Now()
@@ -189,14 +190,14 @@ func (t *tracker) persistEvents(ctx context.Context, key session.Key, state *ses
 	}()
 	ensureStarted := time.Now()
 	sess, err := t.ensureSessionExists(ctx, key, state)
-	slowlog.Slowf(
+	slowlog.Logf(
 		ctx,
-		ensureStarted,
-		"agui.track.ensure_session app=%s user=%s session=%s err=%v",
+		"agui.track.ensure_session app=%s user=%s session=%s err=%v elapsed=%v",
 		key.AppName,
 		key.UserID,
 		key.SessionID,
 		err,
+		time.Since(ensureStarted),
 	)
 	if err != nil {
 		return fmt.Errorf("ensure session exists: %w", err)
@@ -248,10 +249,31 @@ func (t *tracker) persistEvents(ctx context.Context, key session.Key, state *ses
 
 // ensureSessionExists fetches the session or creates one when absent.
 func (t *tracker) ensureSessionExists(ctx context.Context, key session.Key, state *sessionState) (*session.Session, error) {
+	started := time.Now()
 	if state.session != nil {
+		slowlog.Logf(
+			ctx,
+			"agui.track.ensure_session.cache app=%s user=%s session=%s hit=%t err=<nil> elapsed=%v",
+			key.AppName,
+			key.UserID,
+			key.SessionID,
+			true,
+			time.Since(started),
+		)
 		return state.session, nil
 	}
+	getStarted := time.Now()
 	sess, err := t.sessionService.GetSession(ctx, key)
+	slowlog.Logf(
+		ctx,
+		"agui.track.ensure_session.get app=%s user=%s session=%s hit=%t err=%v elapsed=%v",
+		key.AppName,
+		key.UserID,
+		key.SessionID,
+		sess != nil,
+		err,
+		time.Since(getStarted),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)
 	}
@@ -259,7 +281,17 @@ func (t *tracker) ensureSessionExists(ctx context.Context, key session.Key, stat
 		state.session = sess
 		return state.session, nil
 	}
+	createStarted := time.Now()
 	sess, err = t.sessionService.CreateSession(ctx, key, session.StateMap{})
+	slowlog.Logf(
+		ctx,
+		"agui.track.ensure_session.create app=%s user=%s session=%s err=%v elapsed=%v",
+		key.AppName,
+		key.UserID,
+		key.SessionID,
+		err,
+		time.Since(createStarted),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
@@ -322,9 +354,29 @@ func (t *tracker) flushPeriodically(ctx context.Context, key session.Key, state 
 // flush flushes the session state.
 func (t *tracker) flush(ctx context.Context, key session.Key, state *sessionState) error {
 	started := time.Now()
+	lockStarted := time.Now()
 	state.mu.Lock()
+	slowlog.Logf(
+		ctx,
+		"agui.track.flush_lock_wait app=%s user=%s session=%s elapsed=%v",
+		key.AppName,
+		key.UserID,
+		key.SessionID,
+		time.Since(lockStarted),
+	)
 	defer state.mu.Unlock()
+	aggregateStarted := time.Now()
 	events, err := state.aggregator.Flush(ctx)
+	slowlog.Logf(
+		ctx,
+		"agui.track.flush_aggregate app=%s user=%s session=%s output_events=%d err=%v elapsed=%v",
+		key.AppName,
+		key.UserID,
+		key.SessionID,
+		len(events),
+		err,
+		time.Since(aggregateStarted),
+	)
 	if err != nil {
 		return fmt.Errorf("aggregator flush: %w", err)
 	}

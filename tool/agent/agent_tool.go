@@ -1001,6 +1001,74 @@ func agentToolDiagEventStateDeltaLen(evt *event.Event) int {
 	return len(evt.StateDelta)
 }
 
+func (at *Tool) sendStreamChunk(
+	ctx context.Context,
+	writer *tool.StreamWriter,
+	chunk tool.StreamChunk,
+	reason string,
+	inv *agent.Invocation,
+	ev *event.Event,
+) bool {
+	return sendStreamChunkForDiag(ctx, at.name, writer, chunk, reason, inv, ev)
+}
+
+func sendStreamChunkForDiag(
+	ctx context.Context,
+	toolName string,
+	writer *tool.StreamWriter,
+	chunk tool.StreamChunk,
+	reason string,
+	inv *agent.Invocation,
+	ev *event.Event,
+) bool {
+	started := time.Now()
+	closed := writer.Send(chunk, nil)
+	slowlog.Logf(
+		ctx,
+		"agenttool.writer_send tool=%s reason=%s child_invocation_id=%s content_type=%s content_bytes=%d event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d closed=%t elapsed=%v",
+		toolName,
+		reason,
+		agentToolDiagInvocationID(inv),
+		fmt.Sprintf("%T", chunk.Content),
+		agentToolDiagContentBytes(chunk.Content),
+		agentToolDiagEventID(ev),
+		agentToolDiagEventAuthor(ev),
+		agentToolDiagEventObject(ev),
+		agentToolDiagEventPartial(ev),
+		agentToolDiagEventDone(ev),
+		agentToolDiagEventRequiresCompletion(ev),
+		agentToolDiagEventStateDeltaLen(ev),
+		closed,
+		time.Since(started),
+	)
+	return closed
+}
+
+func agentToolDiagContentBytes(content any) int {
+	switch v := content.(type) {
+	case string:
+		return len(v)
+	case []byte:
+		return len(v)
+	case tool.FinalResultChunk:
+		return agentToolDiagContentBytes(v.Result)
+	case *tool.FinalResultChunk:
+		if v == nil {
+			return 0
+		}
+		return agentToolDiagContentBytes(v.Result)
+	case tool.FinalResultStateChunk:
+		return agentToolDiagContentBytes(v.Result)
+	case *tool.FinalResultStateChunk:
+		if v == nil {
+			return 0
+		}
+		return agentToolDiagContentBytes(v.Result)
+	default:
+		return 0
+	}
+}
+
 func shouldMirrorEventToSession(evt *event.Event) bool {
 	if evt == nil {
 		return false
@@ -1389,7 +1457,21 @@ func (at *Tool) runStreamableCall(
 	writer *tool.StreamWriter,
 ) {
 	started := time.Now()
-	defer slowlog.Slowf(ctx, started, "agenttool.run_streamable_call tool=%s", at.name)
+	defer func() {
+		callID, _ := tool.ToolCallIDFromContext(ctx)
+		parentInvocationID := ""
+		if inv, ok := agent.InvocationFromContext(ctx); ok && inv != nil {
+			parentInvocationID = inv.InvocationID
+		}
+		slowlog.Logf(
+			ctx,
+			"agenttool.run_streamable_call tool=%s call_id=%s parent_invocation_id=%s elapsed=%v",
+			at.name,
+			callID,
+			parentInvocationID,
+			time.Since(started),
+		)
+	}()
 	defer writer.Close()
 	if at.dynamic {
 		at.streamDynamic(ctx, jsonArgs, writer)
@@ -1420,7 +1502,7 @@ func (at *Tool) streamFromParentInvocation(
 			agentToolDiagInvocationID(parentInv),
 			err,
 		)
-		sendStreamableCallError(
+		at.sendStreamableCallError(
 			ctx,
 			writer,
 			"flush parent invocation session failed: %w",
@@ -1457,7 +1539,7 @@ func (at *Tool) streamFromParentInvocation(
 			childKey,
 			err,
 		)
-		sendStreamableCallError(ctx, writer, "agent tool run error: %w", err)
+		at.sendStreamableCallError(ctx, writer, "agent tool run error: %w", err)
 		return
 	}
 	slowlog.Slowf(
@@ -1493,24 +1575,16 @@ func (at *Tool) forwardSubInvocationStream(
 	// chunk so it is merged into the tool response. For final-result modes the
 	// prefix is folded into the emitted result instead (see the emit helpers).
 	if resultPrefix != "" && !emitFinalResultChunk {
-		sendStarted := time.Now()
-		if writer.Send(tool.StreamChunk{Content: resultPrefix}, nil) {
-			slowlog.Slowf(
-				ctx,
-				sendStarted,
-				"agenttool.writer_send_prefix tool=%s child_invocation_id=%s closed=true",
-				at.name,
-				agentToolDiagInvocationID(subInv),
-			)
+		if at.sendStreamChunk(
+			ctx,
+			writer,
+			tool.StreamChunk{Content: resultPrefix},
+			"prefix",
+			subInv,
+			nil,
+		) {
 			return
 		}
-		slowlog.Slowf(
-			ctx,
-			sendStarted,
-			"agenttool.writer_send_prefix tool=%s child_invocation_id=%s closed=false",
-			at.name,
-			agentToolDiagInvocationID(subInv),
-		)
 	}
 	for {
 		waitStarted := time.Now()
@@ -1524,7 +1598,7 @@ func (at *Tool) forwardSubInvocationStream(
 				agentToolDiagInvocationID(subInv),
 				ctx.Err(),
 			)
-			sendStreamableCallError(ctx, writer, "agent tool run error: %w", ctx.Err())
+			at.sendStreamableCallError(ctx, writer, "agent tool run error: %w", ctx.Err())
 			return
 		case ev, ok := <-wrapped:
 			slowlog.Slowf(
@@ -1557,7 +1631,7 @@ func (at *Tool) forwardSubInvocationStream(
 				if emitFinalResultChunk {
 					if at.responseMode == ResponseModeFinalOnly {
 						emitStarted := time.Now()
-						at.emitFinalOnlyResultChunk(&state, writer)
+						at.emitFinalOnlyResultChunkWithDiag(ctx, subInv, &state, writer)
 						slowlog.Slowf(
 							ctx,
 							emitStarted,
@@ -1569,7 +1643,7 @@ func (at *Tool) forwardSubInvocationStream(
 						return
 					}
 					emitStarted := time.Now()
-					at.emitPendingCompletionChunk(&state, writer)
+					at.emitPendingCompletionChunkWithDiag(ctx, subInv, &state, writer)
 					slowlog.Slowf(
 						ctx,
 						emitStarted,
@@ -1581,7 +1655,7 @@ func (at *Tool) forwardSubInvocationStream(
 					return
 				}
 				emitStarted := time.Now()
-				at.emitPendingVisibleCompletionEvent(&state, writer)
+				at.emitPendingVisibleCompletionEventWithDiag(ctx, subInv, &state, writer)
 				slowlog.Slowf(
 					ctx,
 					emitStarted,
@@ -1645,24 +1719,14 @@ func (at *Tool) handleForwardedStreamEvent(
 		}
 	}
 	at.updateStreamCompletionState(ev, state)
-	sendStarted := time.Now()
-	closed := writer.Send(tool.StreamChunk{Content: ev}, nil)
-	slowlog.Slowf(
+	return at.sendStreamChunk(
 		ctx,
-		sendStarted,
-		"agenttool.writer_send_event tool=%s child_invocation_id=%s event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d closed=%t",
-		at.name,
-		agentToolDiagInvocationID(subInv),
-		agentToolDiagEventID(ev),
-		agentToolDiagEventAuthor(ev),
-		agentToolDiagEventObject(ev),
-		agentToolDiagEventPartial(ev),
-		agentToolDiagEventDone(ev),
-		agentToolDiagEventRequiresCompletion(ev),
-		agentToolDiagEventStateDeltaLen(ev),
-		closed,
+		writer,
+		tool.StreamChunk{Content: ev},
+		"event",
+		subInv,
+		ev,
 	)
-	return closed
 }
 
 // handleGraphCompletionSnapshot captures a graph-completion snapshot for
@@ -1881,6 +1945,15 @@ func (at *Tool) emitPendingVisibleCompletionEvent(
 	state *streamCompletionState,
 	writer *tool.StreamWriter,
 ) {
+	at.emitPendingVisibleCompletionEventWithDiag(context.Background(), nil, state, writer)
+}
+
+func (at *Tool) emitPendingVisibleCompletionEventWithDiag(
+	ctx context.Context,
+	subInv *agent.Invocation,
+	state *streamCompletionState,
+	writer *tool.StreamWriter,
+) {
 	if state == nil || state.pendingStreamVisibleEvent == nil {
 		return
 	}
@@ -1892,10 +1965,19 @@ func (at *Tool) emitPendingVisibleCompletionEvent(
 		}
 		visibleEvent = stateOnly
 	}
-	_ = writer.Send(tool.StreamChunk{Content: visibleEvent}, nil)
+	_ = at.sendStreamChunk(ctx, writer, tool.StreamChunk{Content: visibleEvent}, "pending_visible_completion", subInv, visibleEvent)
 }
 
 func (at *Tool) emitPendingCompletionChunk(
+	state *streamCompletionState,
+	writer *tool.StreamWriter,
+) {
+	at.emitPendingCompletionChunkWithDiag(context.Background(), nil, state, writer)
+}
+
+func (at *Tool) emitPendingCompletionChunkWithDiag(
+	ctx context.Context,
+	subInv *agent.Invocation,
 	state *streamCompletionState,
 	writer *tool.StreamWriter,
 ) {
@@ -1915,12 +1997,19 @@ func (at *Tool) emitPendingCompletionChunk(
 			StateDelta: cloneStateDelta(state.pendingCompletionChunk.StateDelta),
 		}
 	}
-	_ = writer.Send(tool.StreamChunk{
-		Content: content,
-	}, nil)
+	_ = at.sendStreamChunk(ctx, writer, tool.StreamChunk{Content: content}, "pending_completion_chunk", subInv, nil)
 }
 
 func (at *Tool) emitFinalOnlyResultChunk(
+	state *streamCompletionState,
+	writer *tool.StreamWriter,
+) {
+	at.emitFinalOnlyResultChunkWithDiag(context.Background(), nil, state, writer)
+}
+
+func (at *Tool) emitFinalOnlyResultChunkWithDiag(
+	ctx context.Context,
+	subInv *agent.Invocation,
 	state *streamCompletionState,
 	writer *tool.StreamWriter,
 ) {
@@ -1942,7 +2031,7 @@ func (at *Tool) emitFinalOnlyResultChunk(
 			StateDelta: cloneStateDelta(stateDelta),
 		}
 	}
-	_ = writer.Send(tool.StreamChunk{Content: content}, nil)
+	_ = at.sendStreamChunk(ctx, writer, tool.StreamChunk{Content: content}, "final_only_result_chunk", subInv, nil)
 }
 
 // prefixStreamResult prepends prefix (e.g. dynamic sub-agent warnings) to a
@@ -1984,14 +2073,34 @@ func (at *Tool) streamFromFallbackRunner(
 		at.fallbackRunnerRunOptions(ctx)...,
 	)
 	if err != nil {
-		sendStreamableCallError(ctx, writer, "agent tool run error: %w", err)
+		at.sendStreamableCallError(ctx, writer, "agent tool run error: %w", err)
 		return
 	}
 	for ev := range evCh {
-		if ev != nil && writer.Send(tool.StreamChunk{Content: ev}, nil) {
+		if ev != nil && at.sendStreamChunk(ctx, writer, tool.StreamChunk{Content: ev}, "fallback_event", nil, ev) {
 			return
 		}
 	}
+}
+
+func (at *Tool) sendStreamableCallError(
+	ctx context.Context,
+	writer *tool.StreamWriter,
+	format string,
+	err error,
+) {
+	streamErr := fmt.Errorf(format, err)
+	if !tool.StructuredStreamErrorsFromContext(ctx) {
+		if at.sendStreamChunk(ctx, writer, tool.StreamChunk{Content: streamErr.Error()}, "error_text", nil, nil) {
+			return
+		}
+		return
+	}
+	if errorEvent := streamableCallErrorEvent(ctx, streamErr); errorEvent != nil {
+		_ = at.sendStreamChunk(ctx, writer, tool.StreamChunk{Content: errorEvent}, "error_event", nil, errorEvent)
+		return
+	}
+	_ = at.sendStreamChunk(ctx, writer, tool.StreamChunk{Content: streamErr.Error()}, "error_text", nil, nil)
 }
 
 func sendStreamableCallError(
@@ -2002,16 +2111,16 @@ func sendStreamableCallError(
 ) {
 	streamErr := fmt.Errorf(format, err)
 	if !tool.StructuredStreamErrorsFromContext(ctx) {
-		if writer.Send(tool.StreamChunk{Content: streamErr.Error()}, nil) {
+		if sendStreamChunkForDiag(ctx, "", writer, tool.StreamChunk{Content: streamErr.Error()}, "error_text", nil, nil) {
 			return
 		}
 		return
 	}
 	if errorEvent := streamableCallErrorEvent(ctx, streamErr); errorEvent != nil {
-		_ = writer.Send(tool.StreamChunk{Content: errorEvent}, nil)
+		_ = sendStreamChunkForDiag(ctx, "", writer, tool.StreamChunk{Content: errorEvent}, "error_event", nil, errorEvent)
 		return
 	}
-	_ = writer.Send(tool.StreamChunk{Content: streamErr.Error()}, nil)
+	_ = sendStreamChunkForDiag(ctx, "", writer, tool.StreamChunk{Content: streamErr.Error()}, "error_text", nil, nil)
 }
 
 func streamableCallErrorEvent(ctx context.Context, err error) *event.Event {

@@ -1386,10 +1386,10 @@ func (e *runnerEventEmitter) run() {
 		}
 		started := time.Now()
 		err := event.EmitEvent(queued.ctx, e.out, queued.event)
-		slowlog.Slowf(
+		elapsed := time.Since(started)
+		slowlog.Logf(
 			queued.ctx,
-			started,
-			"runner.output_emit event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d err=%v",
+			"runner.output_emit event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d err=%v elapsed=%v",
 			runnerDiagEventID(queued.event),
 			runnerDiagEventAuthor(queued.event),
 			runnerDiagEventObject(queued.event),
@@ -1398,6 +1398,7 @@ func (e *runnerEventEmitter) run() {
 			runnerDiagEventRequiresCompletion(queued.event),
 			runnerDiagEventStateDeltaLen(queued.event),
 			err,
+			elapsed,
 		)
 		if queued.ack != nil {
 			queued.ack <- err
