@@ -27,6 +27,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/internal/jsonrepair"
 	"trpc.group/trpc-go/trpc-agent-go/internal/jsonutils"
+	"trpc.group/trpc-go/trpc-agent-go/internal/slowlog"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	itool "trpc.group/trpc-go/trpc-agent-go/internal/tool"
@@ -2616,6 +2617,56 @@ func afterCallbackReplacedResult(toolErr error, toolResult any) bool {
 	return true
 }
 
+func processorDiagInvocationID(inv *agent.Invocation) string {
+	if inv == nil {
+		return ""
+	}
+	return inv.InvocationID
+}
+
+func processorDiagEventID(evt *event.Event) string {
+	if evt == nil {
+		return ""
+	}
+	if evt.Response != nil && evt.Response.ID != "" {
+		return evt.Response.ID
+	}
+	return evt.ID
+}
+
+func processorDiagEventAuthor(evt *event.Event) string {
+	if evt == nil {
+		return ""
+	}
+	return evt.Author
+}
+
+func processorDiagEventObject(evt *event.Event) string {
+	if evt == nil {
+		return ""
+	}
+	return string(evt.Object)
+}
+
+func processorDiagEventPartial(evt *event.Event) bool {
+	return evt != nil && evt.IsPartial
+}
+
+func processorDiagEventDone(evt *event.Event) bool {
+	return evt != nil && evt.Done
+}
+
+func processorDiagEventRequiresCompletion(evt *event.Event) bool {
+	return evt != nil && evt.RequiresCompletion
+}
+
+func processorDiagEventStateDeltaLen(evt *event.Event) int {
+	if evt == nil {
+		return 0
+	}
+	return len(evt.StateDelta)
+}
+
 // isStreamable returns true if the tool supports streaming and its stream
 // preference is enabled.
 func isStreamable(t tool.Tool) bool {
@@ -2803,12 +2854,31 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 	tl tool.StreamableTool,
 	eventChan chan<- *event.Event,
 ) (context.Context, any, bool, error) {
+	callStarted := time.Now()
+	defer slowlog.Slowf(
+		ctx,
+		callStarted,
+		"functioncall.execute_streamable_tool tool_name=%s tool_call_id=%s invocation_id=%s",
+		toolCall.Function.Name,
+		toolCall.ID,
+		processorDiagInvocationID(invocation),
+	)
+	streamStarted := time.Now()
 	reader, err := tl.StreamableCall(
 		streamableToolCallContext(
 			tool.WithoutToolResultAttachmentBudget(ctx),
 			tl,
 		),
 		toolCall.Function.Arguments,
+	)
+	slowlog.Slowf(
+		ctx,
+		streamStarted,
+		"functioncall.streamable_call tool_name=%s tool_call_id=%s invocation_id=%s err=%v",
+		toolCall.Function.Name,
+		toolCall.ID,
+		processorDiagInvocationID(invocation),
+		err,
 	)
 	if err != nil {
 		log.ErrorfContext(
@@ -2824,6 +2894,7 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 	// Process stream chunks, handling:
 	// Case 1: Raw sub-agent event passthrough.
 	// Case 2: Plain text-like chunk. Emit partial tool.response event.
+	consumeStarted := time.Now()
 	contents, finalResult, err := f.consumeStream(
 		ctx,
 		invocation,
@@ -2832,6 +2903,18 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 		eventChan,
 		innerTextModeForTool(tl),
 		shouldRequestStructuredStreamErrors(tl),
+	)
+	slowlog.Slowf(
+		ctx,
+		consumeStarted,
+		"functioncall.consume_stream tool_name=%s tool_call_id=%s invocation_id=%s contents=%d final_seen=%t final_nil=%t err=%v",
+		toolCall.Function.Name,
+		toolCall.ID,
+		processorDiagInvocationID(invocation),
+		len(contents),
+		finalResult.seen,
+		finalResult.value == nil,
+		err,
 	)
 	if err != nil {
 		return ctx, nil, false, err
@@ -2889,7 +2972,18 @@ func (f *FunctionCallResponseProcessor) consumeStream(
 	var finalResult streamFinalResult
 	var innerEventState streamInnerEventState
 	for {
+		recvStarted := time.Now()
 		chunk, err := reader.Recv()
+		slowlog.Slowf(
+			ctx,
+			recvStarted,
+			"functioncall.stream_reader_recv tool_name=%s tool_call_id=%s invocation_id=%s chunk_type=%T err=%v",
+			toolCall.Function.Name,
+			toolCall.ID,
+			processorDiagInvocationID(invocation),
+			chunk.Content,
+			err,
+		)
 		if err == io.EOF {
 			break
 		}
@@ -2905,6 +2999,7 @@ func (f *FunctionCallResponseProcessor) consumeStream(
 			break
 		}
 
+		processStarted := time.Now()
 		if err := f.processStreamChunk(
 			ctx,
 			invocation,
@@ -2917,8 +3012,27 @@ func (f *FunctionCallResponseProcessor) consumeStream(
 			innerTextMode,
 			structuredErrors,
 		); err != nil {
+			slowlog.Slowf(
+				ctx,
+				processStarted,
+				"functioncall.process_stream_chunk tool_name=%s tool_call_id=%s invocation_id=%s chunk_type=%T err=%v",
+				toolCall.Function.Name,
+				toolCall.ID,
+				processorDiagInvocationID(invocation),
+				chunk.Content,
+				err,
+			)
 			return contents, finalResult, err
 		}
+		slowlog.Slowf(
+			ctx,
+			processStarted,
+			"functioncall.process_stream_chunk tool_name=%s tool_call_id=%s invocation_id=%s chunk_type=%T err=<nil>",
+			toolCall.Function.Name,
+			toolCall.ID,
+			processorDiagInvocationID(invocation),
+			chunk.Content,
+		)
 	}
 	if structuredErrors && innerEventState.pendingGraphToolErrorEvent != nil {
 		return contents, finalResult, streamToolEventError(
@@ -3437,10 +3551,33 @@ func (f *FunctionCallResponseProcessor) handleFinalResultChunk(
 		finalResult.value = finalChunk.result
 	}
 	if finalChunk == nil || len(finalChunk.stateDelta) == 0 || eventChan == nil {
+		if finalChunk != nil {
+			slowlog.Logf(
+				ctx,
+				"functioncall.final_result_chunk tool_name=%s tool_call_id=%s invocation_id=%s state_delta=0 result_type=%T",
+				toolCall.Function.Name,
+				toolCall.ID,
+				processorDiagInvocationID(invocation),
+				finalChunk.result,
+			)
+		}
 		return nil
 	}
 	deltaEvent := f.buildStateDeltaToolResponseEvent(invocation, toolCall, finalChunk.stateDelta)
-	return agent.EmitEvent(ctx, invocation, eventChan, deltaEvent)
+	emitStarted := time.Now()
+	err := agent.EmitEvent(ctx, invocation, eventChan, deltaEvent)
+	slowlog.Slowf(
+		ctx,
+		emitStarted,
+		"functioncall.final_result_state_emit tool_name=%s tool_call_id=%s invocation_id=%s event_id=%s state_delta=%d err=%v",
+		toolCall.Function.Name,
+		toolCall.ID,
+		processorDiagInvocationID(invocation),
+		processorDiagEventID(deltaEvent),
+		len(finalChunk.stateDelta),
+		err,
+	)
+	return err
 }
 
 func (f *FunctionCallResponseProcessor) handleStreamInnerEvent(
@@ -3460,9 +3597,35 @@ func (f *FunctionCallResponseProcessor) handleStreamInnerEvent(
 		innerTextMode,
 	)
 	if shouldEmit {
+		emitStarted := time.Now()
 		if err := event.EmitEvent(ctx, eventChan, filteredEvent); err != nil {
+			slowlog.Slowf(
+				ctx,
+				emitStarted,
+				"functioncall.emit_inner_event event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d err=%v",
+				processorDiagEventID(filteredEvent),
+				processorDiagEventAuthor(filteredEvent),
+				processorDiagEventObject(filteredEvent),
+				processorDiagEventPartial(filteredEvent),
+				processorDiagEventDone(filteredEvent),
+				processorDiagEventRequiresCompletion(filteredEvent),
+				processorDiagEventStateDeltaLen(filteredEvent),
+				err,
+			)
 			return err
 		}
+		slowlog.Slowf(
+			ctx,
+			emitStarted,
+			"functioncall.emit_inner_event event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d err=<nil>",
+			processorDiagEventID(filteredEvent),
+			processorDiagEventAuthor(filteredEvent),
+			processorDiagEventObject(filteredEvent),
+			processorDiagEventPartial(filteredEvent),
+			processorDiagEventDone(filteredEvent),
+			processorDiagEventRequiresCompletion(filteredEvent),
+			processorDiagEventStateDeltaLen(filteredEvent),
+		)
 	}
 	f.appendInnerEventContent(ev, contents)
 	if !structuredErrors {

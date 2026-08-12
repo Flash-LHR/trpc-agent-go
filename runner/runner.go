@@ -33,6 +33,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/evolution"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/internal/session/summaryrestore"
+	"trpc.group/trpc-go/trpc-agent-go/internal/slowlog"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/barrier"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/eventstream"
@@ -841,7 +842,25 @@ func (r *runner) attachSessionAppender(
 			runnerLatencySpanPersistEvent,
 			runnerEventAttrs(e)...,
 		)
+		started := time.Now()
 		err := r.sessionService.AppendEvent(appendCtx, persistSession, e)
+		slowlog.Slowf(
+			ctx,
+			started,
+			"runner.appender_append_event invocation_id=%s persist_app=%s persist_user=%s persist_session=%s event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d err=%v",
+			runnerDiagInvocationID(invocation),
+			runnerDiagSessionApp(persistSession),
+			runnerDiagSessionUser(persistSession),
+			runnerDiagSessionID(persistSession),
+			runnerDiagEventID(e),
+			runnerDiagEventAuthor(e),
+			runnerDiagEventObject(e),
+			runnerDiagEventPartial(e),
+			runnerDiagEventDone(e),
+			runnerDiagEventRequiresCompletion(e),
+			runnerDiagEventStateDeltaLen(e),
+			err,
+		)
 		finishRunnerLatencySpan(appendSpan, appendStarted, err)
 		return err
 	})
@@ -1365,7 +1384,21 @@ func (e *runnerEventEmitter) run() {
 		if !ok {
 			return
 		}
+		started := time.Now()
 		err := event.EmitEvent(queued.ctx, e.out, queued.event)
+		slowlog.Slowf(
+			queued.ctx,
+			started,
+			"runner.output_emit event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d err=%v",
+			runnerDiagEventID(queued.event),
+			runnerDiagEventAuthor(queued.event),
+			runnerDiagEventObject(queued.event),
+			runnerDiagEventPartial(queued.event),
+			runnerDiagEventDone(queued.event),
+			runnerDiagEventRequiresCompletion(queued.event),
+			runnerDiagEventStateDeltaLen(queued.event),
+			err,
+		)
 		if queued.ack != nil {
 			queued.ack <- err
 		}
@@ -1635,6 +1668,23 @@ func (r *runner) processSingleAgentEvent(
 	agentEvent *event.Event,
 ) (err error) {
 	recordRunnerEventStats(loop, agentEvent)
+	processStarted := time.Now()
+	defer func() {
+		slowlog.Slowf(
+			ctx,
+			processStarted,
+			"runner.process_event invocation_id=%s event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d err=%v",
+			runnerDiagLoopInvocationID(loop),
+			runnerDiagEventID(agentEvent),
+			runnerDiagEventAuthor(agentEvent),
+			runnerDiagEventObject(agentEvent),
+			runnerDiagEventPartial(agentEvent),
+			runnerDiagEventDone(agentEvent),
+			runnerDiagEventRequiresCompletion(agentEvent),
+			runnerDiagEventStateDeltaLen(agentEvent),
+			err,
+		)
+	}()
 	traceDetails := runnerTraceEventDetails(agentEvent)
 	var span oteltrace.Span
 	started := false
@@ -1835,6 +1885,93 @@ func recordRunnerEventStats(loop *eventLoopContext, evt *event.Event) {
 	if evt.Response != nil && evt.Response.Error != nil {
 		loop.errorEventCount++
 	}
+}
+
+func runnerDiagLoopInvocationID(loop *eventLoopContext) string {
+	if loop == nil {
+		return ""
+	}
+	return runnerDiagInvocationID(loop.invocation)
+}
+
+func runnerDiagInvocationID(inv *agent.Invocation) string {
+	if inv == nil {
+		return ""
+	}
+	return inv.InvocationID
+}
+
+func runnerDiagSessionApp(sess *session.Session) string {
+	if sess == nil {
+		return ""
+	}
+	return sess.AppName
+}
+
+func runnerDiagSessionUser(sess *session.Session) string {
+	if sess == nil {
+		return ""
+	}
+	return sess.UserID
+}
+
+func runnerDiagSessionID(sess *session.Session) string {
+	if sess == nil {
+		return ""
+	}
+	return sess.ID
+}
+
+func runnerDiagEventID(evt *event.Event) string {
+	if evt == nil {
+		return ""
+	}
+	if evt.Response != nil && evt.Response.ID != "" {
+		return evt.Response.ID
+	}
+	return evt.ID
+}
+
+func runnerDiagEventAuthor(evt *event.Event) string {
+	if evt == nil {
+		return ""
+	}
+	return evt.Author
+}
+
+func runnerDiagEventObject(evt *event.Event) string {
+	if evt == nil {
+		return ""
+	}
+	return string(evt.Object)
+}
+
+func runnerDiagEventPartial(evt *event.Event) bool {
+	if evt == nil {
+		return false
+	}
+	return evt.IsPartial
+}
+
+func runnerDiagEventDone(evt *event.Event) bool {
+	if evt == nil {
+		return false
+	}
+	return evt.Done
+}
+
+func runnerDiagEventRequiresCompletion(evt *event.Event) bool {
+	if evt == nil {
+		return false
+	}
+	return evt.RequiresCompletion
+}
+
+func runnerDiagEventStateDeltaLen(evt *event.Event) int {
+	if evt == nil {
+		return 0
+	}
+	return len(evt.StateDelta)
 }
 
 func (r *runner) recordPersistedAssistantEvent(
@@ -2739,6 +2876,23 @@ func (r *runner) handleEventPersistence(
 	if persistSession == nil {
 		persistSession = sess
 	}
+	if persistSession != nil {
+		slowlog.Logf(
+			ctx,
+			"runner.persist_event.start invocation_id=%s persist_app=%s persist_user=%s persist_session=%s event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d",
+			runnerDiagInvocationID(invocation),
+			persistSession.AppName,
+			persistSession.UserID,
+			persistSession.ID,
+			runnerDiagEventID(agentEvent),
+			runnerDiagEventAuthor(agentEvent),
+			runnerDiagEventObject(agentEvent),
+			runnerDiagEventPartial(agentEvent),
+			runnerDiagEventDone(agentEvent),
+			runnerDiagEventRequiresCompletion(agentEvent),
+			runnerDiagEventStateDeltaLen(agentEvent),
+		)
+	}
 
 	persistEvent := agentEvent
 	if isGraphCompletionSnapshotEvent(agentEvent) {
@@ -2757,15 +2911,49 @@ func (r *runner) handleEventPersistence(
 		runnerLatencySpanPersistEvent,
 		runnerEventAttrs(persistEvent)...,
 	)
+	appendSlowStarted := time.Now()
 	if err := r.sessionService.AppendEvent(
 		appendCtx,
 		persistSession,
 		persistEvent,
 	); err != nil {
+		slowlog.Slowf(
+			ctx,
+			appendSlowStarted,
+			"runner.persist_event.append invocation_id=%s persist_app=%s persist_user=%s persist_session=%s event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d err=%v",
+			runnerDiagInvocationID(invocation),
+			runnerDiagSessionApp(persistSession),
+			runnerDiagSessionUser(persistSession),
+			runnerDiagSessionID(persistSession),
+			runnerDiagEventID(persistEvent),
+			runnerDiagEventAuthor(persistEvent),
+			runnerDiagEventObject(persistEvent),
+			runnerDiagEventPartial(persistEvent),
+			runnerDiagEventDone(persistEvent),
+			runnerDiagEventRequiresCompletion(persistEvent),
+			runnerDiagEventStateDeltaLen(persistEvent),
+			err,
+		)
 		finishRunnerLatencySpan(appendSpan, appendStarted, err)
 		log.Errorf("Failed to append event to session: %v", err)
 		return false
 	}
+	slowlog.Slowf(
+		ctx,
+		appendSlowStarted,
+		"runner.persist_event.append invocation_id=%s persist_app=%s persist_user=%s persist_session=%s event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d err=<nil>",
+		runnerDiagInvocationID(invocation),
+		runnerDiagSessionApp(persistSession),
+		runnerDiagSessionUser(persistSession),
+		runnerDiagSessionID(persistSession),
+		runnerDiagEventID(persistEvent),
+		runnerDiagEventAuthor(persistEvent),
+		runnerDiagEventObject(persistEvent),
+		runnerDiagEventPartial(persistEvent),
+		runnerDiagEventDone(persistEvent),
+		runnerDiagEventRequiresCompletion(persistEvent),
+		runnerDiagEventStateDeltaLen(persistEvent),
+	)
 	finishRunnerLatencySpan(appendSpan, appendStarted, nil)
 
 	if shouldAppendSummaryForkResponse(agentEvent) {
@@ -2816,12 +3004,36 @@ func (r *runner) handleEventPersistence(
 			parentRequest,
 		)
 	}
+	enqueueStarted := time.Now()
 	if err := r.sessionService.EnqueueSummaryJob(
 		summaryCtx, persistSession, agentEvent.FilterKey, false,
 	); err != nil {
+		slowlog.Slowf(
+			ctx,
+			enqueueStarted,
+			"runner.summary_enqueue invocation_id=%s persist_app=%s persist_user=%s persist_session=%s filter_key=%s event_id=%s err=%v",
+			runnerDiagInvocationID(invocation),
+			runnerDiagSessionApp(persistSession),
+			runnerDiagSessionUser(persistSession),
+			runnerDiagSessionID(persistSession),
+			agentEvent.FilterKey,
+			runnerDiagEventID(agentEvent),
+			err,
+		)
 		finishRunnerLatencySpan(summarySpan, summaryStarted, err)
 		log.DebugfContext(ctx, "Auto summarize after append skipped or failed: %v.", err)
 	} else {
+		slowlog.Slowf(
+			ctx,
+			enqueueStarted,
+			"runner.summary_enqueue invocation_id=%s persist_app=%s persist_user=%s persist_session=%s filter_key=%s event_id=%s err=<nil>",
+			runnerDiagInvocationID(invocation),
+			runnerDiagSessionApp(persistSession),
+			runnerDiagSessionUser(persistSession),
+			runnerDiagSessionID(persistSession),
+			agentEvent.FilterKey,
+			runnerDiagEventID(agentEvent),
+		)
 		finishRunnerLatencySpan(summarySpan, summaryStarted, nil)
 	}
 	// Do not enqueue full-session summary here. The worker will cascade

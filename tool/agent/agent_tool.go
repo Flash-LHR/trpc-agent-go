@@ -21,6 +21,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
+	"trpc.group/trpc-go/trpc-agent-go/internal/slowlog"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/flush"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/livesession"
@@ -903,7 +904,24 @@ func (at *Tool) appendEvent(
 	if inv == nil || inv.Session == nil || evt == nil {
 		return
 	}
+	started := time.Now()
 	ok, err := appender.Invoke(ctx, inv, evt)
+	slowlog.Slowf(
+		ctx,
+		started,
+		"agenttool.append_event tool=%s invocation_id=%s event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d appender_attached=%t err=%v",
+		at.name,
+		inv.InvocationID,
+		agentToolDiagEventID(evt),
+		agentToolDiagEventAuthor(evt),
+		agentToolDiagEventObject(evt),
+		agentToolDiagEventPartial(evt),
+		agentToolDiagEventDone(evt),
+		agentToolDiagEventRequiresCompletion(evt),
+		agentToolDiagEventStateDeltaLen(evt),
+		ok,
+		err,
+	)
 	if ok {
 		if err != nil {
 			log.Errorf(
@@ -931,6 +949,56 @@ func sessionHasEventID(inv *agent.Invocation, eventID string) bool {
 		}
 	}
 	return false
+}
+
+func agentToolDiagInvocationID(inv *agent.Invocation) string {
+	if inv == nil {
+		return ""
+	}
+	return inv.InvocationID
+}
+
+func agentToolDiagEventID(evt *event.Event) string {
+	if evt == nil {
+		return ""
+	}
+	if evt.Response != nil && evt.Response.ID != "" {
+		return evt.Response.ID
+	}
+	return evt.ID
+}
+
+func agentToolDiagEventAuthor(evt *event.Event) string {
+	if evt == nil {
+		return ""
+	}
+	return evt.Author
+}
+
+func agentToolDiagEventObject(evt *event.Event) string {
+	if evt == nil {
+		return ""
+	}
+	return string(evt.Object)
+}
+
+func agentToolDiagEventPartial(evt *event.Event) bool {
+	return evt != nil && evt.IsPartial
+}
+
+func agentToolDiagEventDone(evt *event.Event) bool {
+	return evt != nil && evt.Done
+}
+
+func agentToolDiagEventRequiresCompletion(evt *event.Event) bool {
+	return evt != nil && evt.RequiresCompletion
+}
+
+func agentToolDiagEventStateDeltaLen(evt *event.Event) int {
+	if evt == nil {
+		return 0
+	}
+	return len(evt.StateDelta)
 }
 
 func shouldMirrorEventToSession(evt *event.Event) bool {
@@ -1265,6 +1333,20 @@ func normalizeResponseMode(mode ResponseMode) ResponseMode {
 func (at *Tool) StreamableCall(ctx context.Context, jsonArgs []byte) (*tool.StreamReader, error) {
 	stream := tool.NewStream(64)
 	runCtx := at.streamableCallContext(ctx)
+	parentInvocationID := ""
+	if inv, ok := agent.InvocationFromContext(ctx); ok && inv != nil {
+		parentInvocationID = inv.InvocationID
+	}
+	callID, _ := tool.ToolCallIDFromContext(ctx)
+	slowlog.Logf(
+		ctx,
+		"agenttool.streamable_call.start tool=%s call_id=%s parent_invocation_id=%s response_mode=%d stream_inner=%t",
+		at.name,
+		callID,
+		parentInvocationID,
+		at.responseMode,
+		at.streamInner,
+	)
 	go at.runStreamableCall(runCtx, jsonArgs, stream.Writer)
 
 	return stream.Reader, nil
@@ -1306,6 +1388,8 @@ func (at *Tool) runStreamableCall(
 	jsonArgs []byte,
 	writer *tool.StreamWriter,
 ) {
+	started := time.Now()
+	defer slowlog.Slowf(ctx, started, "agenttool.run_streamable_call tool=%s", at.name)
 	defer writer.Close()
 	if at.dynamic {
 		at.streamDynamic(ctx, jsonArgs, writer)
@@ -1326,7 +1410,16 @@ func (at *Tool) streamFromParentInvocation(
 	message model.Message,
 	writer *tool.StreamWriter,
 ) {
+	flushStarted := time.Now()
 	if err := flush.Invoke(ctx, parentInv); err != nil {
+		slowlog.Slowf(
+			ctx,
+			flushStarted,
+			"agenttool.parent_flush tool=%s parent_invocation_id=%s err=%v",
+			at.name,
+			agentToolDiagInvocationID(parentInv),
+			err,
+		)
 		sendStreamableCallError(
 			ctx,
 			writer,
@@ -1335,6 +1428,13 @@ func (at *Tool) streamFromParentInvocation(
 		)
 		return
 	}
+	slowlog.Slowf(
+		ctx,
+		flushStarted,
+		"agenttool.parent_flush tool=%s parent_invocation_id=%s err=<nil>",
+		at.name,
+		agentToolDiagInvocationID(parentInv),
+	)
 	// See the comment in callWithParentInvocation: when AgentTool is invoked
 	// from the parallel function-call path, parentInv.Session is a frozen
 	// snapshot. Without restoring the live pointer the sub-agent loses
@@ -1344,11 +1444,31 @@ func (at *Tool) streamFromParentInvocation(
 	childKey := at.buildChildFilterKey(ctx, parentInv, []byte(message.Content))
 	subInv := parentInv.Clone(at.childInvocationOptions(ctx, parentInv, message, childKey, nil)...)
 	subCtx := agent.NewInvocationContext(ctx, subInv)
+	runStarted := time.Now()
 	evCh, err := agent.RunWithPlugins(subCtx, subInv, at.agent)
 	if err != nil {
+		slowlog.Slowf(
+			ctx,
+			runStarted,
+			"agenttool.child_run_start tool=%s parent_invocation_id=%s child_invocation_id=%s child_filter_key=%s err=%v",
+			at.name,
+			agentToolDiagInvocationID(parentInv),
+			agentToolDiagInvocationID(subInv),
+			childKey,
+			err,
+		)
 		sendStreamableCallError(ctx, writer, "agent tool run error: %w", err)
 		return
 	}
+	slowlog.Slowf(
+		ctx,
+		runStarted,
+		"agenttool.child_run_start tool=%s parent_invocation_id=%s child_invocation_id=%s child_filter_key=%s err=<nil>",
+		at.name,
+		agentToolDiagInvocationID(parentInv),
+		agentToolDiagInvocationID(subInv),
+		childKey,
+	)
 	at.forwardSubInvocationStream(
 		subCtx,
 		subInv,
@@ -1373,29 +1493,103 @@ func (at *Tool) forwardSubInvocationStream(
 	// chunk so it is merged into the tool response. For final-result modes the
 	// prefix is folded into the emitted result instead (see the emit helpers).
 	if resultPrefix != "" && !emitFinalResultChunk {
+		sendStarted := time.Now()
 		if writer.Send(tool.StreamChunk{Content: resultPrefix}, nil) {
+			slowlog.Slowf(
+				ctx,
+				sendStarted,
+				"agenttool.writer_send_prefix tool=%s child_invocation_id=%s closed=true",
+				at.name,
+				agentToolDiagInvocationID(subInv),
+			)
 			return
 		}
+		slowlog.Slowf(
+			ctx,
+			sendStarted,
+			"agenttool.writer_send_prefix tool=%s child_invocation_id=%s closed=false",
+			at.name,
+			agentToolDiagInvocationID(subInv),
+		)
 	}
 	for {
+		waitStarted := time.Now()
 		select {
 		case <-ctx.Done():
+			slowlog.Slowf(
+				ctx,
+				waitStarted,
+				"agenttool.forward_wait_ctx_done tool=%s child_invocation_id=%s err=%v",
+				at.name,
+				agentToolDiagInvocationID(subInv),
+				ctx.Err(),
+			)
 			sendStreamableCallError(ctx, writer, "agent tool run error: %w", ctx.Err())
 			return
 		case ev, ok := <-wrapped:
+			slowlog.Slowf(
+				ctx,
+				waitStarted,
+				"agenttool.forward_wait_wrapped tool=%s child_invocation_id=%s ok=%t event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d",
+				at.name,
+				agentToolDiagInvocationID(subInv),
+				ok,
+				agentToolDiagEventID(ev),
+				agentToolDiagEventAuthor(ev),
+				agentToolDiagEventObject(ev),
+				agentToolDiagEventPartial(ev),
+				agentToolDiagEventDone(ev),
+				agentToolDiagEventRequiresCompletion(ev),
+				agentToolDiagEventStateDeltaLen(ev),
+			)
 			if !ok {
 				if managePendingVisibleCompletion {
+					flushStarted := time.Now()
 					at.flushPendingVisibleCompletionForSession(ctx, subInv, &state)
+					slowlog.Slowf(
+						ctx,
+						flushStarted,
+						"agenttool.flush_pending_visible_completion tool=%s child_invocation_id=%s",
+						at.name,
+						agentToolDiagInvocationID(subInv),
+					)
 				}
 				if emitFinalResultChunk {
 					if at.responseMode == ResponseModeFinalOnly {
+						emitStarted := time.Now()
 						at.emitFinalOnlyResultChunk(&state, writer)
+						slowlog.Slowf(
+							ctx,
+							emitStarted,
+							"agenttool.emit_final_only_result_chunk tool=%s child_invocation_id=%s result_len=%d",
+							at.name,
+							agentToolDiagInvocationID(subInv),
+							len(state.finalOnlyResult),
+						)
 						return
 					}
+					emitStarted := time.Now()
 					at.emitPendingCompletionChunk(&state, writer)
+					slowlog.Slowf(
+						ctx,
+						emitStarted,
+						"agenttool.emit_pending_completion_chunk tool=%s child_invocation_id=%s has_chunk=%t",
+						at.name,
+						agentToolDiagInvocationID(subInv),
+						state.pendingCompletionChunk != nil,
+					)
 					return
 				}
+				emitStarted := time.Now()
 				at.emitPendingVisibleCompletionEvent(&state, writer)
+				slowlog.Slowf(
+					ctx,
+					emitStarted,
+					"agenttool.emit_pending_visible_completion_event tool=%s child_invocation_id=%s has_event=%t",
+					at.name,
+					agentToolDiagInvocationID(subInv),
+					state.pendingStreamVisibleEvent != nil,
+				)
 				return
 			}
 			if at.handleForwardedStreamEvent(
@@ -1451,7 +1645,24 @@ func (at *Tool) handleForwardedStreamEvent(
 		}
 	}
 	at.updateStreamCompletionState(ev, state)
-	return writer.Send(tool.StreamChunk{Content: ev}, nil)
+	sendStarted := time.Now()
+	closed := writer.Send(tool.StreamChunk{Content: ev}, nil)
+	slowlog.Slowf(
+		ctx,
+		sendStarted,
+		"agenttool.writer_send_event tool=%s child_invocation_id=%s event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d closed=%t",
+		at.name,
+		agentToolDiagInvocationID(subInv),
+		agentToolDiagEventID(ev),
+		agentToolDiagEventAuthor(ev),
+		agentToolDiagEventObject(ev),
+		agentToolDiagEventPartial(ev),
+		agentToolDiagEventDone(ev),
+		agentToolDiagEventRequiresCompletion(ev),
+		agentToolDiagEventStateDeltaLen(ev),
+		closed,
+	)
+	return closed
 }
 
 // handleGraphCompletionSnapshot captures a graph-completion snapshot for
@@ -1527,9 +1738,26 @@ func (at *Tool) flushPendingVisibleCompletionForSession(
 		return
 	}
 	if _, ok := assistantMessageContent(state.pendingVisibleCompletion); ok {
+		ensureStarted := time.Now()
 		at.ensureUserMessageForCall(ctx, inv)
+		slowlog.Slowf(
+			ctx,
+			ensureStarted,
+			"agenttool.ensure_user_message_for_call tool=%s invocation_id=%s",
+			at.name,
+			agentToolDiagInvocationID(inv),
+		)
 	}
+	appendStarted := time.Now()
 	at.appendEvent(ctx, inv, state.pendingVisibleCompletion)
+	slowlog.Slowf(
+		ctx,
+		appendStarted,
+		"agenttool.flush_pending_visible_append tool=%s invocation_id=%s event_id=%s",
+		at.name,
+		agentToolDiagInvocationID(inv),
+		agentToolDiagEventID(state.pendingVisibleCompletion),
+	)
 	state.pendingVisibleCompletion = nil
 }
 
