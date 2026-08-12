@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/internal/slowlog"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
@@ -293,7 +294,27 @@ func (s *Service) listSessions(
 }
 
 // addEvent adds an event to a session (MySQL syntax).
-func (s *Service) addEvent(ctx context.Context, key session.Key, event *event.Event) error {
+func (s *Service) addEvent(ctx context.Context, key session.Key, event *event.Event) (err error) {
+	started := time.Now()
+	defer func() {
+		slowlog.Slowf(
+			ctx,
+			started,
+			"mysql.add_event app=%s user=%s session=%s event_id=%s author=%s object=%s partial=%t done=%t requires_completion=%t state_delta=%d persist_response=%t err=%v",
+			key.AppName,
+			key.UserID,
+			key.SessionID,
+			mysqlDiagEventID(event),
+			mysqlDiagEventAuthor(event),
+			mysqlDiagEventObject(event),
+			mysqlDiagEventPartial(event),
+			mysqlDiagEventDone(event),
+			mysqlDiagEventRequiresCompletion(event),
+			mysqlDiagEventStateDeltaLen(event),
+			mysqlDiagShouldPersistEvent(event),
+			err,
+		)
+	}()
 	eventBytes, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("marshal event failed: %w", err)
@@ -302,8 +323,20 @@ func (s *Service) addEvent(ctx context.Context, key session.Key, event *event.Ev
 	var updatedStateBytes []byte
 
 	// Use transaction to update session state and insert event
+	txStarted := time.Now()
 	err = s.mysqlClient.Transaction(ctx, func(tx *sql.Tx) error {
+		lockStarted := time.Now()
 		sessState, currentExpiresAt, err := loadSessionStateForUpdate(ctx, tx, s.tableSessionStates, key)
+		slowlog.Slowf(
+			ctx,
+			lockStarted,
+			"mysql.add_event.select_for_update app=%s user=%s session=%s event_id=%s err=%v",
+			key.AppName,
+			key.UserID,
+			key.SessionID,
+			mysqlDiagEventID(event),
+			err,
+		)
 		if err != nil {
 			return err
 		}
@@ -335,32 +368,122 @@ func (s *Service) addEvent(ctx context.Context, key session.Key, event *event.Ev
 		expiresAt := calculateExpiresAt(s.opts.sessionTTL)
 
 		// Update session state
+		updateStarted := time.Now()
 		_, err = tx.ExecContext(ctx,
 			fmt.Sprintf(`UPDATE %s SET state = ?, updated_at = ?, expires_at = ?
 			 WHERE app_name = ? AND user_id = ? AND session_id = ? AND deleted_at IS NULL`, s.tableSessionStates),
 			string(updatedStateBytes), updatedAt, expiresAt,
 			key.AppName, key.UserID, key.SessionID)
+		slowlog.Slowf(
+			ctx,
+			updateStarted,
+			"mysql.add_event.update_session_state app=%s user=%s session=%s event_id=%s state_bytes=%d err=%v",
+			key.AppName,
+			key.UserID,
+			key.SessionID,
+			mysqlDiagEventID(event),
+			len(updatedStateBytes),
+			err,
+		)
 		if err != nil {
 			return fmt.Errorf("update session state failed: %w", err)
 		}
 
 		// Insert event if it has response and is not partial
 		if event.Response != nil && !event.IsPartial && event.IsValidContent() {
+			insertStarted := time.Now()
 			_, err = tx.ExecContext(ctx,
 				fmt.Sprintf(`INSERT INTO %s (app_name, user_id, session_id, event, created_at, updated_at)
 				 VALUES (?, ?, ?, ?, ?, ?)`, s.tableSessionEvents),
 				key.AppName, key.UserID, key.SessionID, string(eventBytes), now, now)
+			slowlog.Slowf(
+				ctx,
+				insertStarted,
+				"mysql.add_event.insert_event app=%s user=%s session=%s event_id=%s event_bytes=%d err=%v",
+				key.AppName,
+				key.UserID,
+				key.SessionID,
+				mysqlDiagEventID(event),
+				len(eventBytes),
+				err,
+			)
 			if err != nil {
 				return fmt.Errorf("insert event failed: %w", err)
 			}
 		}
 		return nil
 	})
+	slowlog.Slowf(
+		ctx,
+		txStarted,
+		"mysql.add_event.transaction app=%s user=%s session=%s event_id=%s err=%v",
+		key.AppName,
+		key.UserID,
+		key.SessionID,
+		mysqlDiagEventID(event),
+		err,
+	)
 
 	if err != nil {
 		return fmt.Errorf("store event failed: %w", err)
 	}
 	return nil
+}
+
+func mysqlDiagShouldPersistEvent(evt *event.Event) bool {
+	return evt != nil && evt.Response != nil && !evt.IsPartial && evt.IsValidContent()
+}
+
+func mysqlDiagEventID(evt *event.Event) string {
+	if evt == nil {
+		return ""
+	}
+	if evt.Response != nil && evt.Response.ID != "" {
+		return evt.Response.ID
+	}
+	return evt.ID
+}
+
+func mysqlDiagEventAuthor(evt *event.Event) string {
+	if evt == nil {
+		return ""
+	}
+	return evt.Author
+}
+
+func mysqlDiagEventObject(evt *event.Event) string {
+	if evt == nil {
+		return ""
+	}
+	return string(evt.Object)
+}
+
+func mysqlDiagEventPartial(evt *event.Event) bool {
+	if evt == nil {
+		return false
+	}
+	return evt.IsPartial
+}
+
+func mysqlDiagEventDone(evt *event.Event) bool {
+	if evt == nil {
+		return false
+	}
+	return evt.Done
+}
+
+func mysqlDiagEventRequiresCompletion(evt *event.Event) bool {
+	if evt == nil {
+		return false
+	}
+	return evt.RequiresCompletion
+}
+
+func mysqlDiagEventStateDeltaLen(evt *event.Event) int {
+	if evt == nil {
+		return 0
+	}
+	return len(evt.StateDelta)
 }
 
 // addTrackEvent adds a track event to a session (MySQL syntax).
